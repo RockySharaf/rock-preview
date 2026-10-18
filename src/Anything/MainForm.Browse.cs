@@ -118,8 +118,8 @@ internal sealed partial class MainForm
         _nav.AutoSize = true;
         _nav.CanOverflow = false;
         _nav.BackColor = ExplorerTheme.Chrome;
-        Cmd(_navBack, null, ExplorerTheme.GBack, null, "Back (Alt+Left)", () => _explorer.GoBack());
-        Cmd(_navForward, null, ExplorerTheme.GForward, null, "Forward (Alt+Right)", () => _explorer.GoForward());
+        Cmd(_navBack, null, ExplorerTheme.GBack, null, "Back (Alt+Left)", GoBack);
+        Cmd(_navForward, null, ExplorerTheme.GForward, null, "Forward (Alt+Right)", GoForward);
         Cmd(_navUp, null, ExplorerTheme.GUp, null, "Up to the parent folder (Alt+Up)", NavigateUp);
         Cmd(_navRefresh, null, ExplorerTheme.GRefresh, null, "Refresh (F5)", RefreshResults);
         _nav.Items.AddRange([_navBack, _navForward, _navUp, _navRefresh]);
@@ -135,7 +135,7 @@ internal sealed partial class MainForm
                 e.Handled = e.SuppressKeyPress = true;
                 string target = _address.Text;
                 _breadcrumb.EndEdit();
-                if (BrowseTo(target)) FocusList();
+                if (OpenFolder(target)) FocusList();
             }
             else if (e.KeyCode == Keys.Escape)
             {
@@ -146,12 +146,7 @@ internal sealed partial class MainForm
             }
         };
         _breadcrumb = new BreadcrumbBar(_address) { Dock = DockStyle.Fill, MenuRenderer = ToolStripManager.Renderer };
-        _breadcrumb.NavigateRequested += location =>
-        {
-            if (_zapActive) ExitZap(rerun: false);
-            if (_search.TextLength > 0) { _suppress = true; _search.Clear(); _suppress = false; }
-            BrowseTo(location);
-        };
+        _breadcrumb.NavigateRequested += location => OpenFolder(location);
 
         _scope.CheckedChanged += (_, _) =>
         {
@@ -367,6 +362,7 @@ internal sealed partial class MainForm
         if (_cmdSearchOptions.Visible != searching)
             _sepSearch.Visible = _cmdSearchOptions.Visible = _cmdCloseSearch.Visible = searching;
         bool thumbs = !explorer && ThumbnailMode;
+        _thumbsButton.Enabled = !explorer || _explorer.CurrentPath != null; // This PC, Network...: no folder of files
         _thumbsButton.Tag = thumbs; // drawn pressed while thumbnails are showing
         _thumbsButton.ToolTipText = explorer ? "Thumbnails of every file in this folder and its subfolders (Ctrl+Shift+X)"
             : thumbs ? (_zapActive ? "Back to the folder (Ctrl+Shift+X)" : "Back to the list (Ctrl+Shift+X)")
@@ -478,7 +474,7 @@ internal sealed partial class MainForm
             if (hadFocus) { if (explorer) _explorer.FocusView(); else FocusList(); }
         }
         if (explorer) { _list.Visible = false; _grid.Visible = false; }
-        _navBack.Enabled = _browsing && _explorer.CanGoBack;
+        _navBack.Enabled = _browsing && (_explorer.CanGoBack || !explorer); // Back also leaves a search
         _navForward.Enabled = _browsing && _explorer.CanGoForward;
         _navUp.Enabled = _browsing;
         UpdateSearchPlaceholder();
@@ -528,13 +524,11 @@ internal sealed partial class MainForm
         if (_search.TextLength > 0) RunSearch(SearchReason.NewQuery); // re-scope a typed search to the new folder
     }
 
-    void NavigateUp()
-    {
-        if (!_browsing) return;
-        _explorer.GoUp();
-    }
-
-    void GoHome()
+    /// <summary>
+    /// Leaves the search results (and "every file in") so the folder itself shows. File Explorer does the same when
+    /// you open a folder from a search; otherwise the old search would keep running and look like the folder.
+    /// </summary>
+    void LeaveResults()
     {
         if (_zapActive) ExitZap(rerun: false);
         if (_search.TextLength > 0)
@@ -543,7 +537,44 @@ internal sealed partial class MainForm
             _search.Clear();
             _suppress = false;
         }
-        if (!BrowseTo(HomeLocation)) BrowseTo(ThisPcLocation);
+    }
+
+    /// <summary>A folder the user chose to open (address bar, breadcrumb, results, menus): shown as the folder.</summary>
+    bool OpenFolder(string location, string? select = null)
+    {
+        LeaveResults();
+        return BrowseTo(location, select);
+    }
+
+    /// <summary>Back: a search (or "every file in") is a page above the folder, like in Explorer, so Back closes it first.</summary>
+    void GoBack()
+    {
+        if (_browsing && !ExplorerShown)
+        {
+            if (_zapActive) ExitZap(rerun: true);
+            else CloseSearch();
+            if (ExplorerShown) _explorer.FocusView();
+            return;
+        }
+        _explorer.GoBack();
+    }
+
+    void GoForward()
+    {
+        LeaveResults();
+        _explorer.GoForward();
+    }
+
+    void NavigateUp()
+    {
+        if (!_browsing) return;
+        LeaveResults();
+        _explorer.GoUp();
+    }
+
+    void GoHome()
+    {
+        if (!OpenFolder(HomeLocation)) BrowseTo(ThisPcLocation);
     }
 
     /// <summary>Opens the last folder (or Home) when the window starts, like File Explorer.</summary>
@@ -573,7 +604,7 @@ internal sealed partial class MainForm
         var paths = SelectedPaths(1000);
         if (paths.Count == 1 && Directory.Exists(paths[0]))
         {
-            BrowseTo(paths[0]);
+            OpenFolder(paths[0]);
             return;
         }
         FileOps.Open(this, paths);
@@ -586,15 +617,8 @@ internal sealed partial class MainForm
         if (paths.Count == 0) return;
         string p = paths[0].TrimEnd('\\');
         string? parent = Path.GetDirectoryName(p);
-        if (parent == null) { BrowseTo(paths[0]); return; }
-        if (_search.TextLength > 0)
-        {
-            _suppress = true;
-            _search.Clear();
-            _suppress = false;
-        }
-        if (_zapActive) ExitZap(rerun: false);
-        BrowseTo(parent, select: p);
+        if (parent == null) { OpenFolder(paths[0]); return; }
+        OpenFolder(parent, select: p);
     }
 
     // ---- search scope -------------------------------------------------------------------------

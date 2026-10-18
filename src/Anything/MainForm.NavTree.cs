@@ -10,17 +10,7 @@ internal sealed partial class MainForm
     void BuildNavTree()
     {
         _navPanel.Controls.Add(_tree);
-        _tree.FolderSelected += location =>
-        {
-            if (_zapActive) ExitZap(rerun: false);
-            if (_search.TextLength > 0)
-            {
-                _suppress = true;
-                _search.Clear();
-                _suppress = false;
-            }
-            BrowseTo(location);
-        };
+        _tree.FolderSelected += location => OpenFolder(location);
     }
 
     partial void SyncNavTreeCore(string location)

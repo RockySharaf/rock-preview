@@ -120,13 +120,13 @@ internal sealed partial class MainForm
         _miZapDeep = Item("&Include Subfolders", ToggleZapDepth);
         browse.DropDownItems.AddRange(
         [
-            Item("&Back", () => _explorer.GoBack(), Keys.Alt | Keys.Left, "Alt+Left"),
-            Item("&Forward", () => _explorer.GoForward(), Keys.Alt | Keys.Right, "Alt+Right"),
+            Item("&Back", GoBack, Keys.Alt | Keys.Left, "Alt+Left"),
+            Item("&Forward", GoForward, Keys.Alt | Keys.Right, "Alt+Right"),
             Item("&Up", NavigateUp, Keys.Alt | Keys.Up, "Alt+Up"),
             Item("&Home", GoHome, Keys.Alt | Keys.Home, "Alt+Home"),
             Item("&New Folder", CmdNewFolder, Keys.Control | Keys.Shift | Keys.N),
-            Item("&Last Folder", () => { if (_app.Settings.LastLocation is { Length: > 0 } l) BrowseTo(l); else BrowseTo("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}"); }),
-            Item("This &PC", () => BrowseTo("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}")),
+            Item("&Last Folder", () => OpenFolder(_app.Settings.LastLocation is { Length: > 0 } l ? l : ThisPcLocation)),
+            Item("This &PC", () => OpenFolder(ThisPcLocation)),
             Item("&Address Bar", FocusAddress, Keys.Control | Keys.L, "Ctrl+L"),
             new ToolStripSeparator(),
             _miZapThumbs, _miZap, _miZapDeep,
