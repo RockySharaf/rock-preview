@@ -76,7 +76,6 @@ internal sealed class AppSettings
     public bool ScopeSearchToFolder { get; set; } = true;
     /// <summary>ZAP includes files in subfolders (otherwise only the folder's own files).</summary>
     public bool ZapIncludeSubfolders { get; set; } = true;
-    public bool ZapThumbnails { get; set; }
     /// <summary>Explorer's navigation pane (Quick access, This PC, drives) in the browse view.</summary>
     public bool ExplorerNavPane { get; set; } = true;
     /// <summary>Navigation pane width in 96-DPI pixels.</summary>
@@ -166,7 +165,6 @@ internal sealed class AppSettings
         s.PreviewVisible = Bool("preview_visible", true);
         s.ScopeSearchToFolder = Bool("scope_search_to_folder", true);
         s.ZapIncludeSubfolders = Bool("zap_include_subfolders", true);
-        s.ZapThumbnails = Bool("zap_thumbnails", false);
         s.ExplorerNavPane = Bool("explorer_nav_pane", true);
         s.NavPaneWidth = Math.Clamp(Int("nav_pane_width", 176), 120, 1200);
         if (s.NavPaneWidth == 250) s.NavPaneWidth = 176; // the old default; Explorer's pane is 176 (220px at 125%)
@@ -246,7 +244,6 @@ internal sealed class AppSettings
         B("preview_visible", PreviewVisible);
         B("scope_search_to_folder", ScopeSearchToFolder);
         B("zap_include_subfolders", ZapIncludeSubfolders);
-        B("zap_thumbnails", ZapThumbnails);
         B("explorer_nav_pane", ExplorerNavPane);
         W("nav_pane_width", NavPaneWidth);
         W("last_location", Clean(LastLocation));

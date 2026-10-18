@@ -115,9 +115,9 @@ internal sealed partial class MainForm
         // Browse
         var browse = new ToolStripMenuItem("B&rowse");
         _miNavPane = Item("&Navigation Pane", ToggleNavPane);
-        _miZap = Item("&ZAP: All Files Here", () => ToggleZap(thumbs: false), Keys.Control | Keys.Shift | Keys.Z);
-        _miZapThumbs = Item("ZAP as &Thumbnails", () => ToggleZap(thumbs: true), Keys.Control | Keys.Shift | Keys.X);
-        _miZapDeep = Item("ZAP &Includes Subfolders", ToggleZapDepth);
+        _miZapThumbs = Item("&Thumbnails", ToggleThumbnails, Keys.Control | Keys.Shift | Keys.X);
+        _miZap = Item("Every File Here as a &List", () => ToggleZap(thumbs: false), Keys.Control | Keys.Shift | Keys.Z);
+        _miZapDeep = Item("&Include Subfolders", ToggleZapDepth);
         browse.DropDownItems.AddRange(
         [
             Item("&Back", () => _explorer.GoBack(), Keys.Alt | Keys.Left, "Alt+Left"),
@@ -129,7 +129,7 @@ internal sealed partial class MainForm
             Item("This &PC", () => BrowseTo("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}")),
             Item("&Address Bar", FocusAddress, Keys.Control | Keys.L, "Ctrl+L"),
             new ToolStripSeparator(),
-            _miZap, _miZapThumbs, _miZapDeep,
+            _miZapThumbs, _miZap, _miZapDeep,
             new ToolStripSeparator(),
             _miNavPane,
         ]);
@@ -237,7 +237,7 @@ internal sealed partial class MainForm
         _miPreview.Checked = _app.Settings.PreviewVisible;
         _miNavPane.Checked = _app.Settings.ExplorerNavPane;
         _miZap.Checked = _zapActive && !_zapThumbs;
-        _miZapThumbs.Checked = _zapActive && _zapThumbs;
+        _miZapThumbs.Checked = !ExplorerShown && ThumbnailMode;
         _miZapDeep.Checked = _app.Settings.ZapIncludeSubfolders;
         foreach (var (item, t) in _miThemes) item.Checked = t == _app.Settings.Theme;
         int thumb = _app.Settings.ThumbnailSize;

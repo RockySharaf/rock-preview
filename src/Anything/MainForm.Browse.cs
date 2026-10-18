@@ -7,7 +7,7 @@ namespace Anything;
 /// <summary>
 /// Browsing: the real Windows Explorer view (ExplorerBrowser) merged with Rock Preview's instant search.
 /// Empty search box + a folder open = Explorer; typing = instant results (scoped to the open folder unless
-/// "In this folder" is off); ZAP = every file under the folder, straight from the index.
+/// "In this folder" is off); Thumbnails on a folder = every file under it, straight from the index (internally "ZAP").
 /// </summary>
 internal sealed partial class MainForm
 {
@@ -21,9 +21,8 @@ internal sealed partial class MainForm
                                      _cmdSearchOptions = new("Search options"), _cmdMore = new();
     readonly ToolStripButton _cmdCut = new(), _cmdCopy = new(), _cmdPaste = new(), _cmdRename = new(), _cmdShare = new(),
                              _cmdDelete = new(), _cmdCloseSearch = new("Close search"), _cmdPreview = new("Preview");
-    readonly ToolStripSplitButton _zapButton = new("ZAP");
-    readonly ToolStripMenuItem _zapListItem = new("Show as list"), _zapThumbItem = new("Show as thumbnails"),
-                               _zapDeepItem = new("Include subfolders");
+    readonly ToolStripSplitButton _thumbsButton = new("Thumbnails");
+    readonly ToolStripMenuItem _zapThumbItem = new(), _zapListItem = new(), _zapDeepItem = new("Include subfolders");
     readonly ToolStripSeparator _sepSearch = new();
     readonly CheckBox _scope = new();          // not shown: "search this folder only" state (Search options menu)
     readonly SplitContainer _body = new();     // navigation pane | files + preview
@@ -36,6 +35,7 @@ internal sealed partial class MainForm
     bool _zapActive, _zapThumbs;
     List<string> _zapRoots = [];
     string _zapLabel = "";
+    int _lastThumbSize = 160;       // the thumbnail size the Thumbnails button goes back to
 
     /// <summary>Windows 11 "Home" (falls back to This PC where it doesn't exist).</summary>
     const string HomeLocation = "shell:::{f874310e-b6b7-47dc-bc84-b9e6b38f5903}";
@@ -45,7 +45,7 @@ internal sealed partial class MainForm
 
     void BuildBrowseBar()
     {
-        // Command bar, like Windows 11 File Explorer's: New | Cut Copy Paste Rename Share Delete | Sort View | ZAP | ...
+        // Command bar, like Windows 11 File Explorer's: New | Cut Copy Paste Rename Share Delete | Sort View | Thumbnails | ...
         _commands.Dock = DockStyle.Top;
         _commands.BackColor = ExplorerTheme.Content;
         _commands.CanOverflow = true;
@@ -72,7 +72,7 @@ internal sealed partial class MainForm
         Cmd(_cmdView, ExplorerIcons.View, ExplorerTheme.GView, "View", "Change the view", null);
         Cmd(_cmdSearchOptions, ExplorerIcons.SearchOptions, ExplorerTheme.GFilter, "Search options", "Where and how to search", null);
         Cmd(_cmdCloseSearch, ExplorerIcons.CloseSearch, ExplorerTheme.GClose, "Close search", "Close search (Esc)", CloseSearch);
-        Cmd(_zapButton, null, ExplorerTheme.GZap, "ZAP", "ZAP: every file in this folder at once (Ctrl+Shift+Z)", null);
+        Cmd(_thumbsButton, ExplorerIcons.IconsSmall, ExplorerTheme.GGrid, "Thumbnails", "", null);
         Cmd(_cmdMore, null, ExplorerTheme.GMore, null, "See more", null);
         Cmd(_cmdPreview, ExplorerIcons.DetailsPane, ExplorerTheme.GPane, "Preview", "Show or hide the preview pane (Alt+P)", TogglePreview);
         _cmdPreview.Alignment = ToolStripItemAlignment.Right;
@@ -90,24 +90,28 @@ internal sealed partial class MainForm
         _cmdView.DropDownItems.Add(new ToolStripMenuItem("(view)"));
         _cmdSearchOptions.DropDownItems.Add(new ToolStripMenuItem("(search)"));
 
-        // ZAP: click = every file in the folder (again = back to the folder); the arrow picks list/thumbnails and depth.
-        _zapButton.ButtonClick += (_, _) => { if (_zapActive) ExitZap(rerun: true); else ToggleZap(_app.Settings.ZapThumbnails); };
-        _zapListItem.Click += (_, _) => SetZapThumbnails(false);
-        _zapThumbItem.Click += (_, _) => SetZapThumbnails(true);
+        // Thumbnails: whatever is on screen as thumbnails (see ToggleThumbnails); again = back. The arrow offers
+        // every file under the folder as thumbnails or as a list, and whether subfolders count.
+        _thumbsButton.ButtonClick += (_, _) => ToggleThumbnails();
+        _zapThumbItem.Click += (_, _) => ToggleZap(thumbs: true);
+        _zapListItem.Click += (_, _) => ToggleZap(thumbs: false);
         _zapDeepItem.Click += (_, _) => ToggleZapDepth();
         _zapListItem.ShortcutKeyDisplayString = "Ctrl+Shift+Z";
-        _zapThumbItem.ShortcutKeyDisplayString = "Ctrl+Shift+X";
-        _zapButton.DropDownItems.AddRange([_zapListItem, _zapThumbItem, new ToolStripSeparator(), _zapDeepItem]);
-        _zapButton.DropDownOpening += (_, _) =>
+        _thumbsButton.DropDownItems.AddRange([_zapThumbItem, _zapListItem, new ToolStripSeparator(), _zapDeepItem]);
+        _thumbsButton.DropDownOpening += (_, _) =>
         {
-            _zapListItem.Checked = !_app.Settings.ZapThumbnails;
-            _zapThumbItem.Checked = _app.Settings.ZapThumbnails;
+            string where = _zapActive ? _zapLabel : ZapTargets() is { Count: > 0 } roots ? ZapLabel(roots) : "this folder";
+            where = where.Replace("&", "&&");
+            _zapThumbItem.Text = $"Every file in {where} as thumbnails";
+            _zapListItem.Text = $"Every file in {where} as a list";
+            _zapThumbItem.Checked = _zapActive && _zapThumbs;
+            _zapListItem.Checked = _zapActive && !_zapThumbs;
             _zapDeepItem.Checked = _app.Settings.ZapIncludeSubfolders;
         };
 
         _commands.Items.AddRange([_cmdNew, new ToolStripSeparator(), _cmdCut, _cmdCopy, _cmdPaste, _cmdRename, _cmdShare, _cmdDelete,
                                   new ToolStripSeparator(), _cmdSort, _cmdView, _sepSearch, _cmdSearchOptions, _cmdCloseSearch,
-                                  new ToolStripSeparator(), _zapButton, new ToolStripSeparator(), _cmdMore, _cmdPreview]);
+                                  new ToolStripSeparator(), _thumbsButton, new ToolStripSeparator(), _cmdMore, _cmdPreview]);
 
         // Navigation buttons left of the address bar.
         _nav.Dock = DockStyle.Left;
@@ -207,8 +211,7 @@ internal sealed partial class MainForm
         foreach (var (item, svg, glyph) in _glyphItems)
         {
             var old = item.Image;
-            item.Image = glyph == ExplorerTheme.GZap ? ExplorerTheme.Glyph(glyph, icon, ExplorerTheme.Accent) // ZAP: Rock Preview's own, in the accent like Explorer's two-tone icons
-                       : item.Owner == _nav ? ExplorerTheme.Glyph(glyph, icon, ExplorerTheme.Icon, 0.9f)
+            item.Image = item.Owner == _nav ? ExplorerTheme.Glyph(glyph, icon, ExplorerTheme.Icon, 0.9f)
                        : ExplorerTheme.Icon16(svg, glyph, icon);
             old?.Dispose();
         }
@@ -317,12 +320,6 @@ internal sealed partial class MainForm
         if (ExplorerShown) _explorer.FocusView();
     }
 
-    void SetZapThumbnails(bool thumbs)
-    {
-        _app.Settings.ZapThumbnails = thumbs;
-        if (!_zapActive || _zapThumbs != thumbs) ToggleZap(thumbs);
-    }
-
     /// <summary>Search options (Explorer shows this button while searching): where to look, kind of file, matching.</summary>
     void BuildSearchOptionsMenu()
     {
@@ -369,8 +366,12 @@ internal sealed partial class MainForm
         bool searching = _search.TextLength > 0;
         if (_cmdSearchOptions.Visible != searching)
             _sepSearch.Visible = _cmdSearchOptions.Visible = _cmdCloseSearch.Visible = searching;
-        _zapButton.Tag = _zapActive;
-        _zapButton.Invalidate();
+        bool thumbs = !explorer && ThumbnailMode;
+        _thumbsButton.Tag = thumbs; // drawn pressed while thumbnails are showing
+        _thumbsButton.ToolTipText = explorer ? "Thumbnails of every file in this folder and its subfolders (Ctrl+Shift+X)"
+            : thumbs ? (_zapActive ? "Back to the folder (Ctrl+Shift+X)" : "Back to the list (Ctrl+Shift+X)")
+            : "Show these files as thumbnails (Ctrl+Shift+X)";
+        _thumbsButton.Invalidate();
         _cmdPreview.Checked = _app.Settings.PreviewVisible;
     }
 
@@ -610,31 +611,57 @@ internal sealed partial class MainForm
     static string WithSlash(string folder) => folder.EndsWith('\\') ? folder : folder + "\\";
     static string Quote(string s) => "\"" + s + "\"";
 
-    // ---- ZAP -------------------------------------------------------------------------------
+    // ---- Thumbnails and ZAP (every file under a folder) ------------------------------------------
+
+    /// <summary>
+    /// The Thumbnails button (Ctrl+Shift+X). On a folder: every file in it and its subfolders as thumbnails, and
+    /// again = back to the folder. Anywhere else (search results, or those files): thumbnails on and off.
+    /// </summary>
+    void ToggleThumbnails()
+    {
+        if (ExplorerShown) { ToggleZap(thumbs: true); return; }
+        if (_zapActive)
+        {
+            if (!_zapThumbs) { ToggleZap(thumbs: true); return; }
+            ExitZap(rerun: true);
+            if (ExplorerShown) _explorer.FocusView();
+            return;
+        }
+        SetViewMode(ThumbnailMode ? 0 : _lastThumbSize);
+        FocusList();
+    }
+
+    /// <summary>The folders "every file in..." covers: the open folder, or the folders selected in the results.</summary>
+    List<string> ZapTargets()
+    {
+        var roots = new List<string>();
+        if (ExplorerShown || (_browsing && _explorer.CurrentPath != null && _search.TextLength == 0))
+        {
+            if (_explorer.CurrentPath is { } folder) roots.Add(folder);
+            return roots;
+        }
+        foreach (var p in SelectedPaths(64)) if (Directory.Exists(p)) roots.Add(p.TrimEnd('\\').Length == 2 ? p : p.TrimEnd('\\'));
+        if (roots.Count == 0 && _browsing && _explorer.CurrentPath is { } open) roots.Add(open);
+        return roots;
+    }
+
+    static string ZapLabel(List<string> roots) =>
+        roots.Count == 1 ? (Path.GetFileName(roots[0].TrimEnd('\\')) is { Length: > 0 } n ? n : roots[0]) : $"{roots.Count} folders";
 
     void ToggleZap(bool thumbs)
     {
         if (_zapActive && _zapThumbs == thumbs) { ExitZap(rerun: true); return; }
         if (_zapActive) { _zapThumbs = thumbs; ApplyViewMode(); UpdateLeftView(); RunSearch(SearchReason.NewQuery); return; }
 
-        var roots = new List<string>();
-        if (ExplorerShown || (_browsing && _explorer.CurrentPath != null && _search.TextLength == 0))
-        {
-            if (_explorer.CurrentPath is { } folder) roots.Add(folder);
-        }
-        else
-        {
-            foreach (var p in SelectedPaths(64)) if (Directory.Exists(p)) roots.Add(p.TrimEnd('\\').Length == 2 ? p : p.TrimEnd('\\'));
-            if (roots.Count == 0 && _browsing && _explorer.CurrentPath is { } folder) roots.Add(folder);
-        }
+        var roots = ZapTargets();
         if (roots.Count == 0)
         {
-            MessageBox.Show(this, "Open a folder (or select folders in the results) to ZAP it.\n\nZAP shows every file in the folder at once.",
-                "ZAP", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Open a folder, or select folders in the results, to see every file in it at once.",
+                "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
         _zapRoots = roots;
-        _zapLabel = roots.Count == 1 ? (Path.GetFileName(roots[0].TrimEnd('\\')) is { Length: > 0 } n ? n : roots[0]) : $"{roots.Count} folders";
+        _zapLabel = ZapLabel(roots);
         _zapActive = true;
         _zapThumbs = thumbs;
         _suppress = true;
@@ -687,6 +714,6 @@ internal sealed partial class MainForm
     string ZapStatus()
     {
         string where = _app.Settings.ZapIncludeSubfolders ? "including subfolders" : "this folder only";
-        return $"⚡ ZAP · {_ids.Length:N0} files in {_zapLabel} ({where})";
+        return $"Every file in {_zapLabel}: {_ids.Length:N0} ({where})";
     }
 }

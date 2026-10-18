@@ -310,8 +310,10 @@ internal sealed partial class MainForm : Form
     void SetViewMode(int thumbnailSize)
     {
         _app.Settings.ThumbnailSize = thumbnailSize;
+        if (thumbnailSize > 0) _lastThumbSize = thumbnailSize;
         ApplyViewMode();
         SyncMenus();
+        UpdateCommandStates();
     }
 
     void ApplyViewMode()
@@ -630,7 +632,7 @@ internal sealed partial class MainForm : Form
     internal void UpdateTitle()
     {
         string app = _app.TitleWithHotkey;
-        if (_zapActive) Text = $"⚡ {_zapLabel}{(_search.TextLength > 0 ? " · " + _search.Text : "")} - {app}";
+        if (_zapActive) Text = $"Every file in {_zapLabel}{(_search.TextLength > 0 ? " · " + _search.Text : "")} - {app}";
         else if (_search.TextLength > 0) Text = _search.Text + " - " + app;
         else if (ExplorerShown) Text = (_explorer.CurrentDisplayName ?? "") + " - " + app;
         else Text = app;

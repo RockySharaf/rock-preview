@@ -35,7 +35,8 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
 - **🗂️ The real Explorer, built in** — not a look-alike: Rock Preview hosts Windows' own Explorer file view and
   navigation pane, so context menus, drag and drop, rename, thumbnails and shell extensions all just work.
 - **👁️ Preview anything** — select a file and see it, without opening another app.
-- **⚡ ZAP** — one click shows *every* file under a folder (and its subfolders) at once, as a list or as thumbnails.
+- **🖼️ Thumbnails of everything** — one click shows your search results, or *every* file in a folder and its
+  subfolders at once, as thumbnails.
 
 ## Features
 
@@ -70,9 +71,14 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
 
 Office and other installed shell preview handlers are hosted in place; embedded thumbnails are used where a format has one.
 
-### ZAP
-Open a folder and press **ZAP** (or `Ctrl+Shift+Z`): every file below it appears at once, straight from the index —
-perfect for "show me all the images in this project". `Ctrl+Shift+X` shows them as thumbnails.
+### Thumbnails
+Press **Thumbnails** (or `Ctrl+Shift+X`) to see files as pictures:
+
+- **While searching**, your results switch to thumbnails, wherever on the disk they are.
+- **In a folder**, every file in it *and all its subfolders* appears at once, straight from the index — perfect for
+  "show me all the images in this project". Press it again to go back to the folder.
+
+The arrow next to it shows the same files as a list instead (`Ctrl+Shift+Z`), or only the folder's own files.
 
 <div align="center">
 <img src="docs/images/search.png" alt="Instant search results with highlighted matches" width="900">
@@ -102,14 +108,15 @@ Both are self-contained: nothing else (not even .NET) needs to be installed. Uni
 | `Ctrl+L`, `Alt+D`, `F4` | Type a path in the address bar |
 | `Alt+←` / `Alt+→` / `Alt+↑` | Back / Forward / Up |
 | `Alt+P` | Show or hide the preview pane |
-| `Ctrl+Shift+Z` / `Ctrl+Shift+X` | ZAP as a list / as thumbnails |
+| `Ctrl+Shift+X` | Thumbnails: the search results, or every file in the folder and its subfolders |
+| `Ctrl+Shift+Z` | Every file in the folder and its subfolders, as a list |
 | `Ctrl+Shift+N` | New folder |
 | `Alt+Enter` | Properties |
 | `F5` | Refresh |
 | `Ctrl+I` `Ctrl+B` `Ctrl+U` `Ctrl+R` | Match case / whole word / path / regex |
 | `Ctrl+D` | Bookmark the current search |
 | `Ctrl+N` | New window |
-| `Esc` | Clear the search / leave ZAP |
+| `Esc` | Clear the search / back to the folder |
 | `F1` | Search syntax help |
 
 ## Search syntax
@@ -160,7 +167,7 @@ powershell -ExecutionPolicy Bypass -File build\Publish.ps1
 |---|---|
 | `src/Anything.Core` | The index (compact in-memory file table), NTFS MFT reader, USN journal monitor, folder scanner, query parser and search engine |
 | `src/Anything.Preview` | The preview pane and renderers for every supported format, plus the thumbnail provider |
-| `src/Anything` | The Windows app: Explorer hosting, Windows 11 chrome, results list, ZAP, setup |
+| `src/Anything` | The Windows app: Explorer hosting, Windows 11 chrome, results list and thumbnails, setup |
 | `src/Anything.Cli` | `rockpreview-cli` |
 | `tests/Anything.Tests` | Unit tests for indexing and search |
 
