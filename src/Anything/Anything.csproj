@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Anything.Core\Anything.Core.csproj" />
+    <ProjectReference Include="..\Anything.Preview\Anything.Preview.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>RockPreview.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationVisualStyles>true</ApplicationVisualStyles>
+    <AssemblyName>RockPreview</AssemblyName>
+    <RootNamespace>Anything</RootNamespace>
+    <Product>Rock Preview</Product>
+    <Version>1.0.0</Version>
+    <!-- WFO5001: Application.SetColorMode (system dark mode) is experimental. WFO0003: DPI awareness is declared in app.manifest on purpose (applies before Main runs). -->
+    <NoWarn>$(NoWarn);WFO5001;WFO0003;CA1416</NoWarn>
+    <!-- The Explorer context menu loads arbitrary third-party shell extensions in-process; many are not
+         CET shadow-stack compatible and would fail-fast the process (0xC0000409), so opt out like Explorer hosts do. -->
+    <CETCompat>false</CETCompat>
+    <!-- Favor a smaller heap: compact gen2 when fragmented and keep the concurrent (non-server) GC. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="RockPreview.ico" LogicalName="RockPreview.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="5" />
+  </ItemGroup>
+
+</Project>

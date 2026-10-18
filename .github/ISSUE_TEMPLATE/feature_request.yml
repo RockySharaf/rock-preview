@@ -1,0 +1,16 @@
+name: Feature request
+description: An idea to make Rock Preview better
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: Describe the feature and the problem it solves.
+    validations:
+      required: true
+  - type: input
+    id: formats
+    attributes:
+      label: File formats involved (if it's about previews)
+      placeholder: ".cdr, .indd, ..."

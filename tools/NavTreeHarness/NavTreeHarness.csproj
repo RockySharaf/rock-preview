@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Throwaway harness for src/Anything/Explorer/NavigationTree.cs. NavigationTree is internal to RockPreview,
+       so the Explorer interop sources are compiled in directly. Not part of Anything.sln. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>NavTreeHarness</RootNamespace>
+    <NoWarn>$(NoWarn);CA1416;WFO5001</NoWarn>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- Shell context menus load third-party extensions in-process (same reason as RockPreview). -->
+    <CETCompat>false</CETCompat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\Anything\Explorer\ExplorerInterop.cs" Link="Explorer\ExplorerInterop.cs" />
+    <Compile Include="..\..\src\Anything\Explorer\NavTreeInterop.cs" Link="Explorer\NavTreeInterop.cs" />
+    <Compile Include="..\..\src\Anything\Explorer\NavigationTree.cs" Link="Explorer\NavigationTree.cs" />
+  </ItemGroup>
+
+</Project>

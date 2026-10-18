@@ -1,0 +1,32 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead? Screenshots help.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Rock Preview version
+      placeholder: "1.0.0 (Help > About)"
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2"
+  - type: dropdown
+    id: admin
+    attributes:
+      label: Running as administrator?
+      options: ["Yes", "No", "Not sure"]
+  - type: textarea
+    id: log
+    attributes:
+      label: Error log
+      description: If Rock Preview showed an error, paste the end of %LOCALAPPDATA%\Rock Preview\error.log
+      render: text

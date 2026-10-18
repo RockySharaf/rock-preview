@@ -1,0 +1,35 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build
+        run: dotnet build Anything.sln -c Release
+
+      - name: Test
+        run: dotnet test tests/Anything.Tests -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Publish single-file builds
+        shell: pwsh
+        run: ./build/Publish.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rock-preview-win-x64
+          path: |
+            dist/RockPreview-Setup.exe
+            dist/RockPreview.exe
+          retention-days: 14
