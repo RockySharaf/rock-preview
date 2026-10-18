@@ -388,6 +388,28 @@ internal static class Setup
         catch { }
     }
 
+    /// <summary>The hotkey Rock Preview uses for this user (Alt+X unless changed in Options), or null when it's turned off.</summary>
+    public static string? ConfiguredHotkey()
+    {
+        try
+        {
+            string h = AppSettings.Load(AppSettings.DefaultPath(demo: false)).Hotkey;
+            return h.Length > 0 ? h : null;
+        }
+        catch (Exception) { return AppSettings.DefaultHotkey; }
+    }
+
+    /// <summary>Whether this user has a Start with Windows entry for Rock Preview.</summary>
+    public static bool StartsWithWindows()
+    {
+        try
+        {
+            using var run = Registry.CurrentUser.OpenSubKey(RunKeyPath);
+            return run?.GetValue(RunValue) is string;
+        }
+        catch (Exception) { return false; }
+    }
+
     // ---- shortcuts (IShellLinkW) -----------------------------------------------------------------
 
     const uint SLDF_RUNAS_USER = 0x2000;
@@ -400,7 +422,9 @@ internal static class Setup
         {
             link.SetPath(exe);
             link.SetWorkingDirectory(Path.GetDirectoryName(exe)!);
-            link.SetDescription("Search, browse and preview every file instantly.");
+            link.SetDescription(ConfiguredHotkey() is { } hotkey
+                ? $"Search, browse and preview every file instantly. Press {hotkey} to open it from anywhere."
+                : "Search, browse and preview every file instantly.");
             link.SetIconLocation(exe, 0);
             if (link is IShellLinkDataList data && data.GetFlags(out uint flags) >= 0)
                 data.SetFlags(runAsAdmin ? flags | SLDF_RUNAS_USER : flags & ~SLDF_RUNAS_USER);

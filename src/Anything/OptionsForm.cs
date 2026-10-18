@@ -55,8 +55,9 @@ internal sealed class OptionsForm : DialogBase
         AddPage("Folders", Page(Caption("Additional folders to index (scanned and monitored):"), _folders, ListButtons(_folders, "Add folder to index")));
         AddPage("Exclude", Page(_exHidden, _exSystem, Caption("Exclude folders:"), _exFolders, ListButtons(_exFolders, "Exclude folder"),
             Caption("Exclude files (wildcards, separated by semicolons, e.g. *.tmp;~$*):"), _exPatterns));
-        AddPage("Keyboard", Page(Caption("Global hotkey to show or hide the search window (press a key combination; Backspace clears):"),
-            _hotkey, _hotkeyWin, Caption(app.HotkeyError ?? "")));
+        AddPage("Keyboard", Page(Caption("Hotkey that opens or hides Rock Preview from any app, while it runs or sits in the tray. " +
+                "Click the box and press a key combination; Backspace turns it off."),
+            HotkeyRow(), _hotkeyWin, Caption(app.HotkeyError ?? "")));
 
         foreach (var (name, _) in _pageList) _pages.Items.Add(name);
         _pages.SelectedIndexChanged += (_, _) => ShowPage(_pages.SelectedIndex);
@@ -76,6 +77,10 @@ internal sealed class OptionsForm : DialogBase
         PerformLayout();
 
         _hotkeyWin.CheckedChanged += (_, _) => _hotkey.SetWin(_hotkeyWin.Checked);
+        // The registered hotkey would swallow its own key press, so release it while a new one is recorded.
+        _hotkey.Enter += (_, _) => _app.SuspendHotkey();
+        _hotkey.Leave += (_, _) => _app.RegisterHotkey();
+        FormClosed += (_, _) => _app.RegisterHotkey();
         LoadValues();
         _pages.SelectedIndex = 0;
     }
@@ -143,6 +148,21 @@ internal sealed class OptionsForm : DialogBase
         var reset = new Button { Text = "&Default", AutoSize = true };
         reset.Click += (_, _) => { _fontName = ""; _fontSize = 0; UpdateFontLabel(); };
         row.Controls.AddRange([choose, reset, _fontLabel]);
+        return row;
+    }
+
+    Control HotkeyRow()
+    {
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 4, 0, 0), WrapContents = false };
+        _hotkey.Margin = new Padding(3, 4, 6, 3);
+        var reset = new Button { Text = $"&Default ({AppSettings.DefaultHotkey})", AutoSize = true };
+        reset.Click += (_, _) =>
+        {
+            Hotkey.TryParse(AppSettings.DefaultHotkey, out uint mods, out Keys key);
+            _hotkey.Set(mods, key);
+            _hotkeyWin.Checked = (mods & Native.MOD_WIN) != 0;
+        };
+        row.Controls.AddRange([_hotkey, reset]);
         return row;
     }
 

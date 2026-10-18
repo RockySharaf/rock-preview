@@ -83,7 +83,7 @@ internal sealed partial class MainForm : Form
         SuspendLayout();
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
-        Text = app.Title;
+        Text = app.TitleWithHotkey;
         Icon = app.AppIcon;
         ClientSize = new Size(820, 540);
         MinimumSize = new Size(320, 200);
@@ -627,12 +627,13 @@ internal sealed partial class MainForm : Form
         if (_infoBar.Visible != show) _infoBar.Visible = show;
     }
 
-    void UpdateTitle()
+    internal void UpdateTitle()
     {
-        if (_zapActive) Text = $"⚡ {_zapLabel}{(_search.TextLength > 0 ? " · " + _search.Text : "")} - {_app.Title}";
-        else if (_search.TextLength > 0) Text = _search.Text + " - " + _app.Title;
-        else if (ExplorerShown) Text = (_explorer.CurrentDisplayName ?? "") + " - " + _app.Title;
-        else Text = _app.Title;
+        string app = _app.TitleWithHotkey;
+        if (_zapActive) Text = $"⚡ {_zapLabel}{(_search.TextLength > 0 ? " · " + _search.Text : "")} - {app}";
+        else if (_search.TextLength > 0) Text = _search.Text + " - " + app;
+        else if (ExplorerShown) Text = (_explorer.CurrentDisplayName ?? "") + " - " + app;
+        else Text = app;
     }
 
     // ---- columns ----------------------------------------------------------------------------

@@ -20,6 +20,7 @@ internal sealed class SetupForm : Form
     readonly Label _status = new() { AutoSize = false, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
     readonly ProgressBar _progress = new() { Style = ProgressBarStyle.Marquee, Visible = false, MarqueeAnimationSpeed = 30 };
     bool _done, _folderEdited;
+    readonly string? _hotkey = Setup.ConfiguredHotkey();
 
     public SetupForm(Setup.Options o)
     {
@@ -104,7 +105,9 @@ internal sealed class SetupForm : Form
         _folder.Text = _existing?.Folder ?? o.TargetFolder;
         _desktop.Checked = o.DesktopShortcut || ShortcutExists(desktop: true, allUsers);
         _admin.Checked = o.RunAsAdmin;
-        _startup.Checked = o.StartWithWindows;
+        // The hotkey only works while Rock Preview runs, so a new install starts with Windows unless unticked.
+        if (_hotkey is not null) _startup.Text = $"Start Rock Preview when Windows starts, so {_hotkey} always opens it";
+        _startup.Checked = o.Auto ? o.StartWithWindows : _existing is null || Setup.StartsWithWindows();
         if (o.Auto) _launch.Checked = o.Launch;
         if (_existing is not null)
         {
@@ -185,7 +188,9 @@ internal sealed class SetupForm : Form
         {
             await Task.Run(() => Setup.Install(_o, s => BeginInvoke(() => _status.Text = s)));
             _done = true;
-            _status.Text = "Rock Preview is installed. You'll find it in the Start menu.";
+            _status.Text = _hotkey is not null
+                ? $"Rock Preview is installed. Press {_hotkey} anytime to open it, or find it in the Start menu."
+                : "Rock Preview is installed. You'll find it in the Start menu.";
             _install.Text = "Finish";
             _cancel.Visible = false;
         }

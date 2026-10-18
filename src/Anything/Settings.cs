@@ -95,7 +95,9 @@ internal sealed class AppSettings
     public bool RunInBackground { get; set; } = true;
     public bool ShowTrayIcon { get; set; } = true;
     public bool StartWithWindows { get; set; }
-    public string Hotkey { get; set; } = "";
+    /// <summary>Global hotkey that shows or hides Rock Preview from any app; empty = none.</summary>
+    public string Hotkey { get; set; } = DefaultHotkey;
+    public const string DefaultHotkey = "Alt+X";
 
     public IndexSettings Index { get; } = new();
     public List<Bookmark> Bookmarks { get; } = [];
@@ -175,7 +177,9 @@ internal sealed class AppSettings
 
         s.RunInBackground = Bool("run_in_background", true);
         s.ShowTrayIcon = Bool("show_tray_icon", true);
-        s.Hotkey = Str("hotkey", "");
+        // "none" = turned off in Options; missing or empty (what versions before Alt+X saved) = the default.
+        string hotkey = Str("hotkey", "").Trim();
+        s.Hotkey = hotkey.Equals("none", StringComparison.OrdinalIgnoreCase) ? "" : hotkey.Length == 0 ? DefaultHotkey : hotkey;
         s.StartWithWindows = ReadStartWithWindows();
 
         var ix = s.Index;
@@ -255,7 +259,7 @@ internal sealed class AppSettings
         W("last_export_type", LastExportType);
         B("run_in_background", RunInBackground);
         B("show_tray_icon", ShowTrayIcon);
-        W("hotkey", Hotkey);
+        W("hotkey", Hotkey.Length == 0 ? "none" : Hotkey);
         B("index_ntfs_volumes", Index.IndexNtfsVolumes);
         W("volumes", string.Join('|', Index.Volumes));
         W("folders", string.Join('|', Index.Folders));

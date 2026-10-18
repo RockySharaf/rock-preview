@@ -9,6 +9,8 @@
 One fast Windows app that combines an instant whole-disk search engine, File Explorer itself, and a preview pane
 that understands hundreds of formats — from PSD, CorelDRAW and TIFF to PDF, Office documents, RAW photos and video.
 
+Press **`Alt+X`** in any app to open it.
+
 [![Latest release](https://img.shields.io/github/v/release/RockySharaf/rock-preview?label=download&color=0067c0)](https://github.com/RockySharaf/rock-preview/releases/latest)
 [![Build](https://github.com/RockySharaf/rock-preview/actions/workflows/build.yml/badge.svg)](https://github.com/RockySharaf/rock-preview/actions/workflows/build.yml)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
@@ -79,8 +81,8 @@ perfect for "show me all the images in this project". `Ctrl+Shift+X` shows them 
 ## Install
 
 1. Download **`RockPreview-Setup.exe`** from the [latest release](https://github.com/RockySharaf/rock-preview/releases/latest)
-   and run it. Choose *Just me* (no administrator needed) or *Everyone on this PC*, plus optional desktop shortcut,
-   start with Windows, and *Always run as administrator*.
+   and run it. Choose *Just me* (no administrator needed) or *Everyone on this PC*, plus optional desktop shortcut
+   and *Always run as administrator*. *Start with Windows* is on by default, so `Alt+X` opens Rock Preview at any time.
 2. Prefer no install? Download **`RockPreview.exe`** — the portable version runs from any folder or USB stick.
 
 Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall from **Settings › Apps**.
@@ -95,6 +97,7 @@ Both are self-contained: nothing else (not even .NET) needs to be installed. Uni
 
 | Keys | Action |
 |---|---|
+| `Alt+X` | Open or hide Rock Preview from any app (change it in **Tools › Options › Keyboard**) |
 | `Ctrl+F` / `Ctrl+E` | Search |
 | `Ctrl+L`, `Alt+D`, `F4` | Type a path in the address bar |
 | `Alt+←` / `Alt+→` / `Alt+↑` | Back / Forward / Up |

@@ -99,6 +99,12 @@ internal sealed class AnythingApp : ApplicationContext
 
     public string Title => IsDemo ? "Rock Preview (Demo)" : "Rock Preview";
 
+    /// <summary>The global hotkey registered right now ("Alt+X"), or null when none is set or it's taken.</summary>
+    public string? ActiveHotkey { get; private set; }
+
+    /// <summary>The name followed by the key that opens it from anywhere: "Rock Preview (Alt+X)".</summary>
+    public string TitleWithHotkey => ActiveHotkey is not { } h ? Title : IsDemo ? $"Rock Preview (Demo, {h})" : $"Rock Preview ({h})";
+
     public void Post(Action a) => _sync.Post(_ => { try { a(); } catch (ObjectDisposedException) { } }, null);
 
     // ---- index events -------------------------------------------------------------------------
@@ -256,7 +262,7 @@ internal sealed class AnythingApp : ApplicationContext
         {
             if (_tray is not null) return;
             var menu = new ContextMenuStrip();
-            var show = new ToolStripMenuItem("&Search Rock Preview...", null, (_, _) => ShowSearchWindow());
+            var show = new ToolStripMenuItem("&Search Rock Preview...", null, (_, _) => ShowSearchWindow()) { ShortcutKeyDisplayString = ActiveHotkey };
             show.Font = new Font(show.Font, FontStyle.Bold);
             menu.Items.Add(show);
             menu.Items.Add(new ToolStripMenuItem("&New Search Window", null, (_, _) => NewWindow(_lastActive)));
@@ -267,7 +273,7 @@ internal sealed class AnythingApp : ApplicationContext
             _tray = new NotifyIcon
             {
                 Icon = new Icon(AppIcon, SystemInformation.SmallIconSize),
-                Text = Title,
+                Text = TitleWithHotkey,
                 ContextMenuStrip = menu,
                 Visible = true,
             };
@@ -286,10 +292,22 @@ internal sealed class AnythingApp : ApplicationContext
     {
         _messageWindow.UnregisterHotkey();
         HotkeyError = null;
-        if (!Hotkey.TryParse(Settings.Hotkey, out uint mods, out Keys key)) return;
-        if (!_messageWindow.RegisterHotkey(mods, key))
-            HotkeyError = $"The hotkey {Settings.Hotkey} is already in use by another program.";
+        ActiveHotkey = null;
+        if (Hotkey.TryParse(Settings.Hotkey, out uint mods, out Keys key))
+        {
+            if (_messageWindow.RegisterHotkey(mods, key)) ActiveHotkey = Hotkey.Format(mods, key);
+            else HotkeyError = $"The hotkey {Settings.Hotkey} is already in use by another program. Choose another in Tools > Options > Keyboard.";
+        }
+        if (_tray is not null)
+        {
+            _tray.Text = TitleWithHotkey;
+            if (_tray.ContextMenuStrip?.Items[0] is ToolStripMenuItem show) show.ShortcutKeyDisplayString = ActiveHotkey;
+        }
+        foreach (var w in _windows) w.UpdateTitle();
     }
+
+    /// <summary>Releases the hotkey while Options records a new one, so that pressing it there is seen.</summary>
+    public void SuspendHotkey() => _messageWindow.UnregisterHotkey();
 
     internal void OnHotkey()
     {
