@@ -72,8 +72,11 @@ internal sealed class AppSettings
         _ => SystemColorMode.Classic,
     };
 
-    /// <summary>Typing while a folder is open searches only that folder (the "In this folder" box).</summary>
-    public bool ScopeSearchToFolder { get; set; } = true;
+    /// <summary>
+    /// With nothing selected, typing while a folder is open searches only that folder (Search options); off = everywhere.
+    /// Folders selected in the view always narrow the search to themselves.
+    /// </summary>
+    public bool ScopeSearchToFolder { get; set; }
     /// <summary>ZAP includes files in subfolders (otherwise only the folder's own files).</summary>
     public bool ZapIncludeSubfolders { get; set; } = true;
     /// <summary>Explorer's navigation pane (Quick access, This PC, drives) in the browse view.</summary>
@@ -163,7 +166,7 @@ internal sealed class AppSettings
         s.LastExportType = Int("last_export_type", 0);
         s.Theme = Str("theme", "light").Trim().ToLowerInvariant() is "dark" or "system" ? Str("theme", "").Trim().ToLowerInvariant() : "light";
         s.PreviewVisible = Bool("preview_visible", true);
-        s.ScopeSearchToFolder = Bool("scope_search_to_folder", true);
+        s.ScopeSearchToFolder = Bool("scope_search_to_folder", false);
         s.ZapIncludeSubfolders = Bool("zap_include_subfolders", true);
         s.ExplorerNavPane = Bool("explorer_nav_pane", true);
         s.NavPaneWidth = Math.Clamp(Int("nav_pane_width", 176), 120, 1200);

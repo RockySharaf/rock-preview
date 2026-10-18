@@ -328,6 +328,36 @@ internal sealed class ExplorerHost : Control
         SelectionChanged?.Invoke();
     }
 
+    /// <summary>File-system paths of the selected items (virtual items are skipped), at most <paramref name="max"/>.</summary>
+    public List<string> GetSelectedPaths(int max)
+    {
+        var paths = new List<string>();
+        var fv = GetView<IFolderView2>(ShellNative.IID_IFolderView2);
+        if (fv == null) return paths;
+        try
+        {
+            if (fv.GetSelection(false, out var items) == ShellNative.S_OK && items != null)
+            {
+                try
+                {
+                    if (items.GetCount(out uint n) == ShellNative.S_OK)
+                    {
+                        for (uint i = 0; i < n && paths.Count < max; i++)
+                        {
+                            if (items.GetItemAt(i, out var item) != ShellNative.S_OK || item == null) continue;
+                            try { if (ShellNative.NameOf(item, SIGDN.FileSysPath) is { } p) paths.Add(p); }
+                            finally { Marshal.ReleaseComObject(item); }
+                        }
+                    }
+                }
+                finally { Marshal.ReleaseComObject(items); }
+            }
+        }
+        catch (COMException) { }
+        finally { Marshal.ReleaseComObject(fv); }
+        return paths;
+    }
+
     void TrySelectPending()
     {
         string? path = _selectAfterNavigate;

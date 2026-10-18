@@ -43,7 +43,8 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
 ### Instant search
 - Indexes NTFS volumes from the Master File Table and keeps up with changes through the USN change journal.
   Without administrator rights it falls back to fast folder scanning and file-system notifications.
-- Results update as you type — whole disk, or just the open folder.
+- Results update as you type, across every drive. Select folders first to search only inside them: the search box
+  says where it looks ("Search images").
 - Powerful query language: wildcards, regular expressions, AND / OR / NOT, and functions for size, dates, type,
   extension, attributes, parent folder and more ([syntax below](#search-syntax)).
 - Sort by any column, highlight matches, bookmarks for saved searches, export results to CSV / TXT.

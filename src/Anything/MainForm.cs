@@ -135,6 +135,7 @@ internal sealed partial class MainForm : Form
         _search.PlaceholderText = "Search everything";
         _search.TextChanged += (_, _) =>
         {
+            UpdateSearchScope();
             UpdateTitle();
             if (!_suppress) RunSearch(SearchReason.NewQuery);
             UpdateLeftView(); // empty box while browsing = Explorer view; typing = instant results
@@ -916,6 +917,7 @@ internal sealed partial class MainForm : Form
         }
         int n = _ids.Length;
         string left = _zapActive ? ZapStatus() : n == 1 ? "1 object" : $"{n:N0} objects";
+        if (!_zapActive && _search.TextLength > 0 && ScopeLabel() is { } where) left += " in " + where;
         int sel = _list.SelectedIndices.Count;
         if (sel > 0)
         {
