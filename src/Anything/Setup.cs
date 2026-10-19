@@ -12,7 +12,7 @@ namespace Anything;
 /// %LOCALAPPDATA%\Programs (just me), adds Start menu / desktop shortcuts (optionally "Run as administrator"), the
 /// start-with-Windows entry and an entry in Settings &gt; Apps, whose Uninstall runs "RockPreview.exe -uninstall".
 /// Switches: -install, -uninstall, -quiet, -allusers, -dir &lt;folder&gt;, -desktop, -runasadmin, -startwithwindows,
-/// -launch, -removedata (uninstall).
+/// -replaceexplorer, -indexservice, -updatecheck / -noupdatecheck, -launch, -removedata (uninstall).
 /// </summary>
 internal static class Setup
 {
@@ -32,6 +32,7 @@ internal static class Setup
         public bool StartWithWindows;
         public bool ReplaceExplorer;  // Rock Preview instead of File Explorer (off unless chosen)
         public bool IndexService;     // instant indexing through the Rock Preview service (Windows asks once)
+        public bool? CheckForUpdates; // tell the user about new versions; null = leave their choice as it is
         public bool Launch;
         public bool Quiet;
         public bool RemoveData;
@@ -50,6 +51,7 @@ internal static class Setup
             if (StartWithWindows) l.Add("-startwithwindows");
             if (ReplaceExplorer) l.Add("-replaceexplorer");
             if (IndexService) l.Add("-indexservice");
+            if (CheckForUpdates is bool check) l.Add(check ? "-updatecheck" : "-noupdatecheck");
             if (Launch) l.Add("-launch");
             if (Quiet) l.Add("-quiet");
             if (Auto) l.Add("-auto");
@@ -100,6 +102,8 @@ internal static class Setup
                 case "startwithwindows": o.StartWithWindows = true; break;
                 case "replaceexplorer": o.ReplaceExplorer = true; break;
                 case "indexservice": o.IndexService = true; break;
+                case "updatecheck": o.CheckForUpdates = true; break;
+                case "noupdatecheck": o.CheckForUpdates = false; break;
                 case "launch": o.Launch = true; break;
                 case "quiet": o.Quiet = true; break;
                 case "removedata": o.RemoveData = true; break;
@@ -179,6 +183,8 @@ internal static class Setup
             if (o.StartWithWindows) run.SetValue(RunValue, "\"" + exe + "\" -startup");
             else if (run.GetValue(RunValue) is string old && PointsInto(old, folder)) run.DeleteValue(RunValue, false);
         }
+        // New-version notices: the choice made in the setup window (a quiet install without the switch leaves it alone).
+        if (o.CheckForUpdates is bool check) SetCheckForUpdates(check);
         // Rock Preview instead of File Explorer: on when chosen (now pointing at this copy); unticked in the setup
         // window turns it off. A quiet install without the switch leaves the user's choice alone.
         try
@@ -441,6 +447,25 @@ internal static class Setup
             return h.Length > 0 ? h : null;
         }
         catch (Exception) { return AppSettings.DefaultHotkey; }
+    }
+
+    /// <summary>Whether Rock Preview tells this user about new versions (on unless turned off).</summary>
+    public static bool ChecksForUpdates()
+    {
+        try { return AppSettings.Load(AppSettings.DefaultPath(demo: false)).CheckForUpdates; }
+        catch (Exception) { return true; }
+    }
+
+    static void SetCheckForUpdates(bool on)
+    {
+        try
+        {
+            var settings = AppSettings.Load(AppSettings.DefaultPath(demo: false));
+            if (settings.CheckForUpdates == on) return;
+            settings.CheckForUpdates = on;
+            settings.Save();
+        }
+        catch (Exception ex) { Log(ex); }
     }
 
     /// <summary>Whether this user has a Start with Windows entry for Rock Preview.</summary>

@@ -18,8 +18,13 @@ internal sealed class AnythingApp : ApplicationContext
     readonly MessageWindow _messageWindow;
     MainForm? _lastActive;
     NotifyIcon? _tray;
+    NotifyIcon? _notifier; // stands in for the tray icon (turned off) while a notification shows
     FileIndex? _subscribedIndex;
     OptionsForm? _options;
+    HotkeyWelcomeForm? _welcome;
+    System.Windows.Forms.Timer? _updateTimer;
+    Task<Version?>? _updateCheck;
+    Version? _updateNoticeHidden;
     int _changePending, _statePending;
     bool _exiting;
 
@@ -85,6 +90,7 @@ internal sealed class AnythingApp : ApplicationContext
         UpdateTray();
         RegisterHotkey();
         HandleCommandLine(cmd, initial: true);
+        StartUpdateChecks();
     }
 
     static Icon LoadIcon()
@@ -164,6 +170,7 @@ internal sealed class AnythingApp : ApplicationContext
         if (cmd.Search is not null) w.SetSearch(cmd.Search);
         ShowWindow(w);
         if (cmd.Path is not null) w.BrowseTo(cmd.Path);
+        ShowWelcomeOnce();
     }
 
     public MainForm CreateWindow(MainForm? source)
@@ -241,6 +248,9 @@ internal sealed class AnythingApp : ApplicationContext
             try { w.Close(); w.Dispose(); } catch { }
         }
         if (_tray is not null) { _tray.Visible = false; _tray.Dispose(); _tray = null; }
+        _updateTimer?.Dispose();
+        CloseNotifier();
+        _welcome?.Close();
         _messageWindow.UnregisterHotkey();
         _messageWindow.DestroyHandle();
         try { IndexManager.Save(); } catch { }
@@ -309,6 +319,7 @@ internal sealed class AnythingApp : ApplicationContext
             menu.Items.Add(new ToolStripMenuItem("&New Search Window", null, (_, _) => NewWindow(_lastActive)));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("&Options...", null, (_, _) => ShowOptions(null)));
+            menu.Items.Add(new ToolStripMenuItem("", null, (_, _) => OpenReleasePage()) { Name = "update", Visible = false });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("E&xit", null, (_, _) => ExitApp()));
             _tray = new NotifyIcon
@@ -320,6 +331,8 @@ internal sealed class AnythingApp : ApplicationContext
             };
             _tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) ShowSearchWindow(); };
             _tray.MouseDoubleClick += (_, e) => { if (e.Button == MouseButtons.Left) ShowSearchWindow(); };
+            _tray.BalloonTipClicked += (_, _) => OpenReleasePage(); // its only notification: a new version
+            UpdateTrayNotice();
         }
         else if (_tray is not null)
         {
@@ -350,12 +363,157 @@ internal sealed class AnythingApp : ApplicationContext
     /// <summary>Releases the hotkey while Options records a new one, so that pressing it there is seen.</summary>
     public void SuspendHotkey() => _messageWindow.UnregisterHotkey();
 
+    /// <summary>The hotkey was used: true when it opened Rock Preview, false when it hid it.</summary>
+    public event Action<bool>? HotkeyUsed;
+
     internal void OnHotkey()
     {
         IntPtr fg = Native.GetForegroundWindow();
         var active = _windows.FirstOrDefault(x => x.Visible && x.IsHandleCreated && x.Handle == fg);
         if (active is not null) active.Hide();
         else ShowSearchWindow();
+        HotkeyUsed?.Invoke(active is null);
+    }
+
+    /// <summary>
+    /// Once per user, the first time Rock Preview opens a window (normally right after setup): a small window in the
+    /// corner of the screen that shows the hotkey and asks to try it.
+    /// </summary>
+    void ShowWelcomeOnce()
+    {
+        if (IsDemo || Settings.WelcomeShown || _welcome is not null || ActiveHotkey is not { } hotkey) return;
+        Settings.WelcomeShown = true;
+        Settings.Save();
+        Post(() =>
+        {
+            if (_exiting) return;
+            _welcome = new HotkeyWelcomeForm(this, hotkey);
+            _welcome.FormClosed += (_, _) => _welcome = null;
+            _welcome.ShowNear(_lastActive);
+        });
+    }
+
+    // ---- new versions -------------------------------------------------------------------------
+
+    public static Version CurrentVersion => typeof(AnythingApp).Assembly.GetName().Version is { } v
+        ? new Version(v.Major, v.Minor, Math.Max(0, v.Build)) : new Version(1, 0, 0);
+
+    /// <summary>A newer Rock Preview on GitHub (from the latest check), or null.</summary>
+    public Version? NewVersion { get; private set; }
+
+    /// <summary>Whether windows show the new-version bar ("Not now" hides it until Rock Preview starts again).</summary>
+    public bool ShowUpdateNotice => NewVersion is not null && NewVersion != _updateNoticeHidden;
+
+    /// <summary>Tells about a version found earlier right away, then asks GitHub when a day has passed (looked at hourly).</summary>
+    void StartUpdateChecks()
+    {
+        if (IsDemo) return;
+        if (Settings.CheckForUpdates && UpdateCheck.ParseTag(Settings.LatestVersion) is { } known && UpdateCheck.IsNewer(known, CurrentVersion))
+            SetNewVersion(known);
+        _updateTimer = new System.Windows.Forms.Timer { Interval = 20_000 };
+        _updateTimer.Tick += async (_, _) =>
+        {
+            _updateTimer.Interval = 60 * 60 * 1000;
+            await CheckForUpdatesIfDue();
+        };
+        _updateTimer.Start();
+    }
+
+    async Task CheckForUpdatesIfDue()
+    {
+        if (IsDemo || _exiting || !Settings.CheckForUpdates || DateTime.UtcNow - Settings.LastUpdateCheck < TimeSpan.FromDays(1)) return;
+        try { await CheckForUpdatesNow(); }
+        catch (Exception) { /* offline, or GitHub didn't answer: the next hourly look tries again */ }
+    }
+
+    /// <summary>Asks GitHub now for the latest release (null when there is none). Throws when GitHub can't be reached.</summary>
+    public async Task<Version?> CheckForUpdatesNow()
+    {
+        if (_updateCheck is { } running) return await running;
+        var check = UpdateCheck.FetchLatestAsync(Setup.Version, CancellationToken.None);
+        _updateCheck = check;
+        Version? latest;
+        try { latest = await check; }
+        finally { _updateCheck = null; }
+        if (_exiting) return latest;
+        Settings.LastUpdateCheck = DateTime.UtcNow;
+        Settings.LatestVersion = latest?.ToString(3) ?? "";
+        Settings.Save();
+        SetNewVersion(UpdateCheck.IsNewer(latest, CurrentVersion) ? latest : null);
+        return latest;
+    }
+
+    /// <summary>Shows or clears the notice everywhere; a new version also gets one Windows notification.</summary>
+    void SetNewVersion(Version? version)
+    {
+        NewVersion = version;
+        UpdateTrayNotice();
+        foreach (var w in _windows) w.UpdateUpdateBar();
+        if (version is null || Settings.NotifiedVersion == version.ToString(3)) return;
+        Settings.NotifiedVersion = version.ToString(3);
+        Settings.Save();
+        Notify($"Rock Preview {version.ToString(3)} is available", $"You have {CurrentVersion.ToString(3)}.");
+    }
+
+    /// <summary>
+    /// A Windows notification that opens the new version's page when clicked. Should Windows refuse it, a tray balloon
+    /// instead (from a tray icon that is there just for it when the tray icon is turned off).
+    /// </summary>
+    void Notify(string title, string text)
+    {
+        if (!IsDemo && NewVersion is { } v && Toast.TryShow(title, text + " See what's new and get it.", UpdateCheck.ReleasePage(v), "See what's new"))
+            return;
+        text += " Click here to see what's new and get it.";
+        if (_tray is not null)
+        {
+            _tray.ShowBalloonTip(15_000, title, text, ToolTipIcon.Info);
+            return;
+        }
+        CloseNotifier();
+        var icon = new NotifyIcon { Icon = new Icon(AppIcon, SystemInformation.SmallIconSize), Text = Title, Visible = true };
+        icon.BalloonTipClicked += (_, _) => { OpenReleasePage(); Post(CloseNotifier); };
+        icon.BalloonTipClosed += (_, _) => Post(CloseNotifier);
+        _notifier = icon;
+        icon.ShowBalloonTip(15_000, title, text, ToolTipIcon.Info);
+    }
+
+    void CloseNotifier()
+    {
+        if (_notifier is not { } icon) return;
+        _notifier = null;
+        icon.Visible = false;
+        icon.Icon?.Dispose();
+        icon.Dispose();
+    }
+
+    void UpdateTrayNotice()
+    {
+        if (_tray?.ContextMenuStrip?.Items["update"] is not ToolStripMenuItem item) return;
+        item.Visible = NewVersion is not null;
+        if (NewVersion is { } v) item.Text = $"&Get Rock Preview {v.ToString(3)}...";
+    }
+
+    public void HideUpdateNotice()
+    {
+        _updateNoticeHidden = NewVersion;
+        foreach (var w in _windows) w.UpdateUpdateBar();
+    }
+
+    /// <summary>The new version's page on GitHub: what's new, and the installer.</summary>
+    public void OpenReleasePage()
+    {
+        if (NewVersion is { } v) OpenWebPage(UpdateCheck.ReleasePage(v));
+    }
+
+    /// <summary>Opens a page in the default browser, with normal rights even when Rock Preview runs as administrator.</summary>
+    static void OpenWebPage(string url)
+    {
+        try
+        {
+            if (Program.IsElevated()) Process.Start(new ProcessStartInfo("explorer.exe", "\"" + url + "\"") { UseShellExecute = false })?.Dispose();
+            else Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })?.Dispose();
+        }
+        catch (Exception) { }
     }
 
     public void ShowOptions(IWin32Window? owner)
@@ -382,6 +540,11 @@ internal sealed class AnythingApp : ApplicationContext
         UpdateTray();
         RegisterHotkey();
         foreach (var w in _windows) w.ApplyUiSettings();
+        if (!IsDemo)
+        {
+            if (!Settings.CheckForUpdates) { if (NewVersion is not null) SetNewVersion(null); }
+            else _ = CheckForUpdatesIfDue();
+        }
         if (indexChanged) RebuildIndex();
     }
 

@@ -15,6 +15,7 @@ internal sealed class OptionsForm : DialogBase
     readonly CheckBox _showTray = Check("Show &tray icon");
     readonly CheckBox _startWithWindows = Check("&Start Rock Preview when Windows starts");
     readonly CheckBox _replaceExplorer = Check("&Use Rock Preview instead of File Explorer");
+    readonly CheckBox _checkUpdates = Check("Tell me when a new &version is out");
     // UI
     readonly CheckBox _filtersBar = Check("Show &filters bar");
     readonly CheckBox _statusBar = Check("Show &status bar");
@@ -52,8 +53,10 @@ internal sealed class OptionsForm : DialogBase
         AddPage("General", Page(_runInBackground, _showTray, _startWithWindows, _replaceExplorer,
             Hint("Opening folders and drives, Win+E, This PC and File Explorer's taskbar button open Rock Preview. " +
                  "Turn it off any time to get File Explorer back exactly as it was."),
+            _checkUpdates,
+            Hint("Once a day Rock Preview asks GitHub for its latest version. Nothing about you or your files is sent."),
             AdminRow()));
-        _replaceExplorer.Enabled = !app.IsDemo;
+        _replaceExplorer.Enabled = _checkUpdates.Enabled = !app.IsDemo;
         AddPage("UI", Page(_filtersBar, _statusBar, FontRow()));
         AddPage("Search", Page(Caption("Default search options for new searches:"), _matchCase, _wholeWord, _matchPath, _diacritics, _regex));
         AddPage("Indexes", Page(_ntfs, Caption("Volumes to index (none checked = all fixed drives):"), _drives, RebuildRow()));
@@ -214,6 +217,7 @@ internal sealed class OptionsForm : DialogBase
         _showTray.Checked = s.ShowTrayIcon;
         _startWithWindows.Checked = s.StartWithWindows;
         _replaceExplorer.Checked = s.UseInsteadOfExplorer;
+        _checkUpdates.Checked = s.CheckForUpdates;
         _filtersBar.Checked = s.FiltersVisible;
         _statusBar.Checked = s.StatusBarVisible;
         _fontName = s.FontName;
@@ -256,6 +260,7 @@ internal sealed class OptionsForm : DialogBase
         s.ShowTrayIcon = _showTray.Checked;
         s.StartWithWindows = _startWithWindows.Checked;
         s.UseInsteadOfExplorer = _replaceExplorer.Checked;
+        s.CheckForUpdates = _checkUpdates.Checked;
         s.FiltersVisible = _filtersBar.Checked;
         s.StatusBarVisible = _statusBar.Checked;
         s.FontName = _fontName;

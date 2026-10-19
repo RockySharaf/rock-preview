@@ -14,6 +14,8 @@ internal sealed partial class MainForm : Form
     readonly TextBox _search = new();
     readonly ComboBox _filter = new();
     readonly FlowLayoutPanel _infoBar = new();
+    readonly FlowLayoutPanel _updateBar = new();  // a new version is out
+    readonly Label _updateText = new() { AutoSize = true, Margin = new Padding(0, 2, 6, 2) };
     readonly ResultListView _list = new();
     readonly ThumbnailGrid _grid = new();
     readonly SplitContainer _split = new();
@@ -94,6 +96,7 @@ internal sealed partial class MainForm : Form
         BuildNavTree();
         BuildSearchBar();
         BuildInfoBar();
+        BuildUpdateBar();
         BuildList();
         BuildStatusBar();
 
@@ -102,6 +105,7 @@ internal sealed partial class MainForm : Form
         BackColor = ExplorerTheme.Content;
         Controls.Add(_body);
         Controls.Add(_infoBar);
+        Controls.Add(_updateBar);
         Controls.Add(_commands);
         BuildTitleRow();
         Controls.Add(_titleRow);
@@ -189,6 +193,32 @@ internal sealed partial class MainForm : Form
         dismiss.LinkClicked += (_, _) => { _infoDismissed = true; UpdateInfoBar(); };
         _infoBar.Controls.AddRange([label, restart, dismiss]);
         _infoBar.Visible = false;
+    }
+
+    void BuildUpdateBar()
+    {
+        _updateBar.Dock = DockStyle.Top;
+        _updateBar.AutoSize = true;
+        _updateBar.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _updateBar.WrapContents = true;
+        _updateBar.Padding = new Padding(6, 3, 6, 3);
+        _updateBar.BackColor = SystemColors.Info;
+        _updateBar.ForeColor = SystemColors.InfoText;
+        var get = new LinkLabel { AutoSize = true, Text = "See what's new and get it", Margin = new Padding(0, 2, 12, 2) };
+        get.LinkClicked += (_, _) => _app.OpenReleasePage();
+        var later = new LinkLabel { AutoSize = true, Text = "Not now", Margin = new Padding(0, 2, 0, 2) };
+        later.LinkClicked += (_, _) => _app.HideUpdateNotice();
+        _updateBar.Controls.AddRange([_updateText, get, later]);
+        _updateBar.Visible = false;
+        UpdateUpdateBar();
+    }
+
+    /// <summary>Shows the new-version bar while a newer Rock Preview is out (until "Not now").</summary>
+    internal void UpdateUpdateBar()
+    {
+        bool show = _app.ShowUpdateNotice;
+        if (show) _updateText.Text = $"Rock Preview {_app.NewVersion!.ToString(3)} is available. You have {AnythingApp.CurrentVersion.ToString(3)}.";
+        if (_updateBar.Visible != show) _updateBar.Visible = show;
     }
 
     void BuildList()

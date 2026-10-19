@@ -11,7 +11,11 @@ internal static class Shortcuts
     /// Rock Preview's AppUserModelID. The process and its shortcuts carry it, so the taskbar groups every Rock Preview
     /// window under one button, including the File Explorer button it takes over.
     /// </summary>
-    public const string AppId = "RockSharaf.RockPreview";
+    /// <summary>
+    /// Rock Preview's AppUserModelID: its windows, shortcuts and notifications share it. Windows shows the name of the
+    /// Start menu shortcut carrying it ("Rock Preview"), or this ID itself when there is none (the portable copy).
+    /// </summary>
+    public const string AppId = "RockPreview";
 
     const uint SLDF_RUNAS_USER = 0x2000;
 
@@ -63,6 +67,24 @@ internal static class Shortcuts
                 finally { Marshal.FreeCoTaskMem(pidl); }
             }
             return (path.ToString(), args.ToString(), parsing);
+        }
+        catch (Exception) { return null; }
+        finally { if (link != null) Marshal.ReleaseComObject(link); }
+    }
+
+    /// <summary>The AppUserModelID a shortcut carries, or null.</summary>
+    public static string? ReadAppId(string lnk)
+    {
+        object? link = null;
+        try
+        {
+            link = new ShellLinkObject();
+            ((IPersistFile)link).Load(lnk, 0 /* STGM_READ */);
+            if (link is not IPropertyStore store) return null;
+            var key = PKEY_AppUserModel_ID;
+            if (store.GetValue(ref key, out var pv) < 0) return null;
+            try { return pv.vt == 31 /* VT_LPWSTR */ ? Marshal.PtrToStringUni(pv.pointer) : null; }
+            finally { PropVariantClear(ref pv); }
         }
         catch (Exception) { return null; }
         finally { if (link != null) Marshal.ReleaseComObject(link); }
@@ -147,4 +169,5 @@ internal static class Shortcuts
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern int SHGetNameFromIDList(IntPtr pidl, uint sigdnName, out IntPtr ppszName);
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)] static extern void SetCurrentProcessExplicitAppUserModelID(string appId);
+    [DllImport("ole32.dll")] static extern int PropVariantClear(ref PropVariant pv);
 }

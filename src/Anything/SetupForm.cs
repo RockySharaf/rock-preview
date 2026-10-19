@@ -16,6 +16,7 @@ internal sealed class SetupForm : Form
     readonly CheckBox _startup = new() { Text = "Start Rock Preview when Windows starts", AutoSize = true };
     readonly CheckBox _replace = new() { Text = "Use Rock Preview instead of File Explorer (folders, Win+E, This PC, taskbar)", AutoSize = true };
     readonly CheckBox _service = new() { Text = "Instant indexing for all drives (Windows asks for permission once)", AutoSize = true, Checked = true };
+    readonly CheckBox _updates = new() { Text = "Tell me when a new version is out (checks GitHub once a day)", AutoSize = true, Checked = true };
     readonly CheckBox _launch = new() { Text = "Open Rock Preview when setup finishes", AutoSize = true, Checked = true };
     readonly Button _install = new() { Text = "Install", AutoSize = true, FlatStyle = FlatStyle.System };
     readonly Button _cancel = new() { Text = "Cancel", AutoSize = true, FlatStyle = FlatStyle.System };
@@ -48,7 +49,7 @@ internal sealed class SetupForm : Form
         var title = new Label { Text = "Rock Preview", Font = _title, AutoSize = true, Location = new Point(S(100), S(20)), ForeColor = ExplorerTheme.Text };
         var sub = new Label
         {
-            Text = $"Version {Setup.Version}  ·  Search, browse and preview every file instantly",
+            Text = $"Version {Setup.Version}  Â·  Search, browse and preview every file instantly",
             AutoSize = true, Location = new Point(S(102), S(64)), ForeColor = ExplorerTheme.SecondaryText, Font = _small,
         };
         header.Controls.AddRange([logo, title, sub]);
@@ -69,13 +70,13 @@ internal sealed class SetupForm : Form
         _browse.Margin = new Padding(0);
         folderRow.Controls.Add(_folder, 0, 0);
         folderRow.Controls.Add(_browse, 1, 0);
-        foreach (var c in new Control[] { _service, _desktop, _admin, _startup, _replace, _launch }) c.Margin = new Padding(0, S(4), 0, S(4));
+        foreach (var c in new Control[] { _service, _desktop, _admin, _startup, _replace, _updates, _launch }) c.Margin = new Padding(0, S(4), 0, S(4));
         body.Controls.Add(Heading("Install for"));
         body.Controls.Add(scope);
         body.Controls.Add(Heading("Folder"));
         body.Controls.Add(folderRow);
         body.Controls.Add(Heading("Options"));
-        body.Controls.AddRange([_service, _desktop, _admin, _startup, _replace, _launch]);
+        body.Controls.AddRange([_service, _desktop, _admin, _startup, _replace, _updates, _launch]);
 
         // Footer: status / progress on the left, buttons on the right.
         var footer = new Panel { Dock = DockStyle.Bottom, Height = S(64), BackColor = ExplorerTheme.TitleBar };
@@ -111,6 +112,7 @@ internal sealed class SetupForm : Form
         if (_hotkey is not null) _startup.Text = $"Start Rock Preview when Windows starts, so {_hotkey} always opens it";
         _startup.Checked = o.Auto ? o.StartWithWindows : _existing is null || Setup.StartsWithWindows();
         _replace.Checked = o.Auto ? o.ReplaceExplorer : ExplorerReplacement.IsEnabled(); // off unless the user chose it
+        _updates.Checked = o.Auto ? o.CheckForUpdates ?? true : Setup.ChecksForUpdates();
         if (IndexService.IsInstalled())
         {
             _service.Text = IndexService.NeedsUpdate()
@@ -180,6 +182,7 @@ internal sealed class SetupForm : Form
         _o.StartWithWindows = _startup.Checked;
         _o.ReplaceExplorer = _replace.Checked;
         _o.IndexService = _service.Enabled && _service.Checked;
+        _o.CheckForUpdates = _updates.Checked;
         _o.Launch = _launch.Checked;
         if (!Path.IsPathFullyQualified(_o.TargetFolder))
         {
@@ -219,7 +222,7 @@ internal sealed class SetupForm : Form
             SetBusy(false);
             if (_done)
             {
-                foreach (Control c in new Control[] { _justMe, _everyone, _folder, _browse, _service, _desktop, _admin, _startup, _replace }) c.Enabled = false;
+                foreach (Control c in new Control[] { _justMe, _everyone, _folder, _browse, _service, _desktop, _admin, _startup, _replace, _updates }) c.Enabled = false;
                 _launch.Enabled = true;
                 _install.Focus();
             }
@@ -234,7 +237,7 @@ internal sealed class SetupForm : Form
         if (busy) { _status.Location = new Point(_status.Left, 2 * dpi / 96); _status.Height = 22 * dpi / 96; }
         else { _status.Location = new Point(_status.Left, 14 * dpi / 96); _status.Height = 36 * dpi / 96; }
         UseWaitCursor = busy;
-        foreach (Control c in new Control[] { _install, _cancel, _justMe, _everyone, _folder, _browse, _desktop, _admin, _startup, _replace, _launch })
+        foreach (Control c in new Control[] { _install, _cancel, _justMe, _everyone, _folder, _browse, _desktop, _admin, _startup, _replace, _updates, _launch })
             c.Enabled = !busy && (c is not RadioButton && c != _folder && c != _browse || _existing is null);
     }
 

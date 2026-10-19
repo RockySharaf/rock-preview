@@ -181,6 +181,13 @@ internal static class ExplorerTheme
         SetDwm(form.Handle, DWMWA_TEXT_COLOR, ColorTranslator.ToWin32(Text));
     }
 
+    /// <summary>A borderless popup with Windows 11's rounded corners, border and shadow.</summary>
+    public static void ApplyPopupFrame(Form form)
+    {
+        SetDwm(form.Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, Dark ? 1 : 0);
+        SetDwm(form.Handle, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND);
+    }
+
     // ---- menus --------------------------------------------------------------------------------
 
     static readonly HashSet<ToolStripDropDown> s_styled = [];

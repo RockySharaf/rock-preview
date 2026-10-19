@@ -182,6 +182,7 @@ internal sealed partial class MainForm
         [
             Item("&Search Syntax", () => SearchSyntaxForm.ShowSyntax(this), Keys.F1),
             new ToolStripSeparator(),
+            Item("Check for &Updates...", CheckForUpdates),
             Item("&About Rock Preview...", ShowAbout),
         ]);
 
@@ -761,6 +762,53 @@ internal sealed partial class MainForm
         RunSearch(SearchReason.NewQuery);
         UpdateStatus();
         FocusSearch(false);
+    }
+
+    /// <summary>Help &gt; Check for Updates: asks GitHub now and says what it found.</summary>
+    async void CheckForUpdates()
+    {
+        var current = AnythingApp.CurrentVersion;
+        Version? latest;
+        UseWaitCursor = true;
+        try { latest = await _app.CheckForUpdatesNow(); }
+        catch (Exception)
+        {
+            if (IsDisposed) return;
+            TaskDialog.ShowDialog(this, new TaskDialogPage
+            {
+                Caption = "Rock Preview",
+                Heading = "Couldn't check for a new version",
+                Text = "Rock Preview couldn't reach GitHub. Check your internet connection and try again.",
+                Icon = TaskDialogIcon.Warning,
+            });
+            return;
+        }
+        finally { if (!IsDisposed) UseWaitCursor = false; }
+        if (IsDisposed) return;
+        if (UpdateCheck.IsNewer(latest, current))
+        {
+            var get = new TaskDialogButton("See what's new and get it");
+            var page = new TaskDialogPage
+            {
+                Caption = "Rock Preview",
+                Heading = $"Rock Preview {latest!.ToString(3)} is available",
+                Text = $"You have {current.ToString(3)}. Its page on GitHub has what's new and the installer.",
+                Icon = TaskDialogIcon.Information,
+                Buttons = { get, new TaskDialogButton("Not now") },
+                DefaultButton = get,
+            };
+            if (TaskDialog.ShowDialog(this, page) == get) _app.OpenReleasePage();
+        }
+        else
+        {
+            TaskDialog.ShowDialog(this, new TaskDialogPage
+            {
+                Caption = "Rock Preview",
+                Heading = "Rock Preview is up to date",
+                Text = $"You have the latest version, {current.ToString(3)}.",
+                Icon = TaskDialogIcon.Information,
+            });
+        }
     }
 
     void ShowAbout()

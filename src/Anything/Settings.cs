@@ -102,6 +102,18 @@ internal sealed class AppSettings
     /// <summary>Global hotkey that shows or hides Rock Preview from any app; empty = none.</summary>
     public string Hotkey { get; set; } = DefaultHotkey;
     public const string DefaultHotkey = "Alt+X";
+    /// <summary>The window that shows the hotkey and asks to try it was shown (once per user, after installing).</summary>
+    public bool WelcomeShown { get; set; }
+
+    // New versions
+    /// <summary>Ask GitHub at most once a day whether a newer Rock Preview is out (Options &gt; General, Setup).</summary>
+    public bool CheckForUpdates { get; set; } = true;
+    /// <summary>When the last check got an answer (UTC).</summary>
+    public DateTime LastUpdateCheck { get; set; }
+    /// <summary>The latest version that check found, kept so the notice shows at the next start even offline.</summary>
+    public string LatestVersion { get; set; } = "";
+    /// <summary>The version a Windows notification was shown for: once per version.</summary>
+    public string NotifiedVersion { get; set; } = "";
 
     public IndexSettings Index { get; } = new();
     public List<Bookmark> Bookmarks { get; } = [];
@@ -183,6 +195,12 @@ internal sealed class AppSettings
         // "none" = turned off in Options; missing or empty (what versions before Alt+X saved) = the default.
         string hotkey = Str("hotkey", "").Trim();
         s.Hotkey = hotkey.Equals("none", StringComparison.OrdinalIgnoreCase) ? "" : hotkey.Length == 0 ? DefaultHotkey : hotkey;
+        s.WelcomeShown = Bool("welcome_shown", false);
+        s.CheckForUpdates = Bool("check_for_updates", true);
+        s.LastUpdateCheck = DateTime.TryParse(Str("last_update_check", ""), CultureInfo.InvariantCulture,
+            DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var checkedAt) ? checkedAt : default;
+        s.LatestVersion = Str("latest_version", "").Trim();
+        s.NotifiedVersion = Str("notified_version", "").Trim();
         s.StartWithWindows = ReadStartWithWindows();
         s.UseInsteadOfExplorer = ExplorerReplacement.IsEnabled();
 
@@ -263,6 +281,11 @@ internal sealed class AppSettings
         B("run_in_background", RunInBackground);
         B("show_tray_icon", ShowTrayIcon);
         W("hotkey", Hotkey.Length == 0 ? "none" : Hotkey);
+        B("welcome_shown", WelcomeShown);
+        B("check_for_updates", CheckForUpdates);
+        if (LastUpdateCheck != default) W("last_update_check", LastUpdateCheck.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
+        W("latest_version", Clean(LatestVersion));
+        W("notified_version", Clean(NotifiedVersion));
         B("index_ntfs_volumes", Index.IndexNtfsVolumes);
         W("volumes", string.Join('|', Index.Volumes));
         W("folders", string.Join('|', Index.Folders));

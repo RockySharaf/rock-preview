@@ -106,7 +106,8 @@ Rock Preview doesn't patch File Explorer to change that.
 1. Download **`RockPreview-Setup.exe`** from the [latest release](https://github.com/RockySharaf/rock-preview/releases/latest)
    and run it. Choose *Just me* (no administrator needed) or *Everyone on this PC*, plus optional desktop shortcut,
    *Always run as administrator* and *Use Rock Preview instead of File Explorer*. *Start with Windows* is on by
-   default, so `Alt+X` opens Rock Preview at any time.
+   default, so `Alt+X` opens Rock Preview at any time. When setup finishes, a small window in the corner shows the
+   hotkey and asks you to try it: press `Alt+X` to hide Rock Preview, and again to bring it back.
 2. Prefer no install? Download **`RockPreview.exe`** — the portable version runs from any folder or USB stick.
 
 Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall from **Settings › Apps**.
@@ -119,6 +120,13 @@ Both are self-contained: nothing else (not even .NET) needs to be installed. Uni
 > time. After that Rock Preview runs as a normal app (no more prompts) and the service reads the drives for it, like
 > Everything's service. You can also turn it on later from the yellow bar or **Options › General**. Without it,
 > Rock Preview still works: it indexes by scanning folders, which is slower the first time.
+
+### Updates
+
+Rock Preview tells you when a new version is out. Once a day it asks GitHub for its latest release; when there is a
+newer one you get a Windows notification and a bar in the window, both linking to the release page with what's new
+and the installer. Install it over the old version: settings, index and bookmarks stay. **Help › Check for Updates**
+checks right away. Turn the daily check off in Setup or **Tools › Options › General**.
 
 ## Keyboard shortcuts
 
@@ -195,8 +203,13 @@ powershell -ExecutionPolicy Bypass -File build\Publish.ps1
 
 ## Privacy
 
-Rock Preview runs entirely on your PC. It makes no network connections, has no telemetry and no account.
-Its index and settings stay in `%LOCALAPPDATA%\Rock Preview` and `%APPDATA%\Rock Preview`.
+Rock Preview runs entirely on your PC. It has no telemetry and no account. Its index and settings stay in
+`%LOCALAPPDATA%\Rock Preview` and `%APPDATA%\Rock Preview`.
+
+Its only network connection is the check for a new version: at most once a day (and when you choose **Help › Check
+for Updates**) it asks GitHub's API for the latest release of `RockySharaf/rock-preview`. The request carries
+Rock Preview's version number and nothing about you, your PC or your files; GitHub sees it like any web request. It
+downloads nothing by itself. Turn it off in Setup or **Tools › Options › General**.
 
 The optional Rock Preview Service runs from `C:\Program Files\Rock Preview Service` (only administrators can change
 it). It answers only the Windows accounts that installed it, only on this PC, never over the network. It returns file
@@ -206,7 +219,7 @@ Preview removes it.
 ## Roadmap
 
 - Tabs, like Windows 11 Explorer
-- A background service so the instant index doesn't need a UAC prompt at every start
+- Updating in one click, from the new-version notice
 - Code-signed releases and a Microsoft Store listing
 - ARM64 builds
 

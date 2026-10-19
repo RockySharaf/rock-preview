@@ -223,10 +223,24 @@ internal static class ExplorerReplacement
     {
         try
         {
-            if (exe is null || RegisteredExe() is not { } registered || File.Exists(registered)) return;
-            Enable(exe);
+            if (exe is null || RegisteredExe() is not { } registered) return;
+            if (!File.Exists(registered)) Enable(exe);
+            else UpdatePinAppId();
         }
         catch (Exception) { }
+    }
+
+    /// <summary>
+    /// Rock Preview's taskbar button written by an earlier version, under another AppUserModelID: rewritten (same
+    /// target) so its windows group under it again.
+    /// </summary>
+    static void UpdatePinAppId()
+    {
+        using var backup = Registry.CurrentUser.OpenSubKey(BackupKey);
+        if (backup?.GetValue("Taskbar pin name") is not string name) return;
+        string pin = Path.Combine(TaskbarPins, name);
+        if (!File.Exists(pin) || !IsOurShortcut(pin) || Shortcuts.ReadAppId(pin) == Shortcuts.AppId) return;
+        if (Shortcuts.Read(pin) is { } link && File.Exists(link.Path)) Shortcuts.Create(pin, link.Path, "-explorer", PinDescription);
     }
 
     static bool IsOurVerb(string? verb) => string.Equals(verb, Verb, StringComparison.OrdinalIgnoreCase);
