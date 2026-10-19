@@ -32,20 +32,11 @@ internal sealed partial class MainForm : Form
     readonly Dictionary<int, Row> _rows = [];
     readonly TaskScheduler _ui;
 
-    int[] _ids = [];
-    long _resultGeneration;
-    string _resultQuery = "";
-    SearchOptions _resultOptions = new();
-    string? _searchError;
     CancellationTokenSource? _cts;
     int _searchSeq;
     long _lastSearchMs;
     bool _pendingNewQuery;
-    bool _matchCase, _wholeWord, _matchPath, _diacritics, _regex;
-    int _filterIndex;
-    SortKey _sort;
-    bool _desc;
-    bool _loaded, _suppress, _statusPending, _infoDismissed, _staleWhileHidden;
+    bool _loaded, _suppress, _statusPending, _infoDismissed;
     int _colDpi = 96;
     Rectangle? _initialBounds;
     bool _initialMaximized;
@@ -141,6 +132,7 @@ internal sealed partial class MainForm : Form
         _search.PlaceholderText = "Search everything";
         _search.TextChanged += (_, _) =>
         {
+            _tab.SearchText = _search.Text;
             UpdateSearchScope();
             UpdateTitle();
             if (!_suppress) RunSearch(SearchReason.NewQuery);
@@ -259,7 +251,7 @@ internal sealed partial class MainForm : Form
         _body.Panel2.Controls.Add(_split);
         _split.Panel1.Controls.Add(_list);
         _split.Panel1.Controls.Add(_grid);
-        _split.Panel1.Controls.Add(_explorer);
+        AttachTab(_tab);
         _split.Panel2.Controls.Add(_preview);
         _split.Panel2Collapsed = !_app.Settings.PreviewVisible;
         _split.BackColor = ExplorerTheme.Content;
@@ -558,6 +550,7 @@ internal sealed partial class MainForm : Form
     public void OnIndexChanged()
     {
         if (!_loaded) return;
+        foreach (var t in _tabs) if (t != _tab) t.Stale = true; // searched again when they show
         if (!Visible) { _staleWhileHidden = true; return; }
         if (_changeTimer.Enabled) return;
         _changeTimer.Interval = (int)Math.Clamp(_lastSearchMs * 2, 300, 3000);
@@ -598,7 +591,7 @@ internal sealed partial class MainForm : Form
     public void ApplyUiSettings()
     {
         var s = _app.Settings;
-        _explorer.OpenFoldersInPlace = s.UseInsteadOfExplorer; // Windows' "open folder" would start Rock Preview again
+        foreach (var t in _tabs) t.Explorer.OpenFoldersInPlace = s.UseInsteadOfExplorer; // Windows' "open folder" would start Rock Preview again
         _filter.Visible = s.FiltersVisible;
         _status.Visible = s.StatusBarVisible;
         bool old = _suppress;
@@ -672,6 +665,7 @@ internal sealed partial class MainForm : Form
         else if (_search.TextLength > 0) Text = _search.Text + " - " + app;
         else if (ExplorerShown) Text = (_explorer.CurrentDisplayName ?? "") + " - " + app;
         else Text = app;
+        _tabStrip.TabsChanged(); // the tab's name follows the same changes
     }
 
     // ---- columns ----------------------------------------------------------------------------
@@ -787,10 +781,12 @@ internal sealed partial class MainForm : Form
         var index = _app.IndexManager.Index;
         long generation = index.Generation;
         var sw = Stopwatch.StartNew();
+        _searchPending = true;
         Task.Run(() => engine.Search(index, query, options, sort, desc, cts.Token), cts.Token)
             .ContinueWith(t =>
             {
                 if (seq != _searchSeq || IsDisposed) return;
+                _searchPending = false;
                 _lastSearchMs = sw.ElapsedMilliseconds;
                 if (t.IsCanceled) return;
                 SearchResults results;
@@ -837,20 +833,7 @@ internal sealed partial class MainForm : Form
         {
             if (_list.SelectedIndices.Count > 0) _list.SetAllSelected(false);
             _list.VirtualListSize = _ids.Length;
-            int newFocus = -1;
-            if (_ids.Length > 0 && (focusedId >= 0 || selectedIds is not null))
-            {
-                var want = new HashSet<int>(selectedIds ?? []);
-                if (focusedId >= 0) want.Add(focusedId);
-                var found = new Dictionary<int, int>(want.Count);
-                for (int i = 0; i < _ids.Length && found.Count < want.Count; i++)
-                    if (want.Contains(_ids[i])) found[_ids[i]] = i;
-                if (selectedIds is not null)
-                    foreach (int id in selectedIds)
-                        if (found.TryGetValue(id, out int ix)) _list.SetSelected(ix, true);
-                if (focusedId >= 0 && found.TryGetValue(focusedId, out int fx)) newFocus = fx;
-            }
-            if (newFocus >= 0) _list.Items[newFocus].Focused = true;
+            int newFocus = SelectIds(focusedId, selectedIds);
             if (_ids.Length > 0)
             {
                 if (reason == SearchReason.NewQuery) _list.EnsureVisible(0);

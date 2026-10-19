@@ -75,6 +75,15 @@ internal static class ShellInfo
         return idx;
     }
 
+    /// <summary>Icon index in the system image list for a location's item ID list (folders, drives, Home, This PC...), or -1.</summary>
+    public static int GetIconIndex(IntPtr pidl)
+    {
+        if (pidl == IntPtr.Zero) return -1;
+        var info = new Native.SHFILEINFO();
+        IntPtr r = Native.SHGetFileInfo(pidl, 0, ref info, (uint)Marshal.SizeOf(info), Native.SHGFI_PIDL | Native.SHGFI_SYSICONINDEX | Native.SHGFI_SMALLICON);
+        return r == IntPtr.Zero ? -1 : info.iIcon;
+    }
+
     public static string GetTypeName(string extension, bool isDirectory)
     {
         if (isDirectory)

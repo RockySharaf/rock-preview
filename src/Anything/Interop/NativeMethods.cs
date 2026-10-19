@@ -30,6 +30,7 @@ internal static class Native
     public const uint SHGFI_USEFILEATTRIBUTES = 0x000000010;
     public const uint SHGFI_TYPENAME = 0x000000400;
     public const uint SHGFI_SYSICONINDEX = 0x000004000;
+    public const uint SHGFI_PIDL = 0x000000008;
 
     public const uint FILE_ATTRIBUTE_DIRECTORY = 0x10;
     public const uint FILE_ATTRIBUTE_NORMAL = 0x80;
@@ -126,6 +127,10 @@ internal static class Native
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
+
+    /// <summary>SHGetFileInfo for an item ID list (with SHGFI_PIDL): virtual locations such as Home or This PC have no path.</summary>
+    [DllImport("shell32.dll", EntryPoint = "SHGetFileInfoW", CharSet = CharSet.Unicode)]
+    public static extern IntPtr SHGetFileInfo(IntPtr pidl, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     public static extern int SHFileOperation(ref SHFILEOPSTRUCT lpFileOp);

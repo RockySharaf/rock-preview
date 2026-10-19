@@ -3,17 +3,17 @@ using System.Runtime.InteropServices;
 namespace Anything;
 
 /// <summary>
-/// Windows 11 File Explorer's top: a slim strip in the Mica colour (the app icon and title, then empty space to drag
-/// the window by, and the caption buttons), with the address row under it. Windows keeps the frame (rounded corners,
-/// shadow, side and bottom resize borders); the client area takes the caption's place (WM_NCCALCSIZE), and hit testing
-/// (WM_NCHITTEST) gives back what the title bar did: the top resize edge, moving the window from the strip and the
-/// address row's empty space (double-click maximizes, right-click opens the window menu) and the caption buttons,
-/// reported as such so hovering maximize shows Windows 11's snap layouts.
+/// Windows 11 File Explorer's top: the tab strip in the Mica colour (the tabs, then empty space to drag the window by,
+/// and the caption buttons), with the address row under it. Windows keeps the frame (rounded corners, shadow, side and
+/// bottom resize borders); the client area takes the caption's place (WM_NCCALCSIZE), and hit testing (WM_NCHITTEST)
+/// gives back what the title bar did: the top resize edge, moving the window from the strip and the address row's empty
+/// space (double-click maximizes, right-click opens the window menu) and the caption buttons, reported as such so
+/// hovering maximize shows Windows 11's snap layouts.
 /// </summary>
 internal sealed partial class MainForm
 {
     readonly DragPanel _titleRow = new() { Dock = DockStyle.Top };
-    readonly CaptionButtons _captionButtons = new() { Dock = DockStyle.Right };
+    readonly CaptionButtons _captionButtons = new();
 
     const int WM_NCCALCSIZE = 0x83, WM_NCHITTEST = 0x84, WM_NCMOUSEMOVE = 0xA0, WM_NCLBUTTONDOWN = 0xA1, WM_NCLBUTTONUP = 0xA2,
               WM_NCLBUTTONDBLCLK = 0xA3, WM_NCMOUSELEAVE = 0x2A2;
@@ -23,31 +23,34 @@ internal sealed partial class MainForm
     {
         _titleRow.BackColor = ExplorerTheme.TitleBar;
         _captionButtons.BackColor = ExplorerTheme.TitleBar;
+        _titleRow.Controls.Add(_tabStrip);
         _titleRow.Controls.Add(_captionButtons);
         _titleRow.Paint += PaintTitleRow;
-        TextChanged += (_, _) => _titleRow.Invalidate();
+        _titleRow.Resize += (_, _) => PlaceCaptionButtons();
+        BuildTabStrip();
     }
 
-    /// <summary>The app icon and the window's title, at the left of the strip.</summary>
+    /// <summary>The strip's bottom line under the caption buttons (the tab strip draws the rest).</summary>
     void PaintTitleRow(object? sender, PaintEventArgs e)
     {
-        int S(int v) => LogicalToDeviceUnits(v);
-        int icon = S(16), x = S(14);
-        using (var small = new Icon(_app.AppIcon, icon, icon))
-            e.Graphics.DrawIcon(small, new Rectangle(x, (_titleRow.Height - icon) / 2, icon, icon));
-        x += icon + S(10);
-        var text = new Rectangle(x, 0, Math.Max(0, _captionButtons.Left - x - S(12)), _titleRow.Height);
-        using var font = new Font(ExplorerTheme.UiFamily, S(12), FontStyle.Regular, GraphicsUnit.Pixel);
-        TextRenderer.DrawText(e.Graphics, Text, font, text, _captionButtons.Active ? ExplorerTheme.Text : ExplorerTheme.SecondaryText,
-            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        using var pen = new Pen(TabStrip.LineColor);
+        e.Graphics.DrawLine(pen, 0, _titleRow.Height - 1, _titleRow.Width, _titleRow.Height - 1);
     }
 
+    /// <summary>Explorer's tab strip is 40 high plus a 1px line under it; its caption buttons are 46 by 30, at the top.</summary>
     void ApplyTitleRowMetrics()
     {
-        _titleRow.Height = LogicalToDeviceUnits(32);
-        _captionButtons.Width = 3 * LogicalToDeviceUnits(46);
+        _titleRow.Height = LogicalToDeviceUnits(40) + 1;
+        _titleRow.Padding = new Padding(0, 0, 3 * LogicalToDeviceUnits(46), 0); // the tab strip stops at the caption buttons
         _captionButtons.GlyphSize = LogicalToDeviceUnits(10);
         _captionButtons.Maximized = WindowState == FormWindowState.Maximized;
+        PlaceCaptionButtons();
+    }
+
+    void PlaceCaptionButtons()
+    {
+        int w = 3 * LogicalToDeviceUnits(46);
+        _captionButtons.SetBounds(_titleRow.ClientSize.Width - w, 0, w, LogicalToDeviceUnits(30));
     }
 
     /// <summary>Frame thickness at this DPI: how far a maximized window hangs over the screen edge, and the top resize band.</summary>
@@ -141,8 +144,7 @@ internal sealed partial class MainForm
     protected override void OnDeactivate(EventArgs e)
     {
         base.OnDeactivate(e);
-        _captionButtons.Active = false;
-        _titleRow.Invalidate();
+        _captionButtons.Active = _tabStrip.Active = false;
     }
 
     const int SM_CYFRAME = 33, SM_CXPADDEDBORDER = 92;

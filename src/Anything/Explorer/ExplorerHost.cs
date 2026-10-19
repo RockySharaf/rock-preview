@@ -66,6 +66,9 @@ internal sealed class ExplorerHost : Control
     /// <summary>Parsing name that navigates back here later ("C:\x", "::{20D04FE0-...}").</summary>
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string? CurrentParsingName { get; private set; }
+    /// <summary>The location's icon in the system's small image list (shown on its tab), or -1.</summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public int CurrentIconIndex { get; private set; } = -1;
 
     public bool HasLocation => _current != null;
     public bool CanGoBack => _back.Count > 0;
@@ -279,6 +282,7 @@ internal sealed class ExplorerHost : Control
         CurrentEditingName = ShellNative.NameOf(pidl, SIGDN.DesktopAbsoluteEditing) ?? CurrentPath;
         CurrentDisplayName = ShellNative.NameOf(pidl, SIGDN.NormalDisplay) ?? CurrentPath;
         CurrentParsingName = ShellNative.NameOf(pidl, SIGDN.DesktopAbsoluteParsing) ?? CurrentPath;
+        CurrentIconIndex = ShellInfo.GetIconIndex(pidl);
         _lastSelection = null;
         _lastSelectionCount = -1;
         if (_selectAfterNavigate != null) { _selectAttempts = 0; _selectTimer.Start(); }

@@ -158,7 +158,14 @@ internal sealed class AnythingApp : ApplicationContext
         }
         if (cmd.Explorer)
         {
-            // Started in place of File Explorer (Win+E, opening a folder or drive): a new window there, like Explorer's.
+            // Started in place of File Explorer (Win+E, opening a folder or drive): a new tab there in the window used
+            // last, like Explorer's "open folders in a new tab", or (Settings › General) a new window, like Explorer's.
+            if (Settings.OpenFoldersInTabs && RecentWindow() is { } recent)
+            {
+                recent.NewTab(cmd.Path);
+                ShowWindow(recent);
+                return;
+            }
             var ew = CreateWindow(_windows.Count > 0 ? _lastActive : null);
             ew.OpenAsExplorer(cmd.Path);
             ShowWindow(ew);
@@ -172,6 +179,9 @@ internal sealed class AnythingApp : ApplicationContext
         if (cmd.Path is not null) w.BrowseTo(cmd.Path);
         ShowWelcomeOnce();
     }
+
+    /// <summary>The window used last among those on screen (a window closed into the background doesn't count).</summary>
+    MainForm? RecentWindow() => _lastActive is { Visible: true, IsDisposed: false } w ? w : _windows.LastOrDefault(x => x.Visible);
 
     public MainForm CreateWindow(MainForm? source)
     {

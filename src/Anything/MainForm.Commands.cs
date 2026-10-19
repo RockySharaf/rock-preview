@@ -31,6 +31,7 @@ internal sealed partial class MainForm
         var file = new ToolStripMenuItem("&File");
         file.DropDownItems.AddRange(
         [
+            Item("New &Tab", () => NewTab(), Keys.Control | Keys.T),
             Item("&New Search Window", () => _app.NewWindow(this), Keys.Control | Keys.N),
             new ToolStripSeparator(),
             Item("&Open", OpenSelected, display: "Enter"),
@@ -38,7 +39,8 @@ internal sealed partial class MainForm
             new ToolStripSeparator(),
             Item("&Export...", Export, Keys.Control | Keys.S),
             new ToolStripSeparator(),
-            Item("&Close", Close, Keys.Control | Keys.W),
+            Item("&Close Tab", () => CloseTab(_tab), Keys.Control | Keys.W),
+            Item("Close &Window", Close, display: "Alt+F4"),
             Item("E&xit", _app.ExitApp, Keys.Control | Keys.Q),
         ]);
 
@@ -340,6 +342,12 @@ internal sealed partial class MainForm
             case Keys.Control | Keys.NumPad0:
                 Zoom(0);
                 return true;
+            case Keys.Control | Keys.Tab:
+                SwitchTab(1);
+                return true;
+            case Keys.Control | Keys.Shift | Keys.Tab:
+                SwitchTab(-1);
+                return true;
         }
         return base.ProcessCmdKey(ref msg, keyData);
     }
@@ -605,6 +613,8 @@ internal sealed partial class MainForm
             new("Copy &Full Name to Clipboard", CopyFullName),
             new("Copy Pat&h to Clipboard", CopyPath),
         };
+        var folders = paths.Count <= 20 ? paths.Where(Directory.Exists).ToList() : [];
+        if (folders.Count > 0) extras.Insert(1, new("Open in new &tab", () => { foreach (var f in folders) NewTab(f); }));
         bool shown;
         try { shown = ShellContextMenu.Show(owner, paths, screen, extras, RenameFocused); }
         catch { shown = false; }

@@ -99,6 +99,8 @@ internal sealed class AppSettings
     public bool StartWithWindows { get; set; }
     /// <summary>Win+E and opening folders use Rock Preview instead of File Explorer (kept in the registry, not here).</summary>
     public bool UseInsteadOfExplorer { get; set; }
+    /// <summary>Folders opened from Windows (and Win+E) open as a new tab in the window used last; off = a new window each.</summary>
+    public bool OpenFoldersInTabs { get; set; } = true;
     /// <summary>Global hotkey that shows or hides Rock Preview from any app; empty = none.</summary>
     public string Hotkey { get; set; } = DefaultHotkey;
     public const string DefaultHotkey = "Alt+X";
@@ -192,6 +194,7 @@ internal sealed class AppSettings
 
         s.RunInBackground = Bool("run_in_background", true);
         s.ShowTrayIcon = Bool("show_tray_icon", true);
+        s.OpenFoldersInTabs = Bool("open_folders_in_tabs", true);
         // "none" = turned off in Options; missing or empty (what versions before Alt+X saved) = the default.
         string hotkey = Str("hotkey", "").Trim();
         s.Hotkey = hotkey.Equals("none", StringComparison.OrdinalIgnoreCase) ? "" : hotkey.Length == 0 ? DefaultHotkey : hotkey;
@@ -280,6 +283,7 @@ internal sealed class AppSettings
         W("last_export_type", LastExportType);
         B("run_in_background", RunInBackground);
         B("show_tray_icon", ShowTrayIcon);
+        B("open_folders_in_tabs", OpenFoldersInTabs);
         W("hotkey", Hotkey.Length == 0 ? "none" : Hotkey);
         B("welcome_shown", WelcomeShown);
         B("check_for_updates", CheckForUpdates);

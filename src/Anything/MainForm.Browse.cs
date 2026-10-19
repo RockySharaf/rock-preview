@@ -11,7 +11,6 @@ namespace Anything;
 /// </summary>
 internal sealed partial class MainForm
 {
-    readonly ExplorerHost _explorer = new();
     readonly ExplorerToolStrip _commands = new(ExplorerBarKind.Command) { BottomDivider = true }; // Explorer's command bar
     readonly ExplorerToolStrip _nav = new(ExplorerBarKind.Navigation); // back / forward / up / refresh
     readonly ToolStripButton _navBack = new(), _navForward = new(), _navUp = new(), _navRefresh = new();
@@ -31,13 +30,10 @@ internal sealed partial class MainForm
     readonly DragPanel _addressGap = new() { Dock = DockStyle.Right };
     SearchField _searchField = null!;
 
-    bool _browsing;                 // a location is open in the Explorer view
-    bool _zapActive, _zapThumbs;
-    List<string> _zapRoots = [];
-    string _zapLabel = "";
+    // Per tab (see MainForm.Tabs.cs): _browsing (a location is open in the Explorer view), _zapActive and _zapThumbs
+    // ("every file in" and how it shows), _zapRoots, _zapLabel, _selScope (folders that were selected when the search
+    // started) and _useSelScope (the search looks only inside them).
     int _lastThumbSize = 160;       // the thumbnail size the Thumbnails button goes back to
-    List<string> _selScope = [];    // folders that were selected when the search started
-    bool _useSelScope;              // the search looks only inside _selScope
 
     /// <summary>Windows 11 "Home" (falls back to This PC where it doesn't exist).</summary>
     const string HomeLocation = "shell:::{f874310e-b6b7-47dc-bc84-b9e6b38f5903}";
@@ -170,12 +166,6 @@ internal sealed partial class MainForm
             if (_loaded && !_body.Panel1Collapsed)
                 _app.Settings.NavPaneWidth = Math.Max(120, _body.SplitterDistance * 96 / Math.Max(96, DeviceDpi));
         };
-
-        _explorer.Dock = DockStyle.Fill;
-        _explorer.Visible = false;
-        _explorer.Navigated += OnExplorerNavigated;
-        _explorer.SelectionChanged += () => { QueuePreview(); QueueStatusUpdate(); UpdateSearchPlaceholder(); };
-        _explorer.NavigationFailed += msg => _statusRight.Text = msg;
     }
 
     /// <summary>A thin Explorer-style divider in the middle of a splitter (instead of the grey bar).</summary>
@@ -430,8 +420,7 @@ internal sealed partial class MainForm
     protected override void OnActivated(EventArgs e)
     {
         base.OnActivated(e);
-        _captionButtons.Active = true;
-        _titleRow.Invalidate();
+        _captionButtons.Active = _tabStrip.Active = true;
         UpdateCommandStates(); // the clipboard may have changed while we were in the background
     }
 
@@ -565,8 +554,15 @@ internal sealed partial class MainForm
         return true;
     }
 
-    void OnExplorerNavigated()
+    void OnExplorerNavigated(FolderTab tab)
     {
+        if (tab != _tab)
+        {
+            // A tab in the background moved on by itself (its folder was deleted, say): only its name and icon change.
+            tab.Browsing = true;
+            _tabStrip.TabsChanged();
+            return;
+        }
         bool wasBrowsing = _browsing;
         _browsing = true;
         if (_zapActive) ExitZap(rerun: false);
@@ -657,9 +653,6 @@ internal sealed partial class MainForm
     {
         if (!OpenFolder(HomeLocation)) BrowseTo(ThisPcLocation);
     }
-
-    bool _explorerStart;            // opened in place of File Explorer: start at _explorerLocation, or Home
-    string? _explorerLocation;
 
     /// <summary>Before the window shows: open at this folder (null = Home) instead of the last folder.</summary>
     public void OpenAsExplorer(string? location)
@@ -772,8 +765,6 @@ internal sealed partial class MainForm
 
     static string ZapLabel(List<string> roots) =>
         roots.Count == 1 ? (Path.GetFileName(roots[0].TrimEnd('\\')) is { Length: > 0 } n ? n : roots[0]) : $"{roots.Count} folders";
-
-    (SortKey Key, bool Descending)? _sortBeforeZap, _sortFromFolder;
 
     void ToggleZap(bool thumbs)
     {

@@ -55,11 +55,24 @@ like PSD, AI or CorelDRAW that take ages to launch. Ultimate File Explorer fixes
 ### Windows 11 File Explorer, inside
 - Hosts the genuine Explorer file view (`ExplorerBrowser`) and navigation pane (`NamespaceTreeControl`) —
   Home, Gallery, your pinned folders, This PC, Network.
-- A pixel-faithful Windows 11 frame: breadcrumb address bar, command bar with Explorer's own icons
+- A pixel-faithful Windows 11 frame: tabs, breadcrumb address bar, command bar with Explorer's own icons
   (New, Cut, Copy, Paste, Rename, Share, Delete, Sort, View), search box, status bar and view switcher.
   Sizes, colours and behaviour were measured from Explorer itself, not guessed.
 - The real shell **New** menu, the Windows **Share** sheet, Properties, Select all / none / invert.
 - Light and dark themes.
+
+### Tabs
+Like Windows 11 File Explorer, one window holds several folders and searches as tabs along the top:
+
+- **`Ctrl+T`** or **+** opens a tab at Home; **`Ctrl+W`**, the tab's **×** or a middle click closes it (closing the
+  last tab closes the window). **`Ctrl+Tab`** / **`Ctrl+Shift+Tab`** move between tabs, and tabs can be dragged into
+  another order.
+- Each tab keeps its own folder, Back/Forward history, search, results, sort and Thumbnails view. Switching is instant:
+  the other tabs stay open in the background, nothing loads again.
+- Right-click a tab to duplicate it, open it in a new window, or close the others. Right-click folders in the search
+  results to open them in new tabs.
+- Folders opened from Windows (when Ultimate File Explorer replaces File Explorer) and **Win+E** open as a new tab in
+  the window you used last. **Settings › General › Open folders in tabs** turns that off for a new window each time.
 
 ### Preview pane — hundreds of formats
 | Kind | Examples |
@@ -96,9 +109,10 @@ takes over:
 - **File Explorer's taskbar button**: it becomes Ultimate File Explorer's, in the same place, and every Ultimate File Explorer window groups
   under it.
 
-Inside Ultimate File Explorer, folders open in the same window. Untick the box (or uninstall) and File Explorer comes back
-exactly as it was: Ultimate File Explorer keeps a copy of everything it changes and puts it back. Only your own Windows account
-is affected. **⋯ › Open in File Explorer** always opens the real File Explorer.
+Inside Ultimate File Explorer, folders open in the same window, and folders opened from Windows open as a new tab in
+the window you used last (or in a new window: **Settings › General › Open folders in tabs**). Untick the box (or
+uninstall) and File Explorer comes back exactly as it was: Ultimate File Explorer keeps a copy of everything it changes
+and puts it back. Only your own Windows account is affected. **⋯ › Open in File Explorer** always opens the real File Explorer.
 
 One thing Windows doesn't allow: folders **double-clicked on the desktop** still open in File Explorer. The desktop is
 part of File Explorer and opens them itself, without asking the settings other apps use (tested on Windows 11), and
@@ -140,6 +154,9 @@ checks right away. Turn the daily check off in Setup or **Settings › General**
 | Keys | Action |
 |---|---|
 | `Alt+X` | Open or hide Ultimate File Explorer from any app (change it in **Settings › Keyboard**) |
+| `Ctrl+T` | New tab |
+| `Ctrl+W` | Close the tab (the last one closes the window) |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
 | `Ctrl+F` / `Ctrl+E` | Search |
 | `Ctrl+L`, `Alt+D`, `F4` | Type a path in the address bar |
 | `Alt+←` / `Alt+→` / `Alt+↑` | Back / Forward / Up |
@@ -180,7 +197,7 @@ Press `F1` in the app for the complete reference.
 ```text
 RockPreview.exe [search text]        open with a search
 RockPreview.exe -path "D:\Projects"  open a folder
-RockPreview.exe -explorer [-path X]  a new window, like File Explorer (at X, or Home)
+RockPreview.exe -explorer [-path X]  a new tab in the window used last, like File Explorer (at X, or Home)
 RockPreview.exe -admin               restart elevated (instant NTFS index)
 RockPreview.exe -startup             start in the background
 RockPreview.exe -exit                close the running instance
@@ -226,7 +243,6 @@ Preview removes it.
 
 ## Roadmap
 
-- Tabs, like Windows 11 Explorer
 - Updating in one click, from the new-version notice
 - Code-signed releases and a Microsoft Store listing
 - ARM64 builds

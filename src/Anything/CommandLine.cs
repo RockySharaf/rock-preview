@@ -11,7 +11,10 @@ internal sealed class CommandLine
     public bool Admin { get; set; }
     public bool Exit { get; set; }
     public bool Demo { get; set; }
-    /// <summary>-explorer: started in place of File Explorer (Win+E, a folder or drive): a new window, at Path or Home.</summary>
+    /// <summary>
+    /// -explorer: started in place of File Explorer (Win+E, a folder or drive): a new tab in the window used last (or a
+    /// new window, see Settings › General), at Path or Home.
+    /// </summary>
     public bool Explorer { get; set; }
     /// <summary>Internal: this process was relaunched (elevation restart) and must wait for the old instance to exit.</summary>
     public bool Restarted { get; set; }
