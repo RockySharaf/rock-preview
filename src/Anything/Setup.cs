@@ -343,13 +343,15 @@ internal static class Setup
             TryDeleteTree(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), DataFolderName));
         }
 
-        // The program file: delete it now, or (when it is the uninstaller that is running) right after this process
-        // ends. The folder is removed only if that leaves it empty.
+        // The program file: delete it now, or (when it is the uninstaller that is running) once this process has ended:
+        // a helper tries every second for half a minute, since "was uninstalled" stays on screen until it is closed.
+        // The folder is removed only if that leaves it empty.
         string? self = Environment.ProcessPath;
         if (File.Exists(exe) && !SamePath(self ?? "", exe)) TryDelete(exe);
         if (File.Exists(exe))
         {
-            string script = $"/d /c ping -n 3 127.0.0.1 >nul & del /f /q \"{exe}\" & rmdir \"{folder}\"";
+            string script = $"/d /c for /l %i in (1,1,30) do @(ping -n 2 127.0.0.1 >nul & del /f /q \"{exe}\" >nul 2>&1 & " +
+                            $"if not exist \"{exe}\" (rmdir \"{folder}\" >nul 2>&1 & exit /b))";
             Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"), script)
             {
                 UseShellExecute = false,
