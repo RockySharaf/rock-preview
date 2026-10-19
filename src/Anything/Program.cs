@@ -216,9 +216,9 @@ static class Program
     }
 
     /// <summary>The process ID of the running copy (whatever its folder or file name), or null when none runs.</summary>
-    public static int? RunningInstanceId()
+    public static int? RunningInstanceId(bool demo = false)
     {
-        IntPtr hwnd = FindInstance("", 0);
+        IntPtr hwnd = FindInstance(demo ? ".Demo" : "", 0);
         if (hwnd == IntPtr.Zero) return null;
         Native.GetWindowThreadProcessId(hwnd, out uint pid);
         return pid == 0 ? null : (int)pid;

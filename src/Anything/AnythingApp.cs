@@ -349,8 +349,12 @@ internal sealed class AnythingApp : ApplicationContext
         ActiveHotkey = null;
         if (Hotkey.TryParse(Settings.Hotkey, out uint mods, out Keys key))
         {
-            if (_messageWindow.RegisterHotkey(mods, key)) ActiveHotkey = Hotkey.Format(mods, key);
-            else HotkeyError = $"The hotkey {Settings.Hotkey} is already in use by another program. Choose another in Settings › Keyboard.";
+            // The demo leaves the hotkey to a normal copy that is running (it would only take it away from it).
+            bool leaveToRunningCopy = IsDemo && Program.RunningInstanceId() is int other && other != Environment.ProcessId;
+            if (leaveToRunningCopy) { }
+            else if (_messageWindow.RegisterHotkey(mods, key)) ActiveHotkey = Hotkey.Format(mods, key);
+            else if (!HeldByAnotherCopy())
+                HotkeyError = $"The hotkey {Settings.Hotkey} is already in use by another program. Choose another in Settings › Keyboard.";
         }
         if (_tray is not null)
         {
@@ -358,6 +362,17 @@ internal sealed class AnythingApp : ApplicationContext
             if (_tray.ContextMenuStrip?.Items[0] is ToolStripMenuItem show) show.ShortcutKeyDisplayString = ActiveHotkey;
         }
         foreach (var w in _windows) w.UpdateTitle();
+    }
+
+    /// <summary>
+    /// Whether another copy of Ultimate File Explorer (a demo next to the normal one, or the normal one next to a demo)
+    /// is running: then the hotkey is ours already, not another program's, and there is nothing to complain about.
+    /// </summary>
+    bool HeldByAnotherCopy()
+    {
+        int self = Environment.ProcessId;
+        return Program.RunningInstanceId() is int normal && normal != self
+               || Program.RunningInstanceId(demo: true) is int demo && demo != self;
     }
 
     /// <summary>Releases the hotkey while Options records a new one, so that pressing it there is seen.</summary>
