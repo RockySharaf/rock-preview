@@ -431,6 +431,7 @@ internal sealed partial class MainForm
     {
         base.OnActivated(e);
         _captionButtons.Active = true;
+        _titleRow.Invalidate();
         UpdateCommandStates(); // the clipboard may have changed while we were in the background
     }
 
@@ -749,7 +750,9 @@ internal sealed partial class MainForm
             if (ExplorerShown) _explorer.FocusView();
             return;
         }
-        SetViewMode(ThumbnailMode ? 0 : _lastThumbSize);
+        bool on = !ThumbnailMode;
+        SetViewMode(on ? _lastThumbSize : 0);
+        if (on) _app.Tried(GettingStarted.Thumbnails);
         FocusList();
     }
 
@@ -770,10 +773,18 @@ internal sealed partial class MainForm
     static string ZapLabel(List<string> roots) =>
         roots.Count == 1 ? (Path.GetFileName(roots[0].TrimEnd('\\')) is { Length: > 0 } n ? n : roots[0]) : $"{roots.Count} folders";
 
+    (SortKey Key, bool Descending)? _sortBeforeZap, _sortFromFolder;
+
     void ToggleZap(bool thumbs)
     {
         if (_zapActive && _zapThumbs == thumbs) { ExitZap(rerun: true); return; }
-        if (_zapActive) { _zapThumbs = thumbs; ApplyViewMode(); UpdateLeftView(); RunSearch(SearchReason.NewQuery); return; }
+        if (_zapActive)
+        {
+            _zapThumbs = thumbs;
+            if (thumbs) _app.Tried(GettingStarted.Thumbnails);
+            ApplyViewMode(); UpdateLeftView(); RunSearch(SearchReason.NewQuery);
+            return;
+        }
 
         var roots = ZapTargets();
         if (roots.Count == 0)
@@ -784,8 +795,18 @@ internal sealed partial class MainForm
         }
         _zapRoots = roots;
         _zapLabel = ZapLabel(roots);
+        // The files come in the order the folder showed them (newest first in Downloads, say), not the last search's.
+        _sortBeforeZap = (_sort, _desc);
+        _sortFromFolder = ExplorerShown ? _explorer.CurrentSort() : null;
+        if (_sortFromFolder is { } folderSort)
+        {
+            (_sort, _desc) = folderSort;
+            UpdateSortIndicator();
+            SyncMenus();
+        }
         _zapActive = true;
         _zapThumbs = thumbs;
+        if (thumbs) _app.Tried(GettingStarted.Thumbnails);
         _suppress = true;
         _search.Clear(); // the search box now filters inside the zapped files
         _suppress = false;
@@ -801,6 +822,14 @@ internal sealed partial class MainForm
         _zapActive = false;
         _zapThumbs = false;
         _zapRoots = [];
+        // Back to the search's own order, unless it was changed while every file showed.
+        if (_sortFromFolder is { } folderSort && (_sort, _desc) == folderSort && _sortBeforeZap is { } before)
+        {
+            (_sort, _desc) = before;
+            UpdateSortIndicator();
+            SyncMenus();
+        }
+        _sortFromFolder = _sortBeforeZap = null;
         if (rerun)
         {
             _suppress = true;
@@ -815,6 +844,7 @@ internal sealed partial class MainForm
     void ToggleZapDepth()
     {
         _app.Settings.ZapIncludeSubfolders = !_app.Settings.ZapIncludeSubfolders;
+        _app.Tried(GettingStarted.Subfolders);
         SyncMenus();
         if (_zapActive) RunSearch(SearchReason.NewQuery);
         QueueStatusUpdate();

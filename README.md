@@ -79,7 +79,8 @@ Press **Thumbnails** (or `Ctrl+Shift+X`) to see files as pictures:
 
 - **While searching**, your results switch to thumbnails, wherever on the disk they are.
 - **In a folder**, every file in it *and all its subfolders* appears at once, straight from the index — perfect for
-  "show me all the images in this project". Press it again to go back to the folder.
+  "show me all the images in this project". They come in the order the folder showed them (newest first in
+  Downloads, for example); **Sort** changes it. Press Thumbnails again to go back to the folder.
 
 The arrow next to it shows the same files as a list instead (`Ctrl+Shift+Z`), or only the folder's own files.
 
@@ -88,7 +89,7 @@ The arrow next to it shows the same files as a list instead (`Ctrl+Shift+Z`), or
 </div>
 
 ### Use it instead of Windows File Explorer (optional)
-Tick **Options › General › Use Ultimate File Explorer instead of Windows File Explorer** (or the same box in Setup) and Ultimate File Explorer
+Turn on **Settings › General › Use instead of Windows File Explorer** (or the same box in Setup) and Ultimate File Explorer
 takes over:
 
 - opening folders and drives (from the desktop, the Start menu and other apps), **Win+E**, and **This PC**;
@@ -106,10 +107,14 @@ Ultimate File Explorer doesn't patch File Explorer to change that.
 ## Install
 
 1. Download **`RockPreview-Setup.exe`** from the [latest release](https://github.com/RockySharaf/rock-preview/releases/latest)
-   and run it. Choose *Just me* (no administrator needed) or *Everyone on this PC*, plus optional desktop shortcut,
-   *Always run as administrator* and *Use it instead of Windows File Explorer*. *Start with Windows* is on by
-   default, so `Alt+X` opens Ultimate File Explorer at any time. When setup finishes, a small window in the corner shows the
-   hotkey and asks you to try it: press `Alt+X` to hide Ultimate File Explorer, and again to bring it back.
+   and run it. Choose *Just me* (no administrator needed) or *Everyone on this PC*. Instant indexing, a desktop
+   shortcut, *Start with Windows* (so `Alt+X` opens Ultimate File Explorer at any time), *Use it instead of Windows File
+   Explorer* and new-version notices are all on by default; untick any you don't want. When setup finishes, a small
+   window in the corner gives a short tour, ticking off each step as you try it: `Alt+X` to hide Ultimate File Explorer
+   and bring it back, Thumbnails, subfolders, Sort, and choosing which folders to search. **Help › Get Started** shows
+   it again.
+   To update, run the new Setup: it closes the running copy (wherever it runs from), replaces it and keeps your settings
+   and earlier choices.
 2. Prefer no install? Download **`RockPreview.exe`** — the portable version runs from any folder or USB stick.
 
 Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall from **Settings › Apps**.
@@ -120,7 +125,7 @@ Both are self-contained: nothing else (not even .NET) needs to be installed. Uni
 > **Instant indexing, approved once.** Reading a drive's Master File Table needs administrator rights, so Setup offers
 > *Instant indexing for all drives*: it installs the small **Ultimate File Explorer Service** and Windows asks for permission one
 > time. After that Ultimate File Explorer runs as a normal app (no more prompts) and the service reads the drives for it, like
-> Everything's service. You can also turn it on later from the yellow bar or **Options › General**. Without it,
+> Everything's service. You can also turn it on later from the yellow bar or **Settings › Indexing**. Without it,
 > Ultimate File Explorer still works: it indexes by scanning folders, which is slower the first time.
 
 ### Updates
@@ -128,13 +133,13 @@ Both are self-contained: nothing else (not even .NET) needs to be installed. Uni
 Ultimate File Explorer tells you when a new version is out. Once a day it asks GitHub for its latest release; when there is a
 newer one you get a Windows notification and a bar in the window, both linking to the release page with what's new
 and the installer. Install it over the old version: settings, index and bookmarks stay. **Help › Check for Updates**
-checks right away. Turn the daily check off in Setup or **Tools › Options › General**.
+checks right away. Turn the daily check off in Setup or **Settings › General**.
 
 ## Keyboard shortcuts
 
 | Keys | Action |
 |---|---|
-| `Alt+X` | Open or hide Ultimate File Explorer from any app (change it in **Tools › Options › Keyboard**) |
+| `Alt+X` | Open or hide Ultimate File Explorer from any app (change it in **Settings › Keyboard**) |
 | `Ctrl+F` / `Ctrl+E` | Search |
 | `Ctrl+L`, `Alt+D`, `F4` | Type a path in the address bar |
 | `Alt+←` / `Alt+→` / `Alt+↑` | Back / Forward / Up |
@@ -146,6 +151,7 @@ checks right away. Turn the daily check off in Setup or **Tools › Options › 
 | `F5` | Refresh |
 | `Ctrl+I` `Ctrl+B` `Ctrl+U` `Ctrl+R` | Match case / whole word / path / regex |
 | `Ctrl+D` | Bookmark the current search |
+| `Ctrl+P` | Settings (also at the top of the **⋯** menu) |
 | `Ctrl+N` | New window |
 | `Esc` | Clear the search / back to the folder |
 | `F1` | Search syntax help |
@@ -211,7 +217,7 @@ Ultimate File Explorer runs entirely on your PC. It has no telemetry and no acco
 Its only network connection is the check for a new version: at most once a day (and when you choose **Help › Check
 for Updates**) it asks GitHub's API for the latest release of `RockySharaf/rock-preview`. The request carries
 Ultimate File Explorer's version number and nothing about you, your PC or your files; GitHub sees it like any web request. It
-downloads nothing by itself. Turn it off in Setup or **Tools › Options › General**.
+downloads nothing by itself. Turn it off in Setup or **Settings › General**.
 
 The optional Ultimate File Explorer Service runs from `C:\Program Files\Rock Preview Service` (only administrators can change
 it). It answers only the Windows accounts that installed it, only on this PC, never over the network. It returns file

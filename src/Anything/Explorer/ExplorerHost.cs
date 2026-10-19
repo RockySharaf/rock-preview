@@ -500,6 +500,38 @@ internal sealed class ExplorerHost : Control
         SetSort(FMTID_Storage, pid, descending ? -1 : 1);
     }
 
+    static readonly Guid FMTID_ItemDate = new("F7DB74B4-4287-4103-AFBA-F1B13DCD75CF");
+
+    /// <summary>The view's sort (its first column) when the results can sort the same way: name, date, size or type.</summary>
+    public (Anything.Core.SortKey Key, bool Descending)? CurrentSort()
+    {
+        var fv = GetView<IFolderView2>(ShellNative.IID_IFolderView2);
+        if (fv == null) return null;
+        IntPtr buf = Marshal.AllocCoTaskMem(24);
+        try
+        {
+            if (fv.GetSortColumns(buf, 1) != ShellNative.S_OK) return null;
+            var guid = new byte[16];
+            Marshal.Copy(buf, guid, 0, 16);
+            var fmtid = new Guid(guid);
+            int pid = Marshal.ReadInt32(buf, 16);
+            bool descending = Marshal.ReadInt32(buf, 20) < 0;
+            Anything.Core.SortKey? key = fmtid == FMTID_Storage
+                ? pid switch
+                {
+                    10 => Anything.Core.SortKey.Name,
+                    14 => Anything.Core.SortKey.DateModified,
+                    15 => Anything.Core.SortKey.DateCreated,
+                    12 => Anything.Core.SortKey.Size,
+                    4 => Anything.Core.SortKey.Type,
+                    _ => null,
+                }
+                : fmtid == FMTID_ItemDate && pid == 100 ? Anything.Core.SortKey.DateModified : null; // "Date" in photo folders
+            return key is { } k ? (k, descending) : null;
+        }
+        finally { Marshal.FreeCoTaskMem(buf); Marshal.ReleaseComObject(fv); }
+    }
+
     public void SetSortDirection(bool descending)
     {
         var fv = GetView<IFolderView2>(ShellNative.IID_IFolderView2);

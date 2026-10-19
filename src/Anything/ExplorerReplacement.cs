@@ -4,7 +4,7 @@ using Microsoft.Win32;
 namespace Anything;
 
 /// <summary>
-/// Optional (Options › General, Setup): Rock Preview instead of File Explorer. Only this user's registry classes
+/// Optional (Settings › General, Setup): Ultimate File Explorer instead of File Explorer. Only this user's registry classes
 /// change, and whatever was there before is kept under <see cref="BackupKey"/> and put back when this is turned off,
 /// so File Explorer (or another file manager) comes back exactly as it was. What opens Rock Preview:
 /// <list type="bullet">

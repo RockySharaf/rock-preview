@@ -3,11 +3,12 @@ using System.Runtime.InteropServices;
 namespace Anything;
 
 /// <summary>
-/// No title bar, like Windows 11 File Explorer: the address row is the top of the window and holds the caption buttons.
-/// Windows keeps the frame (rounded corners, shadow, side and bottom resize borders); the client area takes the
-/// caption's place (WM_NCCALCSIZE), and hit testing (WM_NCHITTEST) gives back what the title bar did: the top resize
-/// edge, moving the window from the row's empty space (double-click maximizes, right-click opens the window menu) and
-/// the caption buttons, reported as such so hovering maximize shows Windows 11's snap layouts.
+/// Windows 11 File Explorer's top: a slim strip in the Mica colour (the app icon and title, then empty space to drag
+/// the window by, and the caption buttons), with the address row under it. Windows keeps the frame (rounded corners,
+/// shadow, side and bottom resize borders); the client area takes the caption's place (WM_NCCALCSIZE), and hit testing
+/// (WM_NCHITTEST) gives back what the title bar did: the top resize edge, moving the window from the strip and the
+/// address row's empty space (double-click maximizes, right-click opens the window menu) and the caption buttons,
+/// reported as such so hovering maximize shows Windows 11's snap layouts.
 /// </summary>
 internal sealed partial class MainForm
 {
@@ -20,15 +21,30 @@ internal sealed partial class MainForm
 
     void BuildTitleRow()
     {
-        _titleRow.BackColor = ExplorerTheme.Chrome;
-        _searchBar.Dock = DockStyle.Fill;
-        _titleRow.Controls.Add(_searchBar);
+        _titleRow.BackColor = ExplorerTheme.TitleBar;
+        _captionButtons.BackColor = ExplorerTheme.TitleBar;
         _titleRow.Controls.Add(_captionButtons);
+        _titleRow.Paint += PaintTitleRow;
+        TextChanged += (_, _) => _titleRow.Invalidate();
+    }
+
+    /// <summary>The app icon and the window's title, at the left of the strip.</summary>
+    void PaintTitleRow(object? sender, PaintEventArgs e)
+    {
+        int S(int v) => LogicalToDeviceUnits(v);
+        int icon = S(16), x = S(14);
+        using (var small = new Icon(_app.AppIcon, icon, icon))
+            e.Graphics.DrawIcon(small, new Rectangle(x, (_titleRow.Height - icon) / 2, icon, icon));
+        x += icon + S(10);
+        var text = new Rectangle(x, 0, Math.Max(0, _captionButtons.Left - x - S(12)), _titleRow.Height);
+        using var font = new Font(ExplorerTheme.UiFamily, S(12), FontStyle.Regular, GraphicsUnit.Pixel);
+        TextRenderer.DrawText(e.Graphics, Text, font, text, _captionButtons.Active ? ExplorerTheme.Text : ExplorerTheme.SecondaryText,
+            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
     }
 
     void ApplyTitleRowMetrics()
     {
-        _titleRow.Height = LogicalToDeviceUnits(48);
+        _titleRow.Height = LogicalToDeviceUnits(32);
         _captionButtons.Width = 3 * LogicalToDeviceUnits(46);
         _captionButtons.GlyphSize = LogicalToDeviceUnits(10);
         _captionButtons.Maximized = WindowState == FormWindowState.Maximized;
@@ -72,7 +88,7 @@ internal sealed partial class MainForm
                 }
                 int button = _captionButtons.HitTest(_captionButtons.PointToClient(screen));
                 if (button != 0) m.Result = button;
-                else if (pt.Y < _titleRow.Bottom) m.Result = HTCAPTION;
+                else if (pt.Y < _searchBar.Bottom) m.Result = HTCAPTION; // the strip, and the address row's gaps
                 return true;
             }
             case WM_NCMOUSEMOVE:
@@ -126,6 +142,7 @@ internal sealed partial class MainForm
     {
         base.OnDeactivate(e);
         _captionButtons.Active = false;
+        _titleRow.Invalidate();
     }
 
     const int SM_CYFRAME = 33, SM_CXPADDEDBORDER = 92;

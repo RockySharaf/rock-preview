@@ -215,6 +215,15 @@ static class Program
         return true;
     }
 
+    /// <summary>The process ID of the running copy (whatever its folder or file name), or null when none runs.</summary>
+    public static int? RunningInstanceId()
+    {
+        IntPtr hwnd = FindInstance("", 0);
+        if (hwnd == IntPtr.Zero) return null;
+        Native.GetWindowThreadProcessId(hwnd, out uint pid);
+        return pid == 0 ? null : (int)pid;
+    }
+
     /// <summary>Sends the command line to the running instance's message window via WM_COPYDATA.</summary>
     static void Forward(IntPtr hwnd, IReadOnlyList<string> args)
     {

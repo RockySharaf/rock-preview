@@ -1,23 +1,31 @@
 namespace Anything;
 
+/// <summary>The things the getting-started window teaches, ticked off as the user does them.</summary>
+internal enum GettingStarted { Hide, Show, Thumbnails, Subfolders, Sort, Folders }
+
 /// <summary>
-/// Shown once, right after installing (the first time Rock Preview opens a window): the hotkey drawn as keys and two
-/// things to try with it, ticked off as they happen. It sits in the corner of the screen, on top, without taking the
-/// focus, so the hotkey hides and brings back the window the user is looking at.
+/// Shown once, right after installing (the first time a window opens), and from Help › Get started: the hotkey drawn
+/// as keys, then a short checklist (hide and bring back with the hotkey, Thumbnails, subfolders, sorting, choosing
+/// folders) ticked off as each happens. It sits in the corner of the screen, on top, without taking the focus, so the
+/// hotkey hides and brings back the window the user is looking at.
 /// </summary>
-internal sealed class HotkeyWelcomeForm : Form
+internal sealed class GetStartedForm : Form
 {
+    sealed record Step(GettingStarted Kind, string Title, string? Hint);
+
     readonly AnythingApp _app;
     readonly string _hotkey;
     readonly string[] _keys;
+    readonly Step[] _steps;
+    readonly HashSet<GettingStarted> _done = [];
+    readonly Rectangle[] _stepRects;
     readonly Button _gotIt = new() { Text = "Got it", UseVisualStyleBackColor = true };
     readonly System.Windows.Forms.Timer _closeTimer = new() { Interval = 10_000 };
-    bool _hidden, _opened;
-    Font? _heading, _key, _body, _bold;
+    Font? _heading, _key, _body, _bold, _small;
     Icon? _icon;
-    Rectangle _iconRect, _headingRect, _keysRect, _bodyRect, _tryRect, _hideRect, _openRect;
+    Rectangle _iconRect, _headingRect, _keysRect, _bodyRect, _tryRect;
 
-    const int LogicalWidth = 360, Pad = 20;
+    const int LogicalWidth = 420, Pad = 20;
     const char GlyphTodo = '', GlyphDone = ''; // RadioBtnOff, CompletedSolid
     const int WS_EX_TOPMOST = 0x8, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x08000000, CS_DROPSHADOW = 0x20000;
 
@@ -26,12 +34,22 @@ internal sealed class HotkeyWelcomeForm : Form
     static Color KeyEdge => ExplorerTheme.Dark ? Color.FromArgb(0x1E, 0x1E, 0x1E) : Color.FromArgb(0xCC, 0xCC, 0xCC);
     static Color KeyBorder => ExplorerTheme.Dark ? Color.FromArgb(0x50, 0x50, 0x50) : Color.FromArgb(0xD6, 0xD6, 0xD6);
 
-    public HotkeyWelcomeForm(AnythingApp app, string hotkey)
+    public GetStartedForm(AnythingApp app, string hotkey)
     {
         _app = app;
         _hotkey = hotkey;
         _keys = hotkey.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        Text = "Ultimate File Explorer";
+        _steps =
+        [
+            new(GettingStarted.Hide, $"Hide it: press {hotkey}", null),
+            new(GettingStarted.Show, $"Bring it back: press {hotkey} again", null),
+            new(GettingStarted.Thumbnails, "Open a folder, then click Thumbnails", "Every file in it and its subfolders, as pictures"),
+            new(GettingStarted.Subfolders, "Click the arrow next to Thumbnails", "Include subfolders, or show this folder only"),
+            new(GettingStarted.Sort, "Click Sort to put them in order", "For example by date, newest first"),
+            new(GettingStarted.Folders, "Open ... › Settings › Folders", "Search more folders, or leave some out"),
+        ];
+        _stepRects = new Rectangle[_steps.Length];
+        Text = "Get started";
         AccessibleName = $"Ultimate File Explorer is ready. Press {hotkey} in any app to open it, and again to hide it.";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -43,9 +61,11 @@ internal sealed class HotkeyWelcomeForm : Form
         _gotIt.Click += (_, _) => Close();
         Controls.Add(_gotIt);
         _closeTimer.Tick += (_, _) => Close();
-        _app.HotkeyUsed += OnHotkeyUsed;
+        _app.StepTried += OnStepTried;
         Relayout();
     }
+
+    bool AllDone => _done.Count == _steps.Length;
 
     /// <summary>Shows it in the bottom-right corner of the screen <paramref name="anchor"/> is on.</summary>
     public void ShowNear(Form? anchor)
@@ -81,10 +101,10 @@ internal sealed class HotkeyWelcomeForm : Form
         Relayout();
     }
 
-    void OnHotkeyUsed(bool opened)
+    void OnStepTried(GettingStarted step)
     {
-        if (opened) _opened = true; else _hidden = true;
-        if (_hidden && _opened && !_closeTimer.Enabled)
+        if (!_done.Add(step)) return;
+        if (AllDone && !_closeTimer.Enabled)
         {
             _gotIt.Text = "Done";
             _closeTimer.Start();
@@ -95,11 +115,12 @@ internal sealed class HotkeyWelcomeForm : Form
     void Relayout()
     {
         int S(int v) => LogicalToDeviceUnits(v);
-        foreach (var f in new[] { _heading, _key, _body, _bold }) f?.Dispose();
+        foreach (var f in new[] { _heading, _key, _body, _bold, _small }) f?.Dispose();
         _heading = new Font(ExplorerTheme.UiFamily, S(16), FontStyle.Bold, GraphicsUnit.Pixel);
         _key = new Font(ExplorerTheme.UiFamily, S(17), FontStyle.Bold, GraphicsUnit.Pixel);
         _body = new Font(ExplorerTheme.UiFamily, S(13), FontStyle.Regular, GraphicsUnit.Pixel);
         _bold = new Font(ExplorerTheme.UiFamily, S(13), FontStyle.Bold, GraphicsUnit.Pixel);
+        _small = new Font(ExplorerTheme.UiFamily, S(12), FontStyle.Regular, GraphicsUnit.Pixel);
         _icon?.Dispose();
         _icon = new Icon(_app.AppIcon, S(20), S(20));
 
@@ -112,11 +133,14 @@ internal sealed class HotkeyWelcomeForm : Form
         _bodyRect = new Rectangle(pad, y, inner, S(36));
         y += S(36) + S(10);
         _tryRect = new Rectangle(pad, y, inner, S(20));
-        y += S(22);
-        _hideRect = new Rectangle(pad, y, inner, S(26));
-        y += S(26);
-        _openRect = new Rectangle(pad, y, inner, S(26));
-        y += S(26) + S(14);
+        y += S(24);
+        for (int i = 0; i < _steps.Length; i++)
+        {
+            int h = _steps[i].Hint is null ? S(28) : S(44);
+            _stepRects[i] = new Rectangle(pad, y, inner, h);
+            y += h;
+        }
+        y += S(12);
         _gotIt.Font = _body;
         _gotIt.Size = new Size(S(96), S(32));
         _gotIt.Location = new Point(width - pad - _gotIt.Width, y);
@@ -128,18 +152,16 @@ internal sealed class HotkeyWelcomeForm : Form
     {
         var g = e.Graphics;
         g.Clear(BackColor);
-        bool done = _hidden && _opened;
         const TextFormatFlags line = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
         if (_icon is not null) g.DrawIcon(_icon, _iconRect);
-        TextRenderer.DrawText(g, done ? "You've got it!" : "Ultimate File Explorer is ready", _heading, _headingRect, ExplorerTheme.Text, line);
+        TextRenderer.DrawText(g, AllDone ? "You've got it!" : "Ultimate File Explorer is ready", _heading, _headingRect, ExplorerTheme.Text, line);
         DrawKeys(g);
-        string body = done
-            ? $"{_hotkey} works in every app. You can change it in Tools > Options > Keyboard."
+        string body = AllDone
+            ? $"{_hotkey} works in every app. You can change it in Settings › Keyboard."
             : $"Press {_hotkey} in any app to open Ultimate File Explorer, and press it again to hide it.";
         TextRenderer.DrawText(g, body, _body, _bodyRect, ExplorerTheme.SecondaryText, TextFormatFlags.NoPadding | TextFormatFlags.WordBreak);
-        TextRenderer.DrawText(g, "Try it now", _bold, _tryRect, ExplorerTheme.Text, line);
-        DrawStep(g, _hideRect, _hidden, $"Hide it: press {_hotkey}");
-        DrawStep(g, _openRect, _opened, $"Bring it back: press {_hotkey} again");
+        TextRenderer.DrawText(g, "Try these", _bold, _tryRect, ExplorerTheme.Text, line);
+        for (int i = 0; i < _steps.Length; i++) DrawStep(g, _stepRects[i], _steps[i], _done.Contains(_steps[i].Kind));
     }
 
     /// <summary>The hotkey as keyboard keys: Alt + X.</summary>
@@ -172,22 +194,25 @@ internal sealed class HotkeyWelcomeForm : Form
         }
     }
 
-    void DrawStep(Graphics g, Rectangle r, bool done, string text)
+    void DrawStep(Graphics g, Rectangle r, Step step, bool done)
     {
         int S(int v) => LogicalToDeviceUnits(v);
-        ExplorerTheme.DrawGlyph(g, done ? GlyphDone : GlyphTodo, new Rectangle(r.X, r.Y, S(18), r.Height), S(16), done ? Success : ExplorerTheme.SecondaryText);
-        TextRenderer.DrawText(g, text, _body, new Rectangle(r.X + S(28), r.Y, r.Width - S(28), r.Height),
-            done ? ExplorerTheme.SecondaryText : ExplorerTheme.Text,
-            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        const TextFormatFlags line = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
+        int titleHeight = S(20);
+        ExplorerTheme.DrawGlyph(g, done ? GlyphDone : GlyphTodo, new Rectangle(r.X, r.Y + S(2), S(18), titleHeight), S(16), done ? Success : ExplorerTheme.SecondaryText);
+        var text = new Rectangle(r.X + S(28), r.Y + S(2), r.Width - S(28), titleHeight);
+        TextRenderer.DrawText(g, step.Title, _body, text, done ? ExplorerTheme.SecondaryText : ExplorerTheme.Text, line | TextFormatFlags.VerticalCenter);
+        if (step.Hint is { } hint)
+            TextRenderer.DrawText(g, hint, _small, new Rectangle(text.X, text.Bottom, text.Width, S(18)), ExplorerTheme.SecondaryText, line | TextFormatFlags.VerticalCenter);
     }
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
-            _app.HotkeyUsed -= OnHotkeyUsed;
+            _app.StepTried -= OnStepTried;
             _closeTimer.Dispose();
-            foreach (var f in new[] { _heading, _key, _body, _bold }) f?.Dispose();
+            foreach (var f in new[] { _heading, _key, _body, _bold, _small }) f?.Dispose();
             _icon?.Dispose();
         }
         base.Dispose(disposing);

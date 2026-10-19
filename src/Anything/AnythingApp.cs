@@ -20,8 +20,8 @@ internal sealed class AnythingApp : ApplicationContext
     NotifyIcon? _tray;
     NotifyIcon? _notifier; // stands in for the tray icon (turned off) while a notification shows
     FileIndex? _subscribedIndex;
-    OptionsForm? _options;
-    HotkeyWelcomeForm? _welcome;
+    SettingsForm? _settings;
+    GetStartedForm? _welcome;
     System.Windows.Forms.Timer? _updateTimer;
     Task<Version?>? _updateCheck;
     Version? _updateNoticeHidden;
@@ -318,7 +318,7 @@ internal sealed class AnythingApp : ApplicationContext
             menu.Items.Add(show);
             menu.Items.Add(new ToolStripMenuItem("&New Search Window", null, (_, _) => NewWindow(_lastActive)));
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(new ToolStripMenuItem("&Options...", null, (_, _) => ShowOptions(null)));
+            menu.Items.Add(new ToolStripMenuItem("&Settings...", null, (_, _) => ShowSettings(null)));
             menu.Items.Add(new ToolStripMenuItem("", null, (_, _) => OpenReleasePage()) { Name = "update", Visible = false });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("E&xit", null, (_, _) => ExitApp()));
@@ -350,7 +350,7 @@ internal sealed class AnythingApp : ApplicationContext
         if (Hotkey.TryParse(Settings.Hotkey, out uint mods, out Keys key))
         {
             if (_messageWindow.RegisterHotkey(mods, key)) ActiveHotkey = Hotkey.Format(mods, key);
-            else HotkeyError = $"The hotkey {Settings.Hotkey} is already in use by another program. Choose another in Tools > Options > Keyboard.";
+            else HotkeyError = $"The hotkey {Settings.Hotkey} is already in use by another program. Choose another in Settings › Keyboard.";
         }
         if (_tray is not null)
         {
@@ -363,8 +363,10 @@ internal sealed class AnythingApp : ApplicationContext
     /// <summary>Releases the hotkey while Options records a new one, so that pressing it there is seen.</summary>
     public void SuspendHotkey() => _messageWindow.UnregisterHotkey();
 
-    /// <summary>The hotkey was used: true when it opened Rock Preview, false when it hid it.</summary>
-    public event Action<bool>? HotkeyUsed;
+    /// <summary>Something the getting-started window teaches was just done.</summary>
+    public event Action<GettingStarted>? StepTried;
+
+    public void Tried(GettingStarted step) => StepTried?.Invoke(step);
 
     internal void OnHotkey()
     {
@@ -372,25 +374,29 @@ internal sealed class AnythingApp : ApplicationContext
         var active = _windows.FirstOrDefault(x => x.Visible && x.IsHandleCreated && x.Handle == fg);
         if (active is not null) active.Hide();
         else ShowSearchWindow();
-        HotkeyUsed?.Invoke(active is null);
+        Tried(active is null ? GettingStarted.Show : GettingStarted.Hide);
     }
 
     /// <summary>
-    /// Once per user, the first time Rock Preview opens a window (normally right after setup): a small window in the
-    /// corner of the screen that shows the hotkey and asks to try it.
+    /// Once per user, the first time a window opens (normally right after setup): the getting-started window in the
+    /// corner of the screen.
     /// </summary>
     void ShowWelcomeOnce()
     {
-        if (IsDemo || Settings.WelcomeShown || _welcome is not null || ActiveHotkey is not { } hotkey) return;
+        if (IsDemo || Settings.WelcomeShown || _welcome is not null || ActiveHotkey is null) return;
         Settings.WelcomeShown = true;
         Settings.Save();
-        Post(() =>
-        {
-            if (_exiting) return;
-            _welcome = new HotkeyWelcomeForm(this, hotkey);
-            _welcome.FormClosed += (_, _) => _welcome = null;
-            _welcome.ShowNear(_lastActive);
-        });
+        Post(ShowGetStarted);
+    }
+
+    /// <summary>The getting-started window (Help › Get Started, Settings › About).</summary>
+    public void ShowGetStarted()
+    {
+        if (_exiting) return;
+        if (_welcome is { IsDisposed: false }) return;
+        _welcome = new GetStartedForm(this, ActiveHotkey ?? (Settings.Hotkey.Length > 0 ? Settings.Hotkey : "the hotkey"));
+        _welcome.FormClosed += (_, _) => _welcome = null;
+        _welcome.ShowNear(_lastActive);
     }
 
     // ---- new versions -------------------------------------------------------------------------
@@ -505,8 +511,53 @@ internal sealed class AnythingApp : ApplicationContext
         if (NewVersion is { } v) OpenWebPage(UpdateCheck.ReleasePage(v));
     }
 
+    /// <summary>Help › Check for Updates, Settings › About: asks GitHub now and says what it found.</summary>
+    public async void CheckForUpdatesInteractive(IWin32Window? owner)
+    {
+        var current = CurrentVersion;
+        Version? latest;
+        try { latest = await CheckForUpdatesNow(); }
+        catch (Exception)
+        {
+            if (owner is Control { IsDisposed: true }) return;
+            TaskDialog.ShowDialog(owner!, new TaskDialogPage
+            {
+                Caption = Title,
+                Heading = "Couldn't check for a new version",
+                Text = "Ultimate File Explorer couldn't reach GitHub. Check your internet connection and try again.",
+                Icon = TaskDialogIcon.Warning,
+            });
+            return;
+        }
+        if (owner is Control { IsDisposed: true }) return;
+        if (UpdateCheck.IsNewer(latest, current))
+        {
+            var get = new TaskDialogButton("See what's new and get it");
+            var page = new TaskDialogPage
+            {
+                Caption = Title,
+                Heading = $"Ultimate File Explorer {latest!.ToString(3)} is available",
+                Text = $"You have {current.ToString(3)}. Its page on GitHub has what's new and the installer.",
+                Icon = TaskDialogIcon.Information,
+                Buttons = { get, new TaskDialogButton("Not now") },
+                DefaultButton = get,
+            };
+            if (TaskDialog.ShowDialog(owner!, page) == get) OpenReleasePage();
+        }
+        else
+        {
+            TaskDialog.ShowDialog(owner!, new TaskDialogPage
+            {
+                Caption = Title,
+                Heading = "Ultimate File Explorer is up to date",
+                Text = $"You have the latest version, {current.ToString(3)}.",
+                Icon = TaskDialogIcon.Information,
+            });
+        }
+    }
+
     /// <summary>Opens a page in the default browser, with normal rights even when Rock Preview runs as administrator.</summary>
-    static void OpenWebPage(string url)
+    internal static void OpenWebPage(string url)
     {
         try
         {
@@ -516,16 +567,17 @@ internal sealed class AnythingApp : ApplicationContext
         catch (Exception) { }
     }
 
-    public void ShowOptions(IWin32Window? owner)
+    /// <summary>The Settings window, at <paramref name="section"/> (General when null).</summary>
+    public void ShowSettings(IWin32Window? owner, string? section = null)
     {
-        if (_options is { IsDisposed: false })
+        if (_settings is { IsDisposed: false })
         {
-            _options.Activate();
+            _settings.Activate();
             return;
         }
-        _options = new OptionsForm(this);
-        try { _options.ShowDialog(owner); }
-        finally { _options.Dispose(); _options = null; }
+        _settings = new SettingsForm(this, section);
+        try { _settings.ShowDialog(owner); }
+        finally { _settings.Dispose(); _settings = null; }
     }
 
     /// <summary>Applies changed settings everywhere. Index settings changes rebuild the index.</summary>

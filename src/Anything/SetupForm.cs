@@ -12,7 +12,7 @@ internal sealed class SetupForm : Form
     readonly TextBox _folder = new();
     readonly Button _browse = new() { Text = "Browse...", AutoSize = true, FlatStyle = FlatStyle.System };
     readonly CheckBox _desktop = new() { Text = "Add a desktop shortcut", AutoSize = true };
-    readonly CheckBox _admin = new() { Text = "Always run as administrator (instant NTFS indexing; Windows asks each time)", AutoSize = true };
+    readonly CheckBox _admin = new() { Text = "Always run as administrator (not needed with instant indexing; Windows asks each time)", AutoSize = true };
     readonly CheckBox _startup = new() { Text = "Start Ultimate File Explorer when Windows starts", AutoSize = true };
     readonly CheckBox _replace = new() { Text = "Use it instead of Windows File Explorer (folders, Win+E, This PC, taskbar)", AutoSize = true };
     readonly CheckBox _service = new() { Text = "Instant indexing for all drives (Windows asks for permission once)", AutoSize = true, Checked = true };
@@ -106,12 +106,14 @@ internal sealed class SetupForm : Form
         bool allUsers = _existing?.AllUsers ?? o.AllUsers;
         (allUsers ? _everyone : _justMe).Checked = true;
         _folder.Text = _existing?.Folder ?? o.TargetFolder;
-        _desktop.Checked = o.DesktopShortcut || ShortcutExists(desktop: true, allUsers);
+        // A new install gets everything that makes it work best; an update keeps the choices made before. Running as
+        // administrator stays off: the instant-indexing service makes it unnecessary, and it would ask at every start.
+        _desktop.Checked = o.Auto ? o.DesktopShortcut : _existing is null || ShortcutExists(desktop: true, allUsers);
         _admin.Checked = o.RunAsAdmin;
         // The hotkey only works while Rock Preview runs, so a new install starts with Windows unless unticked.
         if (_hotkey is not null) _startup.Text = $"Start Ultimate File Explorer when Windows starts, so {_hotkey} always opens it";
         _startup.Checked = o.Auto ? o.StartWithWindows : _existing is null || Setup.StartsWithWindows();
-        _replace.Checked = o.Auto ? o.ReplaceExplorer : ExplorerReplacement.IsEnabled(); // off unless the user chose it
+        _replace.Checked = o.Auto ? o.ReplaceExplorer : _existing is null || ExplorerReplacement.IsEnabled();
         _updates.Checked = o.Auto ? o.CheckForUpdates ?? true : Setup.ChecksForUpdates();
         if (IndexService.IsInstalled())
         {
@@ -164,7 +166,8 @@ internal sealed class SetupForm : Form
         var folder = desktop
             ? (allUsers ? Environment.SpecialFolder.CommonDesktopDirectory : Environment.SpecialFolder.DesktopDirectory)
             : (allUsers ? Environment.SpecialFolder.CommonPrograms : Environment.SpecialFolder.Programs);
-        return File.Exists(Path.Combine(Environment.GetFolderPath(folder), Setup.AppName + ".lnk"));
+        return File.Exists(Path.Combine(Environment.GetFolderPath(folder), Setup.AppName + ".lnk"))
+            || File.Exists(Path.Combine(Environment.GetFolderPath(folder), Setup.OldShortcutName + ".lnk"));
     }
 
     async Task OnInstallClick()

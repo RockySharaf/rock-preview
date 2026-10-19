@@ -9,7 +9,7 @@ internal sealed partial class MainForm : Form
     enum SearchReason { NewQuery, Resort, IndexChanged, Refresh }
 
     readonly AnythingApp _app;
-    readonly DragPanel _searchBar = new();      // Explorer's address row (also the top of the window: no title bar)
+    readonly DragPanel _searchBar = new();      // Explorer's address row (its empty space drags the window too)
     readonly Font _uiFont = ExplorerTheme.UiFont(); // 14px Segoe UI Variable, like Explorer's XAML chrome
     readonly TextBox _search = new();
     readonly ComboBox _filter = new();
@@ -107,6 +107,7 @@ internal sealed partial class MainForm : Form
         Controls.Add(_infoBar);
         Controls.Add(_updateBar);
         Controls.Add(_commands);
+        Controls.Add(_searchBar);
         BuildTitleRow();
         Controls.Add(_titleRow);
         Controls.Add(_status);
@@ -746,6 +747,7 @@ internal sealed partial class MainForm : Form
     {
         _sort = key;
         _desc = descending;
+        _app.Tried(GettingStarted.Sort);
         UpdateSortIndicator();
         SyncMenus();
         RunSearch(SearchReason.Resort);

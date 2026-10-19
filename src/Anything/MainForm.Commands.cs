@@ -166,7 +166,7 @@ internal sealed partial class MainForm
         _miRunAsAdmin = Item("Run as &Administrator...", _app.RestartElevated);
         tools.DropDownItems.AddRange(
         [
-            Item("&Options...", () => _app.ShowOptions(this), Keys.Control | Keys.P),
+            Item("&Settings...", () => _app.ShowSettings(this), Keys.Control | Keys.P),
             new ToolStripSeparator(),
             Item("Re&build Index", () =>
             {
@@ -182,27 +182,29 @@ internal sealed partial class MainForm
         [
             Item("&Search Syntax", () => SearchSyntaxForm.ShowSyntax(this), Keys.F1),
             new ToolStripSeparator(),
-            Item("Check for &Updates...", CheckForUpdates),
+            Item("&Get Started", _app.ShowGetStarted),
+            Item("Check for &Updates...", () => _app.CheckForUpdatesInteractive(this)),
             Item("&About Ultimate File Explorer...", ShowAbout),
         ]);
 
-        // Explorer has no menu bar: its "See more" (...) menu holds the selection commands, Properties and Options;
-        // Rock Preview's full menus follow underneath.
+        // Explorer has no menu bar: its "See more" (...) menu holds the selection commands and Properties. Settings come
+        // first here, then the full menus underneath.
         var selectAll = Item("Select all", SelectAllAny, display: "Ctrl+A");
         var selectNone = Item("Select none", SelectNoneAny);
         var invert = Item("Invert selection", InvertSelectionAny);
         var properties = Item("Properties", PropertiesAny, display: "Alt+Enter");
-        var options = Item("Options", () => _app.ShowOptions(this), display: "Ctrl+P");
+        var settings = Item("Settings", () => _app.ShowSettings(this), display: "Ctrl+P");
         // The way to the real File Explorer (useful when Rock Preview replaces it): this location, in a File Explorer window.
         var inExplorer = Item("Open in File Explorer", OpenInFileExplorer);
         selectAll.Image = MenuIcon(ExplorerIcons.SelectAll);
         selectNone.Image = MenuIcon(ExplorerIcons.SelectNone);
         invert.Image = MenuIcon(ExplorerIcons.InvertSelection);
         properties.Image = MenuIcon(ExplorerIcons.Properties);
-        options.Image = MenuIcon(ExplorerIcons.Options);
+        settings.Image = MenuIcon(ExplorerIcons.Options);
+        settings.Font = new Font(settings.Font, FontStyle.Bold);
         inExplorer.Image = MenuIcon(ExplorerIcons.OpenNewWindow);
         _miFiltersBar.Visible = false; // the filter now lives in Search options
-        _cmdMore.DropDownItems.AddRange([selectAll, selectNone, invert, new ToolStripSeparator(), properties, inExplorer, options, new ToolStripSeparator(),
+        _cmdMore.DropDownItems.AddRange([settings, new ToolStripSeparator(), selectAll, selectNone, invert, new ToolStripSeparator(), properties, inExplorer, new ToolStripSeparator(),
                                          file, edit, view, browse, search, _miBookmarks, tools, help]);
         SyncMenus();
     }
@@ -762,53 +764,6 @@ internal sealed partial class MainForm
         RunSearch(SearchReason.NewQuery);
         UpdateStatus();
         FocusSearch(false);
-    }
-
-    /// <summary>Help &gt; Check for Updates: asks GitHub now and says what it found.</summary>
-    async void CheckForUpdates()
-    {
-        var current = AnythingApp.CurrentVersion;
-        Version? latest;
-        UseWaitCursor = true;
-        try { latest = await _app.CheckForUpdatesNow(); }
-        catch (Exception)
-        {
-            if (IsDisposed) return;
-            TaskDialog.ShowDialog(this, new TaskDialogPage
-            {
-                Caption = "Ultimate File Explorer",
-                Heading = "Couldn't check for a new version",
-                Text = "Ultimate File Explorer couldn't reach GitHub. Check your internet connection and try again.",
-                Icon = TaskDialogIcon.Warning,
-            });
-            return;
-        }
-        finally { if (!IsDisposed) UseWaitCursor = false; }
-        if (IsDisposed) return;
-        if (UpdateCheck.IsNewer(latest, current))
-        {
-            var get = new TaskDialogButton("See what's new and get it");
-            var page = new TaskDialogPage
-            {
-                Caption = "Ultimate File Explorer",
-                Heading = $"Ultimate File Explorer {latest!.ToString(3)} is available",
-                Text = $"You have {current.ToString(3)}. Its page on GitHub has what's new and the installer.",
-                Icon = TaskDialogIcon.Information,
-                Buttons = { get, new TaskDialogButton("Not now") },
-                DefaultButton = get,
-            };
-            if (TaskDialog.ShowDialog(this, page) == get) _app.OpenReleasePage();
-        }
-        else
-        {
-            TaskDialog.ShowDialog(this, new TaskDialogPage
-            {
-                Caption = "Ultimate File Explorer",
-                Heading = "Ultimate File Explorer is up to date",
-                Text = $"You have the latest version, {current.ToString(3)}.",
-                Icon = TaskDialogIcon.Information,
-            });
-        }
     }
 
     void ShowAbout()

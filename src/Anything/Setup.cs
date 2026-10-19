@@ -20,7 +20,7 @@ internal static class Setup
     /// <summary>The settings and index folders keep the earlier name, so updating keeps them.</summary>
     public const string DataFolderName = "Rock Preview";
     /// <summary>Shortcuts named before the rename; replaced by ones named AppName.</summary>
-    const string OldShortcutName = "Rock Preview";
+    public const string OldShortcutName = "Rock Preview";
     public const string ExeName = "RockPreview.exe";
     const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\RockPreview";
     const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -151,7 +151,7 @@ internal static class Setup
         string folder = o.TargetFolder, exe = o.TargetExe;
 
         status("Closing Ultimate File Explorer...");
-        CloseRunning(exe, o.Quiet);
+        CloseRunning(exe, o.Quiet, anyFolder: true);
 
         status("Copying Ultimate File Explorer...");
         Directory.CreateDirectory(folder);
@@ -300,7 +300,7 @@ internal static class Setup
     static void Uninstall(string folder, bool allUsers, bool removeData, bool quiet)
     {
         string exe = Path.Combine(folder, ExeName);
-        CloseRunning(exe, quiet);
+        CloseRunning(exe, quiet, anyFolder: false);
 
         foreach (var special in allUsers
                      ? new[] { Environment.SpecialFolder.CommonPrograms, Environment.SpecialFolder.CommonDesktopDirectory, Environment.SpecialFolder.Programs, Environment.SpecialFolder.DesktopDirectory }
@@ -367,14 +367,26 @@ internal static class Setup
     // ---- helpers --------------------------------------------------------------------------------
 
     /// <summary>
-    /// Asks a Rock Preview started from <paramref name="exe"/> to save and exit (it accepts that even when elevated),
-    /// then waits. Copies started from elsewhere (e.g. a portable copy) are left alone.
+    /// Asks the running copy to save and exit (it accepts that even when elevated), then waits; a quiet install ends a
+    /// copy that doesn't. Installing closes the copy that runs from any folder (a portable or older copy): only one runs
+    /// at a time, so one left open would answer instead of the new one. Uninstalling (<paramref name="anyFolder"/>
+    /// false) closes only a copy started from <paramref name="exe"/>. A copy counts as closed when its process has ended,
+    /// not when its window goes (it still saves the index then, and holds the single-instance mutex).
     /// </summary>
-    static void CloseRunning(string exe, bool force)
+    static void CloseRunning(string exe, bool force, bool anyFolder)
     {
         int self = Environment.ProcessId;
-        List<Process> Running() => Process.GetProcessesByName(Path.GetFileNameWithoutExtension(ExeName))
-            .Where(p => p.Id != self && SamePath(ImagePath(p) ?? "", exe)).ToList();
+        var seen = new Dictionary<int, Process>();
+        List<Process> Running()
+        {
+            foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(ExeName)))
+                if (p.Id != self && SamePath(ImagePath(p) ?? "", exe)) seen.TryAdd(p.Id, p);
+            if (anyFolder && Program.RunningInstanceId() is int pid && pid != self && !seen.ContainsKey(pid))
+            {
+                try { seen.Add(pid, Process.GetProcessById(pid)); } catch (ArgumentException) { /* just exited */ }
+            }
+            return seen.Values.Where(IsAlive).ToList();
+        }
         var running = Running();
         if (running.Count == 0) return;
         Program.ForwardToRunning(["-exit"]);
@@ -387,6 +399,17 @@ internal static class Setup
         }
         if (!force) throw new InvalidOperationException("Ultimate File Explorer is still running. Close it and try again.");
         foreach (var p in running) { try { p.Kill(); p.WaitForExit(5000); } catch (Exception) { } }
+    }
+
+    static bool IsAlive(Process p)
+    {
+        try { return !p.HasExited; }
+        catch (Exception)
+        {
+            // No right to wait on it (e.g. it runs as administrator): it is alive while its process ID still exists.
+            try { using var again = Process.GetProcessById(p.Id); return true; }
+            catch (ArgumentException) { return false; }
+        }
     }
 
     static string? ImagePath(Process p)
