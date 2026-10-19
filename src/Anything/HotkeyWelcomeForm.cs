@@ -31,8 +31,8 @@ internal sealed class HotkeyWelcomeForm : Form
         _app = app;
         _hotkey = hotkey;
         _keys = hotkey.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        Text = "Rock Preview";
-        AccessibleName = $"Rock Preview is ready. Press {hotkey} in any app to open it, and again to hide it.";
+        Text = "Ultimate File Explorer";
+        AccessibleName = $"Ultimate File Explorer is ready. Press {hotkey} in any app to open it, and again to hide it.";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
@@ -131,14 +131,14 @@ internal sealed class HotkeyWelcomeForm : Form
         bool done = _hidden && _opened;
         const TextFormatFlags line = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
         if (_icon is not null) g.DrawIcon(_icon, _iconRect);
-        TextRenderer.DrawText(g, done ? "You've got it!" : "Rock Preview is ready", _heading, _headingRect, ExplorerTheme.Text, line);
+        TextRenderer.DrawText(g, done ? "You've got it!" : "Ultimate File Explorer is ready", _heading, _headingRect, ExplorerTheme.Text, line);
         DrawKeys(g);
         string body = done
-            ? $"{_hotkey} works in every app while Rock Preview runs. You can change it in Tools > Options > Keyboard."
-            : $"Press {_hotkey} in any app to open Rock Preview, and press it again to hide it.";
+            ? $"{_hotkey} works in every app. You can change it in Tools > Options > Keyboard."
+            : $"Press {_hotkey} in any app to open Ultimate File Explorer, and press it again to hide it.";
         TextRenderer.DrawText(g, body, _body, _bodyRect, ExplorerTheme.SecondaryText, TextFormatFlags.NoPadding | TextFormatFlags.WordBreak);
         TextRenderer.DrawText(g, "Try it now", _bold, _tryRect, ExplorerTheme.Text, line);
-        DrawStep(g, _hideRect, _hidden, $"Hide Rock Preview: press {_hotkey}");
+        DrawStep(g, _hideRect, _hidden, $"Hide it: press {_hotkey}");
         DrawStep(g, _openRect, _opened, $"Bring it back: press {_hotkey} again");
     }
 

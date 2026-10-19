@@ -13,8 +13,8 @@ internal sealed class OptionsForm : DialogBase
     // General
     readonly CheckBox _runInBackground = Check("&Run in background (keep running after the last window closes)");
     readonly CheckBox _showTray = Check("Show &tray icon");
-    readonly CheckBox _startWithWindows = Check("&Start Rock Preview when Windows starts");
-    readonly CheckBox _replaceExplorer = Check("&Use Rock Preview instead of File Explorer");
+    readonly CheckBox _startWithWindows = Check("&Start Ultimate File Explorer when Windows starts");
+    readonly CheckBox _replaceExplorer = Check("&Use Ultimate File Explorer instead of Windows File Explorer");
     readonly CheckBox _checkUpdates = Check("Tell me when a new &version is out");
     // UI
     readonly CheckBox _filtersBar = Check("Show &filters bar");
@@ -42,7 +42,7 @@ internal sealed class OptionsForm : DialogBase
     readonly HotkeyBox _hotkey = new() { Width = 220 };
     readonly CheckBox _hotkeyWin = Check("&Win key");
 
-    public OptionsForm(AnythingApp app) : base(app.IsDemo ? "Rock Preview Options (Demo)" : "Rock Preview Options")
+    public OptionsForm(AnythingApp app) : base(app.IsDemo ? "Ultimate File Explorer Options (Demo)" : "Ultimate File Explorer Options")
     {
         _app = app;
         SuspendLayout();
@@ -51,10 +51,10 @@ internal sealed class OptionsForm : DialogBase
         StartPosition = FormStartPosition.CenterScreen;
 
         AddPage("General", Page(_runInBackground, _showTray, _startWithWindows, _replaceExplorer,
-            Hint("Opening folders and drives, Win+E, This PC and File Explorer's taskbar button open Rock Preview. " +
+            Hint("Opening folders and drives, Win+E, This PC and File Explorer's taskbar button open Ultimate File Explorer. " +
                  "Turn it off any time to get File Explorer back exactly as it was."),
             _checkUpdates,
-            Hint("Once a day Rock Preview asks GitHub for its latest version. Nothing about you or your files is sent."),
+            Hint("Once a day Ultimate File Explorer asks GitHub for its latest version. Nothing about you or your files is sent."),
             AdminRow()));
         _replaceExplorer.Enabled = _checkUpdates.Enabled = !app.IsDemo;
         AddPage("UI", Page(_filtersBar, _statusBar, FontRow()));
@@ -63,7 +63,7 @@ internal sealed class OptionsForm : DialogBase
         AddPage("Folders", Page(Caption("Additional folders to index (scanned and monitored):"), _folders, ListButtons(_folders, "Add folder to index")));
         AddPage("Exclude", Page(_exHidden, _exSystem, Caption("Exclude folders:"), _exFolders, ListButtons(_exFolders, "Exclude folder"),
             Caption("Exclude files (wildcards, separated by semicolons, e.g. *.tmp;~$*):"), _exPatterns));
-        AddPage("Keyboard", Page(Caption("Hotkey that opens or hides Rock Preview from any app, while it runs or sits in the tray. " +
+        AddPage("Keyboard", Page(Caption("Hotkey that opens or hides Ultimate File Explorer from any app, while it runs or sits in the tray. " +
                 "Click the box and press a key combination; Backspace turns it off."),
             HotkeyRow(), _hotkeyWin, Caption(app.HotkeyError ?? "")));
 
@@ -131,9 +131,9 @@ internal sealed class OptionsForm : DialogBase
         {
             AutoSize = true,
             Margin = new Padding(3, 7, 6, 3),
-            Text = index.UsesService ? "Instant indexing: on (Rock Preview service)."
+            Text = index.UsesService ? "Instant indexing: on (Ultimate File Explorer service)."
                  : index.IsElevated ? "Instant indexing: on (running as administrator)."
-                 : service ? "Instant indexing: the Rock Preview service isn't answering."
+                 : service ? "Instant indexing: the Ultimate File Explorer service isn't answering."
                  : "Instant indexing: off (scanning folders, slower).",
         });
         if (!service && !_app.IsDemo)

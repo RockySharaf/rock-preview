@@ -1,8 +1,10 @@
 <div align="center">
 
-<img src="docs/images/logo.png" width="120" alt="Rock Preview logo">
+<img src="docs/images/logo.png" width="120" alt="Ultimate File Explorer logo">
 
-# Rock Preview
+# Ultimate File Explorer
+
+*Formerly Rock Preview*
 
 **Find any file instantly. Browse with the real Windows 11 Explorer. Preview anything without opening it.**
 
@@ -17,22 +19,22 @@ Press **`Alt+X`** in any app to open it.
 ![Windows 10 & 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?logo=windows)
 ![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)
 
-**[⬇ Download Rock Preview](https://github.com/RockySharaf/rock-preview/releases/latest)** · [Features](#features) · [Search syntax](#search-syntax) · [Build from source](#build-from-source)
+**[⬇ Download Ultimate File Explorer](https://github.com/RockySharaf/rock-preview/releases/latest)** · [Features](#features) · [Search syntax](#search-syntax) · [Build from source](#build-from-source)
 
-<img src="docs/images/explorer.png" alt="Rock Preview: the Windows 11 Explorer view with large thumbnails and the preview pane" width="900">
+<img src="docs/images/explorer.png" alt="Ultimate File Explorer: the Windows 11 Explorer view with large thumbnails and the preview pane" width="900">
 
 </div>
 
 ---
 
-## Why Rock Preview?
+## Why Ultimate File Explorer?
 
 File Explorer's search is slow, and opening a file just to see what's in it wastes time — especially for design files
-like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
+like PSD, AI or CorelDRAW that take ages to launch. Ultimate File Explorer fixes both:
 
 - **⚡ Instant search** — reads the NTFS Master File Table directly, so millions of files are indexed in seconds and
   every keystroke filters the whole disk immediately. The index stays live as files change.
-- **🗂️ The real Explorer, built in** — not a look-alike: Rock Preview hosts Windows' own Explorer file view and
+- **🗂️ The real Explorer, built in** — not a look-alike: Ultimate File Explorer hosts Windows' own Explorer file view and
   navigation pane, so context menus, drag and drop, rename, thumbnails and shell extensions all just work.
 - **👁️ Preview anything** — select a file and see it, without opening another app.
 - **🖼️ Thumbnails of everything** — one click shows your search results, or *every* file in a folder and its
@@ -85,29 +87,29 @@ The arrow next to it shows the same files as a list instead (`Ctrl+Shift+Z`), or
 <img src="docs/images/search.png" alt="Instant search results with highlighted matches" width="900">
 </div>
 
-### Use it instead of File Explorer (optional)
-Tick **Options › General › Use Rock Preview instead of File Explorer** (or the same box in Setup) and Rock Preview
+### Use it instead of Windows File Explorer (optional)
+Tick **Options › General › Use Ultimate File Explorer instead of Windows File Explorer** (or the same box in Setup) and Ultimate File Explorer
 takes over:
 
 - opening folders and drives (from the desktop, the Start menu and other apps), **Win+E**, and **This PC**;
-- **File Explorer's taskbar button**: it becomes Rock Preview's, in the same place, and every Rock Preview window groups
+- **File Explorer's taskbar button**: it becomes Ultimate File Explorer's, in the same place, and every Ultimate File Explorer window groups
   under it.
 
-Inside Rock Preview, folders open in the same window. Untick the box (or uninstall) and File Explorer comes back
-exactly as it was: Rock Preview keeps a copy of everything it changes and puts it back. Only your own Windows account
+Inside Ultimate File Explorer, folders open in the same window. Untick the box (or uninstall) and File Explorer comes back
+exactly as it was: Ultimate File Explorer keeps a copy of everything it changes and puts it back. Only your own Windows account
 is affected. **⋯ › Open in File Explorer** always opens the real File Explorer.
 
 One thing Windows doesn't allow: folders **double-clicked on the desktop** still open in File Explorer. The desktop is
 part of File Explorer and opens them itself, without asking the settings other apps use (tested on Windows 11), and
-Rock Preview doesn't patch File Explorer to change that.
+Ultimate File Explorer doesn't patch File Explorer to change that.
 
 ## Install
 
 1. Download **`RockPreview-Setup.exe`** from the [latest release](https://github.com/RockySharaf/rock-preview/releases/latest)
    and run it. Choose *Just me* (no administrator needed) or *Everyone on this PC*, plus optional desktop shortcut,
-   *Always run as administrator* and *Use Rock Preview instead of File Explorer*. *Start with Windows* is on by
-   default, so `Alt+X` opens Rock Preview at any time. When setup finishes, a small window in the corner shows the
-   hotkey and asks you to try it: press `Alt+X` to hide Rock Preview, and again to bring it back.
+   *Always run as administrator* and *Use it instead of Windows File Explorer*. *Start with Windows* is on by
+   default, so `Alt+X` opens Ultimate File Explorer at any time. When setup finishes, a small window in the corner shows the
+   hotkey and asks you to try it: press `Alt+X` to hide Ultimate File Explorer, and again to bring it back.
 2. Prefer no install? Download **`RockPreview.exe`** — the portable version runs from any folder or USB stick.
 
 Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall from **Settings › Apps**.
@@ -116,14 +118,14 @@ Both are self-contained: nothing else (not even .NET) needs to be installed. Uni
 > Click **More info › Run anyway**.
 
 > **Instant indexing, approved once.** Reading a drive's Master File Table needs administrator rights, so Setup offers
-> *Instant indexing for all drives*: it installs the small **Rock Preview Service** and Windows asks for permission one
-> time. After that Rock Preview runs as a normal app (no more prompts) and the service reads the drives for it, like
+> *Instant indexing for all drives*: it installs the small **Ultimate File Explorer Service** and Windows asks for permission one
+> time. After that Ultimate File Explorer runs as a normal app (no more prompts) and the service reads the drives for it, like
 > Everything's service. You can also turn it on later from the yellow bar or **Options › General**. Without it,
-> Rock Preview still works: it indexes by scanning folders, which is slower the first time.
+> Ultimate File Explorer still works: it indexes by scanning folders, which is slower the first time.
 
 ### Updates
 
-Rock Preview tells you when a new version is out. Once a day it asks GitHub for its latest release; when there is a
+Ultimate File Explorer tells you when a new version is out. Once a day it asks GitHub for its latest release; when there is a
 newer one you get a Windows notification and a bar in the window, both linking to the release page with what's new
 and the installer. Install it over the old version: settings, index and bookmarks stay. **Help › Check for Updates**
 checks right away. Turn the daily check off in Setup or **Tools › Options › General**.
@@ -132,7 +134,7 @@ checks right away. Turn the daily check off in Setup or **Tools › Options › 
 
 | Keys | Action |
 |---|---|
-| `Alt+X` | Open or hide Rock Preview from any app (change it in **Tools › Options › Keyboard**) |
+| `Alt+X` | Open or hide Ultimate File Explorer from any app (change it in **Tools › Options › Keyboard**) |
 | `Ctrl+F` / `Ctrl+E` | Search |
 | `Ctrl+L`, `Alt+D`, `F4` | Type a path in the address bar |
 | `Alt+←` / `Alt+→` / `Alt+↑` | Back / Forward / Up |
@@ -203,15 +205,15 @@ powershell -ExecutionPolicy Bypass -File build\Publish.ps1
 
 ## Privacy
 
-Rock Preview runs entirely on your PC. It has no telemetry and no account. Its index and settings stay in
+Ultimate File Explorer runs entirely on your PC. It has no telemetry and no account. Its index and settings stay in
 `%LOCALAPPDATA%\Rock Preview` and `%APPDATA%\Rock Preview`.
 
 Its only network connection is the check for a new version: at most once a day (and when you choose **Help › Check
 for Updates**) it asks GitHub's API for the latest release of `RockySharaf/rock-preview`. The request carries
-Rock Preview's version number and nothing about you, your PC or your files; GitHub sees it like any web request. It
+Ultimate File Explorer's version number and nothing about you, your PC or your files; GitHub sees it like any web request. It
 downloads nothing by itself. Turn it off in Setup or **Tools › Options › General**.
 
-The optional Rock Preview Service runs from `C:\Program Files\Rock Preview Service` (only administrators can change
+The optional Ultimate File Explorer Service runs from `C:\Program Files\Rock Preview Service` (only administrators can change
 it). It answers only the Windows accounts that installed it, only on this PC, never over the network. It returns file
 names, folders, sizes and dates from local NTFS drives, and never raw disk data or file contents. Uninstalling Rock
 Preview removes it.
@@ -227,9 +229,10 @@ Ideas and bug reports are welcome in [Issues](https://github.com/RockySharaf/roc
 
 ## License
 
-Rock Preview is free software, released under the [GNU General Public License v3.0](LICENSE).
+Ultimate File Explorer is free software, released under the [GNU General Public License v3.0](LICENSE).
 Copyright © 2026 Rocky Sharaf.
 
-Rock Preview is an independent project. It is not affiliated with Microsoft or voidtools. Its search syntax is
+Ultimate File Explorer is an independent project, not made by or affiliated with Microsoft or voidtools; File Explorer
+is the file manager built into Windows. Its search syntax is
 compatible with the query language popularised by voidtools' *Everything*. Windows' own icons are loaded from your
-Windows installation at run time and are not distributed with Rock Preview.
+Windows installation at run time and are not distributed with Ultimate File Explorer.

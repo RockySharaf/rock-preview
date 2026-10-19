@@ -42,7 +42,7 @@ for (int i = 0; i < args.Length; i++)
 db ??= new IndexSettings().DatabasePath;
 if (!File.Exists(db))
 {
-    Console.Error.WriteLine($"No database at {db}. Start Rock Preview once so it indexes and saves, or pass -db <path>.");
+    Console.Error.WriteLine($"No database at {db}. Start Ultimate File Explorer once so it indexes and saves, or pass -db <path>.");
     return 2;
 }
 

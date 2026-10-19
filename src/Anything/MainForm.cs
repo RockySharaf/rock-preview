@@ -184,7 +184,7 @@ internal sealed partial class MainForm : Form
         var label = new Label
         {
             AutoSize = true,
-            Text = "Instant indexing is off, so Rock Preview is scanning folders (slower). Turn it on once and it stays on: Windows asks for permission one time.",
+            Text = "Instant indexing is off, so Ultimate File Explorer is scanning folders (slower). Turn it on once and it stays on: Windows asks for permission one time.",
             Margin = new Padding(0, 2, 6, 2),
         };
         var restart = new LinkLabel { AutoSize = true, Text = "Turn on instant indexing", Margin = new Padding(0, 2, 12, 2) };
@@ -217,7 +217,7 @@ internal sealed partial class MainForm : Form
     internal void UpdateUpdateBar()
     {
         bool show = _app.ShowUpdateNotice;
-        if (show) _updateText.Text = $"Rock Preview {_app.NewVersion!.ToString(3)} is available. You have {AnythingApp.CurrentVersion.ToString(3)}.";
+        if (show) _updateText.Text = $"Ultimate File Explorer {_app.NewVersion!.ToString(3)} is available. You have {AnythingApp.CurrentVersion.ToString(3)}.";
         if (_updateBar.Visible != show) _updateBar.Visible = show;
     }
 

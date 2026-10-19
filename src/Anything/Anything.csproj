@@ -17,7 +17,8 @@
     <ApplicationVisualStyles>true</ApplicationVisualStyles>
     <AssemblyName>RockPreview</AssemblyName>
     <RootNamespace>Anything</RootNamespace>
-    <Product>Rock Preview</Product>
+    <Product>Ultimate File Explorer</Product>
+    <AssemblyTitle>Ultimate File Explorer</AssemblyTitle>
     <Version>1.3.0</Version>
     <!-- WFO5001: Application.SetColorMode (system dark mode) is experimental. WFO0003: DPI awareness is declared in app.manifest on purpose (applies before Main runs). -->
     <NoWarn>$(NoWarn);WFO5001;WFO0003;CA1416</NoWarn>

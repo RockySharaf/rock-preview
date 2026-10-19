@@ -12,10 +12,10 @@ internal static class Shortcuts
     /// window under one button, including the File Explorer button it takes over.
     /// </summary>
     /// <summary>
-    /// Rock Preview's AppUserModelID: its windows, shortcuts and notifications share it. Windows shows the name of the
-    /// Start menu shortcut carrying it ("Rock Preview"), or this ID itself when there is none (the portable copy).
+    /// The AppUserModelID: windows, shortcuts and notifications share it. Windows shows the name of the Start menu
+    /// shortcut carrying it ("Ultimate File Explorer"), or this ID itself when there is none (the portable copy).
     /// </summary>
-    public const string AppId = "RockPreview";
+    public const string AppId = "UltimateFileExplorer";
 
     const uint SLDF_RUNAS_USER = 0x2000;
 

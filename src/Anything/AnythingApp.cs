@@ -56,8 +56,8 @@ internal sealed class AnythingApp : ApplicationContext
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Rock Preview could not start its indexing services.\n\n{ex.Message}\n\nRun with --demo to try the interface with a sample index.",
-                "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show($"Ultimate File Explorer could not start its indexing services.\n\n{ex.Message}\n\nRun with --demo to try the interface with a sample index.",
+                "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return null;
         }
         return new AnythingApp(cmd, index, engine);
@@ -83,7 +83,7 @@ internal sealed class AnythingApp : ApplicationContext
         try { IndexManager.Start(Settings.Index); }
         catch (Exception ex)
         {
-            MessageBox.Show($"Indexing could not be started.\n\n{ex.Message}", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show($"Indexing could not be started.\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         SubscribeIndex();
 
@@ -104,13 +104,13 @@ internal sealed class AnythingApp : ApplicationContext
         return (Icon)SystemIcons.Application.Clone();
     }
 
-    public string Title => IsDemo ? "Rock Preview (Demo)" : "Rock Preview";
+    public string Title => IsDemo ? "Ultimate File Explorer (Demo)" : "Ultimate File Explorer";
 
     /// <summary>The global hotkey registered right now ("Alt+X"), or null when none is set or it's taken.</summary>
     public string? ActiveHotkey { get; private set; }
 
     /// <summary>The name followed by the key that opens it from anywhere: "Rock Preview (Alt+X)".</summary>
-    public string TitleWithHotkey => ActiveHotkey is not { } h ? Title : IsDemo ? $"Rock Preview (Demo, {h})" : $"Rock Preview ({h})";
+    public string TitleWithHotkey => ActiveHotkey is not { } h ? Title : IsDemo ? $"Ultimate File Explorer (Demo, {h})" : $"Ultimate File Explorer ({h})";
 
     public void Post(Action a) => _sync.Post(_ => { try { a(); } catch (ObjectDisposedException) { } }, null);
 
@@ -290,7 +290,7 @@ internal sealed class AnythingApp : ApplicationContext
         if (code == -1) return; // the permission prompt was declined: nothing changed
         if (code != 0)
         {
-            MessageBox.Show(owner, "Rock Preview couldn't turn on instant indexing.", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(owner, "Ultimate File Explorer couldn't turn on instant indexing.", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         for (int i = 0; i < 40 && !Anything.Core.Indexing.VolumeService.IsRunning(); i++) await Task.Delay(250);
@@ -313,7 +313,7 @@ internal sealed class AnythingApp : ApplicationContext
         {
             if (_tray is not null) return;
             var menu = new ContextMenuStrip();
-            var show = new ToolStripMenuItem("&Search Rock Preview...", null, (_, _) => ShowSearchWindow()) { ShortcutKeyDisplayString = ActiveHotkey };
+            var show = new ToolStripMenuItem("&Search Ultimate File Explorer...", null, (_, _) => ShowSearchWindow()) { ShortcutKeyDisplayString = ActiveHotkey };
             show.Font = new Font(show.Font, FontStyle.Bold);
             menu.Items.Add(show);
             menu.Items.Add(new ToolStripMenuItem("&New Search Window", null, (_, _) => NewWindow(_lastActive)));
@@ -452,7 +452,7 @@ internal sealed class AnythingApp : ApplicationContext
         if (version is null || Settings.NotifiedVersion == version.ToString(3)) return;
         Settings.NotifiedVersion = version.ToString(3);
         Settings.Save();
-        Notify($"Rock Preview {version.ToString(3)} is available", $"You have {CurrentVersion.ToString(3)}.");
+        Notify($"Ultimate File Explorer {version.ToString(3)} is available", $"You have {CurrentVersion.ToString(3)}.");
     }
 
     /// <summary>
@@ -490,7 +490,7 @@ internal sealed class AnythingApp : ApplicationContext
     {
         if (_tray?.ContextMenuStrip?.Items["update"] is not ToolStripMenuItem item) return;
         item.Visible = NewVersion is not null;
-        if (NewVersion is { } v) item.Text = $"&Get Rock Preview {v.ToString(3)}...";
+        if (NewVersion is { } v) item.Text = $"&Get Ultimate File Explorer {v.ToString(3)}...";
     }
 
     public void HideUpdateNotice()
@@ -553,7 +553,7 @@ internal sealed class AnythingApp : ApplicationContext
         try { IndexManager.Rebuild(); }
         catch (Exception ex)
         {
-            MessageBox.Show($"Unable to rebuild the index.\n\n{ex.Message}", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show($"Unable to rebuild the index.\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         SubscribeIndex();
     }

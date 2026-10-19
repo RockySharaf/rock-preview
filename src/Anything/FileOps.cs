@@ -36,7 +36,7 @@ internal static class FileOps
             catch (Win32Exception ex) when (ex.NativeErrorCode == 1223) { /* cancelled */ }
             catch (Exception ex)
             {
-                MessageBox.Show(owner, $"Unable to open \"{p}\".\n\n{ex.Message}", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(owner, $"Unable to open \"{p}\".\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
     }
@@ -51,7 +51,7 @@ internal static class FileOps
             }
             catch (Exception ex)
             {
-                MessageBox.Show(owner, $"Unable to open the path of \"{p}\".\n\n{ex.Message}", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(owner, $"Unable to open the path of \"{p}\".\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
     }
@@ -82,7 +82,7 @@ internal static class FileOps
         };
         int r = Native.SHFileOperation(ref op);
         if (r != 0 && !op.fAnyOperationsAborted)
-            MessageBox.Show(owner, $"Unable to delete (error 0x{r:X}).", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(owner, $"Unable to delete (error 0x{r:X}).", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Error);
         return r == 0;
     }
 

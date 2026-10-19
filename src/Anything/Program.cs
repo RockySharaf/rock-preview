@@ -90,8 +90,8 @@ static class Program
         if (Interlocked.Exchange(ref s_reporting, 1) != 0) return;
         try
         {
-            MessageBox.Show($"An unexpected error occurred{(fatal ? " and Rock Preview must close" : "")}.\n\n{ex.Message}\n\nDetails were written to %LOCALAPPDATA%\\Rock Preview\\error.log.",
-                "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show($"An unexpected error occurred{(fatal ? " and Ultimate File Explorer must close" : "")}.\n\n{ex.Message}\n\nDetails were written to %LOCALAPPDATA%\\Rock Preview\\error.log.",
+                "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally { Volatile.Write(ref s_reporting, 0); }
     }
@@ -144,7 +144,7 @@ static class Program
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Rock Preview couldn't install its service.\n\n{ex.Message}", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show($"Ultimate File Explorer couldn't install its service.\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
     }
@@ -155,7 +155,7 @@ static class Program
         try { IndexService.Uninstall(); return 0; }
         catch (Exception ex)
         {
-            MessageBox.Show($"Rock Preview couldn't remove its service.\n\n{ex.Message}", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show($"Ultimate File Explorer couldn't remove its service.\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
     }

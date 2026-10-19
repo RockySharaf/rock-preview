@@ -183,7 +183,7 @@ internal sealed partial class MainForm
             Item("&Search Syntax", () => SearchSyntaxForm.ShowSyntax(this), Keys.F1),
             new ToolStripSeparator(),
             Item("Check for &Updates...", CheckForUpdates),
-            Item("&About Rock Preview...", ShowAbout),
+            Item("&About Ultimate File Explorer...", ShowAbout),
         ]);
 
         // Explorer has no menu bar: its "See more" (...) menu holds the selection commands, Properties and Options;
@@ -262,7 +262,7 @@ internal sealed partial class MainForm
         _app.Settings.Save();
         SyncMenus();
         string name = theme switch { "dark" => "dark", "system" => "Windows", _ => "light" };
-        if (MessageBox.Show(this, $"Restart Rock Preview now to switch to the {name} theme?", "Theme",
+        if (MessageBox.Show(this, $"Restart Ultimate File Explorer now to switch to the {name} theme?", "Theme",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             _app.Restart();
     }
@@ -776,9 +776,9 @@ internal sealed partial class MainForm
             if (IsDisposed) return;
             TaskDialog.ShowDialog(this, new TaskDialogPage
             {
-                Caption = "Rock Preview",
+                Caption = "Ultimate File Explorer",
                 Heading = "Couldn't check for a new version",
-                Text = "Rock Preview couldn't reach GitHub. Check your internet connection and try again.",
+                Text = "Ultimate File Explorer couldn't reach GitHub. Check your internet connection and try again.",
                 Icon = TaskDialogIcon.Warning,
             });
             return;
@@ -790,8 +790,8 @@ internal sealed partial class MainForm
             var get = new TaskDialogButton("See what's new and get it");
             var page = new TaskDialogPage
             {
-                Caption = "Rock Preview",
-                Heading = $"Rock Preview {latest!.ToString(3)} is available",
+                Caption = "Ultimate File Explorer",
+                Heading = $"Ultimate File Explorer {latest!.ToString(3)} is available",
                 Text = $"You have {current.ToString(3)}. Its page on GitHub has what's new and the installer.",
                 Icon = TaskDialogIcon.Information,
                 Buttons = { get, new TaskDialogButton("Not now") },
@@ -803,8 +803,8 @@ internal sealed partial class MainForm
         {
             TaskDialog.ShowDialog(this, new TaskDialogPage
             {
-                Caption = "Rock Preview",
-                Heading = "Rock Preview is up to date",
+                Caption = "Ultimate File Explorer",
+                Heading = "Ultimate File Explorer is up to date",
                 Text = $"You have the latest version, {current.ToString(3)}.",
                 Icon = TaskDialogIcon.Information,
             });
@@ -815,8 +815,8 @@ internal sealed partial class MainForm
     {
         var v = typeof(MainForm).Assembly.GetName().Version;
         MessageBox.Show(this,
-            $"Rock Preview {v?.ToString(3)}\n\nInstant file name search for Windows, in the spirit of voidtools Everything.\n\n" +
+            $"Ultimate File Explorer {v?.ToString(3)} (formerly Rock Preview)\n\nInstant file name search for Windows, in the spirit of voidtools Everything.\n\n" +
             $"Index: {_app.IndexManager.Index.LiveCount:N0} objects\n.NET {Environment.Version}" + (_app.IsDemo ? "\n\nRunning with the in-memory demo index." : ""),
-            "About Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            "About Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 }

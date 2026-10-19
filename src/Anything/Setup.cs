@@ -16,7 +16,11 @@ namespace Anything;
 /// </summary>
 internal static class Setup
 {
-    public const string AppName = "Rock Preview";
+    public const string AppName = "Ultimate File Explorer";
+    /// <summary>The settings and index folders keep the earlier name, so updating keeps them.</summary>
+    public const string DataFolderName = "Rock Preview";
+    /// <summary>Shortcuts named before the rename; replaced by ones named AppName.</summary>
+    const string OldShortcutName = "Rock Preview";
     public const string ExeName = "RockPreview.exe";
     const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\RockPreview";
     const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -146,10 +150,10 @@ internal static class Setup
         string source = Environment.ProcessPath ?? throw new InvalidOperationException("Can't find the setup program.");
         string folder = o.TargetFolder, exe = o.TargetExe;
 
-        status("Closing Rock Preview...");
+        status("Closing Ultimate File Explorer...");
         CloseRunning(exe, o.Quiet);
 
-        status("Copying Rock Preview...");
+        status("Copying Ultimate File Explorer...");
         Directory.CreateDirectory(folder);
         if (!SamePath(source, exe)) CopyWithRetry(source, exe);
 
@@ -159,6 +163,8 @@ internal static class Setup
         CreateShortcut(startMenu, exe, o.RunAsAdmin);
         if (o.DesktopShortcut) CreateShortcut(desktop, exe, o.RunAsAdmin);
         else TryDelete(desktop);
+        foreach (var old in new[] { startMenu, desktop }.Select(l => Path.Combine(Path.GetDirectoryName(l)!, OldShortcutName + ".lnk")))
+            if (File.Exists(old) && ShortcutTarget(old) is { } target && SamePath(target, exe)) TryDelete(old);
 
         status("Registering...");
         using (var key = (o.AllUsers ? Registry.LocalMachine : Registry.CurrentUser).CreateSubKey(UninstallKeyPath))
@@ -208,7 +214,7 @@ internal static class Setup
             }
             catch (Exception ex) { Log(ex); }
         }
-        status("Rock Preview is installed.");
+        status("Ultimate File Explorer is installed.");
     }
 
     /// <summary>Opens the installed copy: elevated when chosen, otherwise with normal rights even from an elevated setup.</summary>
@@ -260,13 +266,13 @@ internal static class Setup
         bool removeData = o.RemoveData;
         if (!o.Quiet)
         {
-            var check = new TaskDialogVerificationCheckBox("Also delete my Rock Preview settings and search index");
+            var check = new TaskDialogVerificationCheckBox("Also delete my Ultimate File Explorer settings and search index");
             var uninstall = new TaskDialogButton("Uninstall");
             var page = new TaskDialogPage
             {
                 Caption = AppName + " Setup",
-                Heading = "Uninstall Rock Preview?",
-                Text = $"Rock Preview will be removed from this PC ({folder}). Your files are not affected.",
+                Heading = "Uninstall Ultimate File Explorer?",
+                Text = $"Ultimate File Explorer will be removed from this PC ({folder}). Your files are not affected.",
                 Icon = TaskDialogIcon.Information,
                 Buttons = { uninstall, TaskDialogButton.Cancel },
                 Verification = check,
@@ -283,11 +289,11 @@ internal static class Setup
         catch (Exception ex)
         {
             Log(ex);
-            if (!o.Quiet) TaskDialog.ShowDialog(new TaskDialogPage { Caption = AppName + " Setup", Heading = "Rock Preview could not be completely removed", Text = ex.Message, Icon = TaskDialogIcon.Error });
+            if (!o.Quiet) TaskDialog.ShowDialog(new TaskDialogPage { Caption = AppName + " Setup", Heading = "Ultimate File Explorer could not be completely removed", Text = ex.Message, Icon = TaskDialogIcon.Error });
             return 1;
         }
         if (!o.Quiet)
-            TaskDialog.ShowDialog(new TaskDialogPage { Caption = AppName + " Setup", Heading = "Rock Preview was uninstalled.", Icon = TaskDialogIcon.ShieldSuccessGreenBar });
+            TaskDialog.ShowDialog(new TaskDialogPage { Caption = AppName + " Setup", Heading = "Ultimate File Explorer was uninstalled.", Icon = TaskDialogIcon.ShieldSuccessGreenBar });
         return 0;
     }
 
@@ -300,8 +306,11 @@ internal static class Setup
                      ? new[] { Environment.SpecialFolder.CommonPrograms, Environment.SpecialFolder.CommonDesktopDirectory, Environment.SpecialFolder.Programs, Environment.SpecialFolder.DesktopDirectory }
                      : new[] { Environment.SpecialFolder.Programs, Environment.SpecialFolder.DesktopDirectory })
         {
-            string lnk = Path.Combine(Environment.GetFolderPath(special), AppName + ".lnk");
-            if (File.Exists(lnk) && ShortcutTarget(lnk) is { } target && SamePath(target, exe)) TryDelete(lnk);
+            foreach (string name in new[] { AppName, OldShortcutName })
+            {
+                string lnk = Path.Combine(Environment.GetFolderPath(special), name + ".lnk");
+                if (File.Exists(lnk) && ShortcutTarget(lnk) is { } target && SamePath(target, exe)) TryDelete(lnk);
+            }
         }
         try
         {
@@ -329,9 +338,9 @@ internal static class Setup
 
         if (removeData)
         {
-            // Only Rock Preview's own data folders ("Rock Preview", with the space): settings, index, logs.
-            TryDeleteTree(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), AppName));
-            TryDeleteTree(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), AppName));
+            // Only its own data folders ("Rock Preview", with the space, the name before the rename): settings, index, logs.
+            TryDeleteTree(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), DataFolderName));
+            TryDeleteTree(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), DataFolderName));
         }
 
         // The program file: delete it now, or (when it is the uninstaller that is running) right after this process
@@ -376,7 +385,7 @@ internal static class Setup
             running = Running();
             if (running.Count == 0) return;
         }
-        if (!force) throw new InvalidOperationException("Rock Preview is still running. Close it and try again.");
+        if (!force) throw new InvalidOperationException("Ultimate File Explorer is still running. Close it and try again.");
         foreach (var p in running) { try { p.Kill(); p.WaitForExit(5000); } catch (Exception) { } }
     }
 

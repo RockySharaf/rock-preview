@@ -6,8 +6,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
-    <Company>Rock Preview</Company>
-    <Product>Rock Preview</Product>
+    <Company>Ultimate File Explorer</Company>
+    <Product>Ultimate File Explorer</Product>
     <Authors>Rocky Sharaf</Authors>
     <Copyright>Copyright © 2026 Rocky Sharaf. Licensed under the GNU GPL v3.</Copyright>
     <RepositoryUrl>https://github.com/RockySharaf/rock-preview</RepositoryUrl>
