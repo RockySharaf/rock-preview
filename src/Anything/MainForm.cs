@@ -9,7 +9,7 @@ internal sealed partial class MainForm : Form
     enum SearchReason { NewQuery, Resort, IndexChanged, Refresh }
 
     readonly AnythingApp _app;
-    readonly Panel _searchBar = new();          // Explorer's address row
+    readonly DragPanel _searchBar = new();      // Explorer's address row (also the top of the window: no title bar)
     readonly Font _uiFont = ExplorerTheme.UiFont(); // 14px Segoe UI Variable, like Explorer's XAML chrome
     readonly TextBox _search = new();
     readonly ComboBox _filter = new();
@@ -103,7 +103,8 @@ internal sealed partial class MainForm : Form
         Controls.Add(_body);
         Controls.Add(_infoBar);
         Controls.Add(_commands);
-        Controls.Add(_searchBar);
+        BuildTitleRow();
+        Controls.Add(_titleRow);
         Controls.Add(_status);
         ResumeLayout(false);
         PerformLayout();
@@ -179,11 +180,11 @@ internal sealed partial class MainForm : Form
         var label = new Label
         {
             AutoSize = true,
-            Text = "Not running as administrator: indexing by folder scanning (slower). Restart as administrator for instant NTFS indexing.",
+            Text = "Instant indexing is off, so Rock Preview is scanning folders (slower). Turn it on once and it stays on: Windows asks for permission one time.",
             Margin = new Padding(0, 2, 6, 2),
         };
-        var restart = new LinkLabel { AutoSize = true, Text = "Restart as administrator", Margin = new Padding(0, 2, 12, 2) };
-        restart.LinkClicked += (_, _) => _app.RestartElevated();
+        var restart = new LinkLabel { AutoSize = true, Text = "Turn on instant indexing", Margin = new Padding(0, 2, 12, 2) };
+        restart.LinkClicked += (_, _) => _app.TurnOnInstantIndexing(this);
         var dismiss = new LinkLabel { AutoSize = true, Text = "Dismiss", Margin = new Padding(0, 2, 0, 2) };
         dismiss.LinkClicked += (_, _) => { _infoDismissed = true; UpdateInfoBar(); };
         _infoBar.Controls.AddRange([label, restart, dismiss]);
@@ -435,6 +436,7 @@ internal sealed partial class MainForm : Form
     {
         base.OnHandleCreated(e);
         ExplorerTheme.ApplyFrame(this);
+        RemoveTitleBar();
     }
 
     protected override void OnLoad(EventArgs e)
@@ -565,6 +567,7 @@ internal sealed partial class MainForm : Form
     public void ApplyUiSettings()
     {
         var s = _app.Settings;
+        _explorer.OpenFoldersInPlace = s.UseInsteadOfExplorer; // Windows' "open folder" would start Rock Preview again
         _filter.Visible = s.FiltersVisible;
         _status.Visible = s.StatusBarVisible;
         bool old = _suppress;
@@ -626,7 +629,8 @@ internal sealed partial class MainForm : Form
 
     void UpdateInfoBar()
     {
-        bool show = !_infoDismissed && !_app.IsDemo && !_app.IndexManager.IsElevated && _app.Settings.Index.IndexNtfsVolumes; // the demo index isn't real indexing
+        bool show = !_infoDismissed && !_app.IsDemo && !_app.IndexManager.IsElevated && !_app.IndexManager.UsesService
+                    && _app.Settings.Index.IndexNtfsVolumes; // the demo index isn't real indexing
         if (_infoBar.Visible != show) _infoBar.Visible = show;
     }
 

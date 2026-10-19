@@ -21,6 +21,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
     volatile string _status = "";
     volatile RootIndexer? _scanningRoot;
     volatile bool _fallbackMode;
+    volatile bool _usesService;
     volatile bool _loaded;
     int _changePending;
     int _activeScans;
@@ -36,6 +37,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
     public FileIndex Index { get; } = new();
     public IndexState State => _state;
     public bool IsElevated { get; }
+    public bool UsesService => _usesService;
     public event Action? StateChanged;
 
     /// <summary>Exceptions from background work, for diagnostics (last one wins).</summary>
@@ -52,7 +54,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
             {
                 long n = root switch { NtfsVolumeIndexer v => v.ProgressCount, FolderIndexer f => f.ProgressCount, _ => 0 };
                 return _fallbackMode && root.Kind == RootKind.Folder && root.RootPath.Length == 3
-                    ? $"Indexing requires administrator: scanning folders ({root.RootPath}, {n:N0} objects)"
+                    ? $"Instant indexing is off: scanning folders ({root.RootPath}, {n:N0} objects)"
                     : $"Scanning {root.RootPath} ({n:N0} objects)";
             }
             return _status;
@@ -216,8 +218,11 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
         var roots = new List<RootIndexer>();
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         _fallbackMode = false;
+        _usesService = false;
         if (settings.IndexNtfsVolumes)
         {
+            // Without administrator, NTFS volumes go through the Rock Preview service when it's installed (checked once).
+            bool service = !IsElevated && VolumeService.IsRunning();
             IEnumerable<string> volumes = settings.Volumes.Count > 0 ? settings.Volumes : FixedNtfsDrives();
             foreach (var v in volumes)
             {
@@ -225,13 +230,18 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
                 string name = RootIndexer.NormalizeRootName(v);
                 if (!names.Add(name)) continue;
                 bool ntfs = IsNtfs(name);
-                if (ntfs && IsElevated)
+                if (ntfs)
                 {
-                    var vol = new NtfsVolumeIndexer(this, name);
-                    if (vol.TryOpen()) { roots.Add(vol); continue; }
-                    vol.Dispose();
+                    // Directly as administrator; otherwise through the Rock Preview service when it's installed.
+                    IVolumeSource? source = IsElevated ? LocalVolumeSource.TryOpen(name) : service ? ServiceVolumeSource.TryConnect(name, 3000) : null;
+                    if (source != null)
+                    {
+                        roots.Add(new NtfsVolumeIndexer(this, name, source));
+                        if (source is ServiceVolumeSource) _usesService = true;
+                        continue;
+                    }
+                    if (!IsElevated) _fallbackMode = true;
                 }
-                if (ntfs && !IsElevated) _fallbackMode = true;
                 if (Directory.Exists(name.Length == 2 ? name + "\\" : name)) roots.Add(new FolderIndexer(this, name));
             }
         }

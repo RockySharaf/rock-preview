@@ -40,6 +40,26 @@ internal interface IExplorerPaneVisibility
     [PreserveSig] int GetPaneState(ref Guid ep, out uint peps);
 }
 
+/// <summary>The view asks its host (service SID_SExplorerBrowserFrame = IID_ICommDlgBrowser) before acting on a double-click.</summary>
+[ComImport, Guid("000214F1-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface ICommDlgBrowser
+{
+    [PreserveSig] int OnDefaultCommand(IntPtr ppshv);
+    [PreserveSig] int OnStateChange(IntPtr ppshv, uint uChange);
+    [PreserveSig] int IncludeObject(IntPtr ppshv, IntPtr pidl);
+}
+
+[ComImport, Guid("10339516-2894-11d2-9039-00C04F8EEB3E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface ICommDlgBrowser2
+{
+    [PreserveSig] int OnDefaultCommand(IntPtr ppshv);
+    [PreserveSig] int OnStateChange(IntPtr ppshv, uint uChange);
+    [PreserveSig] int IncludeObject(IntPtr ppshv, IntPtr pidl);
+    [PreserveSig] int Notify(IntPtr ppshv, uint dwNotifyType);
+    [PreserveSig] int GetDefaultMenuText(IntPtr ppshv, IntPtr pszText, int cchMax);
+    [PreserveSig] int GetViewFlags(out uint pdwFlags);
+}
+
 [ComImport, Guid("6d5140c1-7436-11ce-8034-00aa006009fa"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IServiceProvider
 {
@@ -196,8 +216,9 @@ internal enum SIGDN : uint
 
 internal static class ShellNative
 {
-    public const int S_OK = 0;
+    public const int S_OK = 0, S_FALSE = 1;
     public const int E_NOINTERFACE = unchecked((int)0x80004002);
+    public const uint CDB2GVF_NOSELECTVERB = 0x8, CDB2GVF_NOINCLUDEITEM = 0x10;
 
     public const uint SBSP_ABSOLUTE = 0x0;
     public const uint SBSP_PARENT = 0x2000;
@@ -214,6 +235,8 @@ internal static class ShellNative
     public static readonly Guid IID_IFolderView2 = new("1af3a467-214f-4298-908e-06b03e0b39f9");
     public static readonly Guid IID_IShellItem = new("43826d1e-e718-42ee-bc55-a1e261c37bfe");
     public static readonly Guid IID_IExplorerPaneVisibility = new("e07010ec-bc17-44c0-97b0-46c7c95b9edc");
+    public static readonly Guid IID_ICommDlgBrowser = new("000214F1-0000-0000-C000-000000000046"); // also SID_SExplorerBrowserFrame
+    public static readonly Guid IID_ICommDlgBrowser2 = new("10339516-2894-11d2-9039-00C04F8EEB3E");
 
     // Explorer panes (shlguid.h)
     public static readonly Guid EP_NavPane = new("cb316b22-25f7-42b8-8a09-540d23a43c2f");

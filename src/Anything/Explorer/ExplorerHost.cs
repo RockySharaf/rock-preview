@@ -328,8 +328,32 @@ internal sealed class ExplorerHost : Control
         SelectionChanged?.Invoke();
     }
 
-    /// <summary>File-system paths of the selected items (virtual items are skipped), at most <paramref name="max"/>.</summary>
-    public List<string> GetSelectedPaths(int max)
+    /// <summary>
+    /// Open a double-clicked folder here instead of through Windows' default action. Needed when Rock Preview is the
+    /// default for opening folders (Explorer replacement): that action would start another Rock Preview window.
+    /// </summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool OpenFoldersInPlace { get; set; }
+
+    /// <summary>
+    /// Double-click / Enter in the view: a single selected folder (or This PC, which Rock Preview also opens in place
+    /// of File Explorer) is opened here; anything else as usual.
+    /// </summary>
+    bool OnDefaultCommand()
+    {
+        if (!OpenFoldersInPlace && !ExplorerReplacement.IsEnabled()) return false; // also when turned on elsewhere (Setup)
+        var selected = GetSelectedPaths(2, SIGDN.DesktopAbsoluteParsing);
+        if (selected.Count != 1) return false;
+        string target = selected[0];
+        if (!Directory.Exists(target) && !string.Equals(target, ThisPcParsingName, StringComparison.OrdinalIgnoreCase)) return false;
+        BeginInvoke(() => Navigate(target)); // not inside the view's own callback
+        return true;
+    }
+
+    const string ThisPcParsingName = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+
+    /// <summary>Names of the selected items (by default file-system paths; virtual items are skipped), at most <paramref name="max"/>.</summary>
+    public List<string> GetSelectedPaths(int max, SIGDN name = SIGDN.FileSysPath)
     {
         var paths = new List<string>();
         var fv = GetView<IFolderView2>(ShellNative.IID_IFolderView2);
@@ -345,7 +369,7 @@ internal sealed class ExplorerHost : Control
                         for (uint i = 0; i < n && paths.Count < max; i++)
                         {
                             if (items.GetItemAt(i, out var item) != ShellNative.S_OK || item == null) continue;
-                            try { if (ShellNative.NameOf(item, SIGDN.FileSysPath) is { } p) paths.Add(p); }
+                            try { if (ShellNative.NameOf(item, name) is { } p) paths.Add(p); }
                             finally { Marshal.ReleaseComObject(item); }
                         }
                     }
@@ -532,7 +556,7 @@ internal sealed class ExplorerHost : Control
     // ---- COM callbacks (separate object so the Control itself is never exposed to COM) --------
 
     [ComVisible(true)]
-    sealed class Callbacks(ExplorerHost host) : IExplorerBrowserEvents, IServiceProvider, IExplorerPaneVisibility
+    sealed class Callbacks(ExplorerHost host) : IExplorerBrowserEvents, IServiceProvider, IExplorerPaneVisibility, ICommDlgBrowser, ICommDlgBrowser2
     {
         public int OnNavigationPending(IntPtr pidlFolder) => ShellNative.S_OK;
         public int OnViewCreated(IntPtr psv) => ShellNative.S_OK;
@@ -546,8 +570,29 @@ internal sealed class ExplorerHost : Control
                 ppvObject = Marshal.GetComInterfaceForObject(this, typeof(IExplorerPaneVisibility));
                 return ShellNative.S_OK;
             }
+            if (guidService == ShellNative.IID_ICommDlgBrowser) // SID_SExplorerBrowserFrame
+            {
+                if (riid == ShellNative.IID_ICommDlgBrowser) { ppvObject = Marshal.GetComInterfaceForObject(this, typeof(ICommDlgBrowser)); return ShellNative.S_OK; }
+                if (riid == ShellNative.IID_ICommDlgBrowser2) { ppvObject = Marshal.GetComInterfaceForObject(this, typeof(ICommDlgBrowser2)); return ShellNative.S_OK; }
+            }
             ppvObject = IntPtr.Zero;
             return ShellNative.E_NOINTERFACE;
+        }
+
+        // ICommDlgBrowser(2): only the double-click is taken over; everything else is the view's normal behaviour.
+        public int OnDefaultCommand(IntPtr ppshv)
+        {
+            try { return host.OnDefaultCommand() ? ShellNative.S_OK : ShellNative.S_FALSE; }
+            catch (Exception) { return ShellNative.S_FALSE; }
+        }
+        public int OnStateChange(IntPtr ppshv, uint uChange) => ShellNative.S_OK;
+        public int IncludeObject(IntPtr ppshv, IntPtr pidl) => ShellNative.S_OK;
+        public int Notify(IntPtr ppshv, uint dwNotifyType) => ShellNative.S_OK;
+        public int GetDefaultMenuText(IntPtr ppshv, IntPtr pszText, int cchMax) => ShellNative.S_FALSE;
+        public int GetViewFlags(out uint pdwFlags)
+        {
+            pdwFlags = ShellNative.CDB2GVF_NOSELECTVERB | ShellNative.CDB2GVF_NOINCLUDEITEM; // no "Select" verb, no per-item callbacks
+            return ShellNative.S_OK;
         }
 
         public int GetPaneState(ref Guid ep, out uint peps)

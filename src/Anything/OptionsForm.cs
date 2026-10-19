@@ -14,6 +14,7 @@ internal sealed class OptionsForm : DialogBase
     readonly CheckBox _runInBackground = Check("&Run in background (keep running after the last window closes)");
     readonly CheckBox _showTray = Check("Show &tray icon");
     readonly CheckBox _startWithWindows = Check("&Start Rock Preview when Windows starts");
+    readonly CheckBox _replaceExplorer = Check("&Use Rock Preview instead of File Explorer");
     // UI
     readonly CheckBox _filtersBar = Check("Show &filters bar");
     readonly CheckBox _statusBar = Check("Show &status bar");
@@ -48,7 +49,11 @@ internal sealed class OptionsForm : DialogBase
         ShowInTaskbar = !Application.OpenForms.Cast<Form>().Any(f => f.Visible && f != this);
         StartPosition = FormStartPosition.CenterScreen;
 
-        AddPage("General", Page(_runInBackground, _showTray, _startWithWindows, AdminRow()));
+        AddPage("General", Page(_runInBackground, _showTray, _startWithWindows, _replaceExplorer,
+            Hint("Opening folders and drives, Win+E, This PC and File Explorer's taskbar button open Rock Preview. " +
+                 "Turn it off any time to get File Explorer back exactly as it was."),
+            AdminRow()));
+        _replaceExplorer.Enabled = !app.IsDemo;
         AddPage("UI", Page(_filtersBar, _statusBar, FontRow()));
         AddPage("Search", Page(Caption("Default search options for new searches:"), _matchCase, _wholeWord, _matchPath, _diacritics, _regex));
         AddPage("Indexes", Page(_ntfs, Caption("Volumes to index (none checked = all fixed drives):"), _drives, RebuildRow()));
@@ -86,6 +91,7 @@ internal sealed class OptionsForm : DialogBase
     }
 
     static CheckBox Check(string text) => new() { Text = text, AutoSize = true, Margin = new Padding(3, 3, 3, 3) };
+    static Label Hint(string text) => new() { Text = text, AutoSize = true, Margin = new Padding(21, 0, 3, 3), MaximumSize = new Size(440, 0), ForeColor = SystemColors.GrayText };
     static Label Caption(string text) => new() { Text = text, AutoSize = true, Margin = new Padding(3, 10, 3, 3), MaximumSize = new Size(440, 0) };
 
     static FlowLayoutPanel Page(params Control[] controls)
@@ -116,17 +122,21 @@ internal sealed class OptionsForm : DialogBase
     Control AdminRow()
     {
         var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 12, 0, 0), WrapContents = false };
-        bool elevated = _app.IndexManager.IsElevated;
+        var index = _app.IndexManager;
+        bool service = !_app.IsDemo && IndexService.IsInstalled();
         row.Controls.Add(new Label
         {
             AutoSize = true,
             Margin = new Padding(3, 7, 6, 3),
-            Text = elevated ? "Running as administrator: NTFS volumes are indexed directly." : "Not running as administrator.",
+            Text = index.UsesService ? "Instant indexing: on (Rock Preview service)."
+                 : index.IsElevated ? "Instant indexing: on (running as administrator)."
+                 : service ? "Instant indexing: the Rock Preview service isn't answering."
+                 : "Instant indexing: off (scanning folders, slower).",
         });
-        if (!elevated)
+        if (!service && !_app.IsDemo)
         {
-            var b = new Button { Text = "Restart as &administrator", AutoSize = true };
-            b.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); _app.Post(_app.RestartElevated); };
+            var b = new Button { Text = "Turn on &instant indexing", AutoSize = true };
+            b.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); _app.Post(() => _app.TurnOnInstantIndexing(null)); };
             row.Controls.Add(b);
         }
         return row;
@@ -203,6 +213,7 @@ internal sealed class OptionsForm : DialogBase
         _runInBackground.Checked = s.RunInBackground;
         _showTray.Checked = s.ShowTrayIcon;
         _startWithWindows.Checked = s.StartWithWindows;
+        _replaceExplorer.Checked = s.UseInsteadOfExplorer;
         _filtersBar.Checked = s.FiltersVisible;
         _statusBar.Checked = s.StatusBarVisible;
         _fontName = s.FontName;
@@ -244,6 +255,7 @@ internal sealed class OptionsForm : DialogBase
         s.RunInBackground = _runInBackground.Checked;
         s.ShowTrayIcon = _showTray.Checked;
         s.StartWithWindows = _startWithWindows.Checked;
+        s.UseInsteadOfExplorer = _replaceExplorer.Checked;
         s.FiltersVisible = _filtersBar.Checked;
         s.StatusBarVisible = _statusBar.Checked;
         s.FontName = _fontName;

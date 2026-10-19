@@ -16,8 +16,14 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
+        // The Rock Preview service and its one-time install (IndexService): no windows.
+        if (args.Length > 0 && args[0].TrimStart('-', '/').Equals("service", StringComparison.OrdinalIgnoreCase)) return IndexService.RunAsService();
+        if (args.Any(a => a.TrimStart('-', '/').Equals("installservice", StringComparison.OrdinalIgnoreCase))) return InstallServiceCommand(args);
+        if (args.Any(a => a.TrimStart('-', '/').Equals("uninstallservice", StringComparison.OrdinalIgnoreCase))) return UninstallServiceCommand();
+
         // The single-file build is also the installer: "RockPreview-Setup.exe", -install, -uninstall.
         if (Setup.IsSetupLaunch(args)) return Setup.Run(args);
+        Shortcuts.UseAppIdForThisProcess(); // one taskbar button for all windows, matching Rock Preview's shortcuts
 
         var cmd = CommandLine.Parse(args);
         string suffix = cmd.Demo ? ".Demo" : "";
@@ -120,6 +126,56 @@ static class Program
             return true;
         }
         catch (Win32Exception) { return false; }
+    }
+
+    /// <summary>
+    /// "-installservice -for SID": installs the Rock Preview service for that user (run elevated, from the app or Setup,
+    /// after Windows asked the user once). Returns 0 on success.
+    /// </summary>
+    static int InstallServiceCommand(string[] args)
+    {
+        if (!IsElevated()) return 5; // ERROR_ACCESS_DENIED
+        int i = Array.FindIndex(args, a => a.TrimStart('-', '/').Equals("for", StringComparison.OrdinalIgnoreCase));
+        try
+        {
+            var user = i >= 0 && i + 1 < args.Length ? new System.Security.Principal.SecurityIdentifier(args[i + 1]) : WindowsIdentity.GetCurrent().User!;
+            IndexService.Install(Environment.ProcessPath!, user);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Rock Preview couldn't install its service.\n\n{ex.Message}", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return 1;
+        }
+    }
+
+    static int UninstallServiceCommand()
+    {
+        if (!IsElevated()) return 5;
+        try { IndexService.Uninstall(); return 0; }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Rock Preview couldn't remove its service.\n\n{ex.Message}", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return 1;
+        }
+    }
+
+    /// <summary>Runs this executable elevated and waits for it: its exit code, or -1 when the UAC prompt was declined.</summary>
+    public static int RunElevatedAndWait(IEnumerable<string> args)
+    {
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, CommandLine.Quote(args))
+            {
+                UseShellExecute = true,
+                Verb = "runas",
+                WorkingDirectory = Path.GetDirectoryName(Environment.ProcessPath!)!,
+            });
+            if (p == null) return -1;
+            p.WaitForExit();
+            return p.ExitCode;
+        }
+        catch (Win32Exception) { return -1; }
     }
 
     /// <summary>Starts this executable elevated. Returns false when the UAC prompt was cancelled or failed.</summary>

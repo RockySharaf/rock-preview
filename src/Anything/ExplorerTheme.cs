@@ -101,12 +101,19 @@ internal static class ExplorerTheme
     /// <summary>A glyph rendered into a <paramref name="px"/>-square bitmap.</summary>
     public static Bitmap Glyph(char glyph, int px, Color color, float scale = 1f)
     {
-        var bmp = new Bitmap(px, px);
+        // Drawn as an anti-aliased outline: GDI text (TextRenderer) can't blend into a transparent bitmap, which left
+        // curved glyphs like Refresh jagged. The icon fonts' em square is the glyph box, so this centres it.
+        var bmp = new Bitmap(px, px, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
         using var g = Graphics.FromImage(bmp);
-        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-        using var font = new Font(IconFamily, px * scale, GraphicsUnit.Pixel);
-        TextRenderer.DrawText(g, glyph.ToString(), font, new Rectangle(0, 0, px, px), color,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+        using var family = new FontFamily(IconFamily);
+        float em = px * scale, offset = (px - em) / 2f;
+        float ascent = em * family.GetCellAscent(FontStyle.Regular) / family.GetEmHeight(FontStyle.Regular);
+        using var path = new System.Drawing.Drawing2D.GraphicsPath();
+        path.AddString(glyph.ToString(), family, (int)FontStyle.Regular, em, new PointF(offset, offset - (ascent - em)), StringFormat.GenericTypographic);
+        using var brush = new SolidBrush(color);
+        g.FillPath(brush, path);
         return bmp;
     }
 
@@ -245,6 +252,20 @@ internal sealed class ExplorerToolStrip : ToolStrip
 
     [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public ExplorerBarKind Kind { get; }
+
+    /// <summary>Space between the buttons belongs to the window's title area (it drags the window), not to the bar.</summary>
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool PassEmptySpaceToWindow { get; set; }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (PassEmptySpaceToWindow && m.Msg == 0x84 /* WM_NCHITTEST */)
+        {
+            var p = PointToClient(new Point(unchecked((short)(long)m.LParam), unchecked((short)((long)m.LParam >> 16))));
+            if (GetItemAt(p) == null) { m.Result = -1; /* HTTRANSPARENT */ return; }
+        }
+        base.WndProc(ref m);
+    }
 
     /// <summary>Draw the 1px divider along the bottom (command bar).</summary>
     [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]

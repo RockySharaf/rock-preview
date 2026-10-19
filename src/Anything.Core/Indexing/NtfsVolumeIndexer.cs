@@ -7,12 +7,13 @@ namespace Anything.Core.Indexing;
 /// <summary>
 /// Indexes an NTFS volume from its raw MFT (falling back to FSCTL_ENUM_USN_DATA) and keeps it current by
 /// tailing the USN change journal. Keeps a record-number → index-id map for applying journal records.
+/// The volume is read directly (administrator) or through the Rock Preview service (<see cref="IVolumeSource"/>).
 /// </summary>
 internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
 {
     const int ErrorInvalidParameter = 87;
 
-    SafeFileHandle? _volume;
+    IVolumeSource? _volume;
     RecordMap _map = new();
     ulong _journalId;
     long _nextUsn;
@@ -29,21 +30,14 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
     int _flushing;
     long _lastScanTicks;
 
-    public NtfsVolumeIndexer(IIndexerHost host, string drive) : base(host, drive) { }
+    public NtfsVolumeIndexer(IIndexerHost host, string drive, IVolumeSource source) : base(host, drive) => _volume = source;
 
     public override RootKind Kind => RootKind.Ntfs;
     public long ProgressCount => Interlocked.Read(ref _progress.Value);
     /// <summary>"MFT" or "USN" depending on how the last scan enumerated the volume.</summary>
     public string ScanMethod { get; private set; } = "";
-
-    /// <summary>Opens \\.\X: for reading (requires administrator).</summary>
-    public bool TryOpen()
-    {
-        var h = Native.CreateFile(@"\\.\" + RootName, Native.GENERIC_READ, Native.FILE_SHARE_ALL, 0, Native.OPEN_EXISTING, Native.FILE_FLAG_BACKUP_SEMANTICS, 0);
-        if (h.IsInvalid) { h.Dispose(); return false; }
-        _volume = h;
-        return true;
-    }
+    /// <summary>True when the volume is read through the Rock Preview service.</summary>
+    public bool ViaService => _volume?.Kind == "service";
 
     public override (ulong JournalId, long NextUsn) JournalPosition => (_journalId, _nextUsn);
 
@@ -68,7 +62,7 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
             _journalId = loaded.JournalId;
             _nextUsn = loaded.NextUsn;
         }
-        if (_volume == null || !UsnJournal.TryQuery(_volume, out var info, out _)) return false;
+        if (_volume == null || !_volume.TryQueryJournal(create: false, out var info)) return false;
         // Current when the journal is the same one and still holds every record since the saved position.
         bool current = info.JournalId == loaded.JournalId && loaded.NextUsn >= info.FirstUsn && loaded.NextUsn <= info.NextUsn;
         _hasJournal = current;
@@ -80,24 +74,13 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
         StopMonitoring();
         if (_volume == null) throw new InvalidOperationException("volume not open");
         // Capture the journal position *before* reading the MFT so changes made during the scan are replayed.
-        _hasJournal = UsnJournal.TryQueryOrCreate(_volume, out var info);
+        _hasJournal = _volume.TryQueryJournal(create: true, out var info);
         long startUsn = _hasJournal ? info.NextUsn : 0;
         Interlocked.Exchange(ref _progress.Value, 0);
         Host.ReportProgress(this, 0);
 
-        VolumeRecords records;
-        try
-        {
-            records = MftReader.Read(_volume, ct, n => { Interlocked.Exchange(ref _progress.Value, n); });
-            ScanMethod = "MFT";
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception)
-        {
-            Interlocked.Exchange(ref _progress.Value, 0);
-            records = UsnJournal.Enumerate(_volume, startUsn, ct, n => { Interlocked.Exchange(ref _progress.Value, n); });
-            ScanMethod = "USN";
-        }
+        var records = _volume.ReadRecords(startUsn, ct, n => { Interlocked.Exchange(ref _progress.Value, n); }, out string method);
+        ScanMethod = method;
         ct.ThrowIfCancellationRequested();
 
         lock (Sync)
@@ -177,7 +160,7 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
                 lock (Sync) { start = _nextUsn; jid = _journalId; }
                 var volume = _volume;
                 if (volume == null) return;
-                int ret = UsnJournal.Read(volume, jid, start, buf, Size);
+                int ret = volume.ReadJournal(jid, start, buf, Size);
                 if (ct.IsCancellationRequested) return;
                 if (ret < 0)
                 {

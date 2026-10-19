@@ -30,6 +30,8 @@ internal static class Setup
         public bool DesktopShortcut;
         public bool RunAsAdmin;
         public bool StartWithWindows;
+        public bool ReplaceExplorer;  // Rock Preview instead of File Explorer (off unless chosen)
+        public bool IndexService;     // instant indexing through the Rock Preview service (Windows asks once)
         public bool Launch;
         public bool Quiet;
         public bool RemoveData;
@@ -46,6 +48,8 @@ internal static class Setup
             if (DesktopShortcut) l.Add("-desktop");
             if (RunAsAdmin) l.Add("-runasadmin");
             if (StartWithWindows) l.Add("-startwithwindows");
+            if (ReplaceExplorer) l.Add("-replaceexplorer");
+            if (IndexService) l.Add("-indexservice");
             if (Launch) l.Add("-launch");
             if (Quiet) l.Add("-quiet");
             if (Auto) l.Add("-auto");
@@ -94,6 +98,8 @@ internal static class Setup
                 case "desktop": o.DesktopShortcut = true; break;
                 case "runasadmin": o.RunAsAdmin = true; break;
                 case "startwithwindows": o.StartWithWindows = true; break;
+                case "replaceexplorer": o.ReplaceExplorer = true; break;
+                case "indexservice": o.IndexService = true; break;
                 case "launch": o.Launch = true; break;
                 case "quiet": o.Quiet = true; break;
                 case "removedata": o.RemoveData = true; break;
@@ -173,7 +179,29 @@ internal static class Setup
             if (o.StartWithWindows) run.SetValue(RunValue, "\"" + exe + "\" -startup");
             else if (run.GetValue(RunValue) is string old && PointsInto(old, folder)) run.DeleteValue(RunValue, false);
         }
+        // Rock Preview instead of File Explorer: on when chosen (now pointing at this copy); unticked in the setup
+        // window turns it off. A quiet install without the switch leaves the user's choice alone.
+        try
+        {
+            if (o.ReplaceExplorer) ExplorerReplacement.Enable(exe);
+            else if (!o.Quiet && ExplorerReplacement.IsEnabled()) ExplorerReplacement.Disable();
+        }
+        catch (Exception) { }
         SHChangeNotify(0x08000000 /* SHCNE_ASSOCCHANGED */, 0, IntPtr.Zero, IntPtr.Zero);
+        // Instant indexing: the Rock Preview service, installed once (Windows asks for permission unless setup already runs
+        // as administrator). An existing service is kept unless its own code changed (IndexService.ServiceVersion).
+        bool updateService = global::Anything.IndexService.NeedsUpdate();
+        if ((o.IndexService && !global::Anything.IndexService.IsInstalled()) || updateService)
+        {
+            status(updateService ? "Updating the instant-indexing service..." : "Turning on instant indexing...");
+            try
+            {
+                var user = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+                if (Program.IsElevated()) global::Anything.IndexService.Install(exe, user);
+                else Program.RunElevatedAndWait(["-installservice", "-for", user.Value]);
+            }
+            catch (Exception ex) { Log(ex); }
+        }
         status("Rock Preview is installed.");
     }
 
@@ -273,6 +301,22 @@ internal static class Setup
         {
             using var run = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
             if (run?.GetValue(RunValue) is string cmd && PointsInto(cmd, folder)) run.DeleteValue(RunValue, false);
+        }
+        catch (Exception) { }
+        // Remove the instant-indexing service (Windows asks for permission unless this already runs as administrator).
+        try
+        {
+            if (global::Anything.IndexService.IsInstalled())
+            {
+                if (Program.IsElevated()) global::Anything.IndexService.Uninstall();
+                else Program.RunElevatedAndWait(["-uninstallservice"]);
+            }
+        }
+        catch (Exception) { }
+        // Hand folders and Win+E back to File Explorer if this copy had them.
+        try
+        {
+            if (ExplorerReplacement.RegisteredExe() is { } registered && PointsInto(registered, folder)) ExplorerReplacement.Disable();
         }
         catch (Exception) { }
         (allUsers ? Registry.LocalMachine : Registry.CurrentUser).DeleteSubKeyTree(UninstallKeyPath, throwOnMissingSubKey: false);
@@ -410,79 +454,14 @@ internal static class Setup
         catch (Exception) { return false; }
     }
 
-    // ---- shortcuts (IShellLinkW) -----------------------------------------------------------------
+    // ---- shortcuts --------------------------------------------------------------------------------
 
-    const uint SLDF_RUNAS_USER = 0x2000;
+    static void CreateShortcut(string lnk, string exe, bool runAsAdmin) =>
+        Shortcuts.Create(lnk, exe, "", ConfiguredHotkey() is { } hotkey
+            ? $"Search, browse and preview every file instantly. Press {hotkey} to open it from anywhere."
+            : "Search, browse and preview every file instantly.", runAsAdmin);
 
-    static void CreateShortcut(string lnk, string exe, bool runAsAdmin)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(lnk)!);
-        var link = (IShellLinkW)new ShellLinkObject();
-        try
-        {
-            link.SetPath(exe);
-            link.SetWorkingDirectory(Path.GetDirectoryName(exe)!);
-            link.SetDescription(ConfiguredHotkey() is { } hotkey
-                ? $"Search, browse and preview every file instantly. Press {hotkey} to open it from anywhere."
-                : "Search, browse and preview every file instantly.");
-            link.SetIconLocation(exe, 0);
-            if (link is IShellLinkDataList data && data.GetFlags(out uint flags) >= 0)
-                data.SetFlags(runAsAdmin ? flags | SLDF_RUNAS_USER : flags & ~SLDF_RUNAS_USER);
-            ((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Save(lnk, true);
-        }
-        finally { Marshal.ReleaseComObject(link); }
-    }
-
-    static string? ShortcutTarget(string lnk)
-    {
-        object? link = null;
-        try
-        {
-            link = new ShellLinkObject();
-            ((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Load(lnk, 0);
-            var sb = new StringBuilder(1024);
-            ((IShellLinkW)link).GetPath(sb, sb.Capacity, IntPtr.Zero, 0);
-            return sb.ToString();
-        }
-        catch (Exception) { return null; }
-        finally { if (link != null) Marshal.ReleaseComObject(link); }
-    }
-
-    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
-    class ShellLinkObject { }
-
-    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    interface IShellLinkW
-    {
-        void GetPath([MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cch, IntPtr pfd, uint fFlags);
-        void GetIDList(out IntPtr ppidl);
-        void SetIDList(IntPtr pidl);
-        void GetDescription([MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cch);
-        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
-        void GetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cch);
-        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
-        void GetArguments([MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cch);
-        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
-        void GetHotkey(out short pwHotkey);
-        void SetHotkey(short wHotkey);
-        void GetShowCmd(out int piShowCmd);
-        void SetShowCmd(int iShowCmd);
-        void GetIconLocation([MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cch, out int piIcon);
-        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
-        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
-        void Resolve(IntPtr hwnd, uint fFlags);
-        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
-    }
-
-    [ComImport, Guid("45e2b4ae-b1c3-11d0-b92f-00a0c90312e1"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    interface IShellLinkDataList
-    {
-        [PreserveSig] int AddDataBlock(IntPtr pDataBlock);
-        [PreserveSig] int CopyDataBlock(uint dwSig, out IntPtr ppDataBlock);
-        [PreserveSig] int RemoveDataBlock(uint dwSig);
-        [PreserveSig] int GetFlags(out uint pdwFlags);
-        [PreserveSig] int SetFlags(uint dwFlags);
-    }
+    static string? ShortcutTarget(string lnk) => Shortcuts.Read(lnk)?.Path;
 
     [DllImport("shell32.dll")] static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
     [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);

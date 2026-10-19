@@ -65,6 +65,7 @@ internal sealed class AnythingApp : ApplicationContext
         IndexManager = index;
         SearchEngine = engine;
         Settings = AppSettings.Load(AppSettings.DefaultPath(cmd.Demo));
+        if (!cmd.Demo) ExplorerReplacement.RepairIfMissing(Environment.ProcessPath); // folders must never point at a deleted copy
         AppIcon = LoadIcon();
 
         ShellInfo.Initialize();
@@ -145,9 +146,17 @@ internal sealed class AnythingApp : ApplicationContext
     {
         if (_exiting) return;
         if (cmd.Exit) { ExitApp(); return; }
-        if (cmd.Startup && cmd.Search is null && cmd.Path is null && !cmd.NewWindow)
+        if (cmd.Startup && cmd.Search is null && cmd.Path is null && !cmd.NewWindow && !cmd.Explorer)
         {
             if (initial) return; // start hidden in the tray
+        }
+        if (cmd.Explorer)
+        {
+            // Started in place of File Explorer (Win+E, opening a folder or drive): a new window there, like Explorer's.
+            var ew = CreateWindow(_windows.Count > 0 ? _lastActive : null);
+            ew.OpenAsExplorer(cmd.Path);
+            ShowWindow(ew);
+            return;
         }
         MainForm w = cmd.NewWindow && _windows.Count > 0 && !initial
             ? CreateWindow(_lastActive)
@@ -247,6 +256,38 @@ internal sealed class AnythingApp : ApplicationContext
         if (Program.Relaunch(args)) ExitApp();
     }
 
+    /// <summary>
+    /// Turns on instant indexing for good: installs the Rock Preview service (Windows asks for permission this once),
+    /// then re-indexes through it. Rock Preview itself keeps running as a normal app.
+    /// </summary>
+    public async void TurnOnInstantIndexing(IWin32Window? owner)
+    {
+        if (IsDemo) return;
+        int code;
+        if (Program.IsElevated())
+        {
+            code = await Task.Run(() =>
+            {
+                try { IndexService.Install(Environment.ProcessPath!, System.Security.Principal.WindowsIdentity.GetCurrent().User!); return 0; }
+                catch (Exception) { return 1; }
+            });
+        }
+        else
+        {
+            string user = System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value;
+            code = await Task.Run(() => Program.RunElevatedAndWait(["-installservice", "-for", user]));
+        }
+        if (code == -1) return; // the permission prompt was declined: nothing changed
+        if (code != 0)
+        {
+            MessageBox.Show(owner, "Rock Preview couldn't turn on instant indexing.", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        for (int i = 0; i < 40 && !Anything.Core.Indexing.VolumeService.IsRunning(); i++) await Task.Delay(250);
+        RebuildIndex();
+        foreach (var w in _windows) w.OnIndexStateChanged();
+    }
+
     public void RestartElevated()
     {
         var args = new List<string> { "-restarted" };
@@ -333,7 +374,11 @@ internal sealed class AnythingApp : ApplicationContext
     public void ApplySettings(bool indexChanged)
     {
         Settings.Save();
-        if (!IsDemo) Settings.ApplyStartWithWindows();
+        if (!IsDemo)
+        {
+            Settings.ApplyStartWithWindows();
+            Settings.ApplyExplorerReplacement();
+        }
         UpdateTray();
         RegisterHotkey();
         foreach (var w in _windows) w.ApplyUiSettings();

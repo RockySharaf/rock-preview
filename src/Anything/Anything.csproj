@@ -18,7 +18,7 @@
     <AssemblyName>RockPreview</AssemblyName>
     <RootNamespace>Anything</RootNamespace>
     <Product>Rock Preview</Product>
-    <Version>1.2.1</Version>
+    <Version>1.3.0</Version>
     <!-- WFO5001: Application.SetColorMode (system dark mode) is experimental. WFO0003: DPI awareness is declared in app.manifest on purpose (applies before Main runs). -->
     <NoWarn>$(NoWarn);WFO5001;WFO0003;CA1416</NoWarn>
     <!-- The Explorer context menu loads arbitrary third-party shell extensions in-process; many are not

@@ -97,6 +97,8 @@ internal sealed class AppSettings
     public bool RunInBackground { get; set; } = true;
     public bool ShowTrayIcon { get; set; } = true;
     public bool StartWithWindows { get; set; }
+    /// <summary>Win+E and opening folders use Rock Preview instead of File Explorer (kept in the registry, not here).</summary>
+    public bool UseInsteadOfExplorer { get; set; }
     /// <summary>Global hotkey that shows or hides Rock Preview from any app; empty = none.</summary>
     public string Hotkey { get; set; } = DefaultHotkey;
     public const string DefaultHotkey = "Alt+X";
@@ -182,6 +184,7 @@ internal sealed class AppSettings
         string hotkey = Str("hotkey", "").Trim();
         s.Hotkey = hotkey.Equals("none", StringComparison.OrdinalIgnoreCase) ? "" : hotkey.Length == 0 ? DefaultHotkey : hotkey;
         s.StartWithWindows = ReadStartWithWindows();
+        s.UseInsteadOfExplorer = ExplorerReplacement.IsEnabled();
 
         var ix = s.Index;
         ix.IndexNtfsVolumes = Bool("index_ntfs_volumes", ix.IndexNtfsVolumes);
@@ -329,6 +332,19 @@ internal sealed class AppSettings
             if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir);
         }
         catch { }
+    }
+
+    /// <summary>Turns "Use Rock Preview instead of File Explorer" on or off for this user, when the choice changed.</summary>
+    public void ApplyExplorerReplacement()
+    {
+        try
+        {
+            bool on = ExplorerReplacement.IsEnabled();
+            if (UseInsteadOfExplorer && !on && Environment.ProcessPath is { } exe) ExplorerReplacement.Enable(exe);
+            else if (!UseInsteadOfExplorer && on) ExplorerReplacement.Disable();
+        }
+        catch (Exception) { }
+        UseInsteadOfExplorer = ExplorerReplacement.IsEnabled();
     }
 
     static bool ReadStartWithWindows()

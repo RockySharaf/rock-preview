@@ -11,6 +11,8 @@ internal sealed class CommandLine
     public bool Admin { get; set; }
     public bool Exit { get; set; }
     public bool Demo { get; set; }
+    /// <summary>-explorer: started in place of File Explorer (Win+E, a folder or drive): a new window, at Path or Home.</summary>
+    public bool Explorer { get; set; }
     /// <summary>Internal: this process was relaunched (elevation restart) and must wait for the old instance to exit.</summary>
     public bool Restarted { get; set; }
 
@@ -35,8 +37,9 @@ internal sealed class CommandLine
                     break;
                 case "path":
                 case "browse":
-                    if (i + 1 < args.Count) c.Path = args[++i];
+                    if (i + 1 < args.Count) c.Path = RepairQuotedPath(args[++i]);
                     break;
+                case "explorer": c.Explorer = true; break;
                 case "startup": c.Startup = true; break;
                 case "newwindow":
                 case "new-window": c.NewWindow = true; break;
@@ -60,10 +63,17 @@ internal sealed class CommandLine
         if (Path is not null) { l.Add("-path"); l.Add(Path); }
         if (Startup) l.Add("-startup");
         if (NewWindow) l.Add("-newwindow");
+        if (Explorer) l.Add("-explorer");
         if (Exit) l.Add("-exit");
         if (includeAdmin && Admin) l.Add("-admin");
         return l;
     }
+
+    /// <summary>
+    /// Windows passes a drive as "%1" = "C:\", and the backslash before the closing quote escapes it, so the
+    /// argument arrives as C:" — turn it back into C:\.
+    /// </summary>
+    static string RepairQuotedPath(string path) => path.EndsWith('"') ? path[..^1].TrimEnd() + "\\" : path;
 
     public static string Quote(IEnumerable<string> args) => string.Join(' ', args.Select(QuoteOne));
 

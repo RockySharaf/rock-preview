@@ -28,7 +28,7 @@ internal sealed partial class MainForm
     readonly SplitContainer _body = new();     // navigation pane | files + preview
     readonly Panel _navPanel = new();
     readonly List<(ToolStripItem Item, string? Svg, char Glyph)> _glyphItems = [];
-    readonly Panel _addressGap = new() { Dock = DockStyle.Right };
+    readonly DragPanel _addressGap = new() { Dock = DockStyle.Right };
     SearchField _searchField = null!;
 
     bool _browsing;                 // a location is open in the Explorer view
@@ -119,6 +119,7 @@ internal sealed partial class MainForm
         _nav.Dock = DockStyle.Left;
         _nav.AutoSize = true;
         _nav.CanOverflow = false;
+        _nav.PassEmptySpaceToWindow = true; // the gaps drag the window, like the rest of the top row
         _nav.BackColor = ExplorerTheme.Chrome;
         Cmd(_navBack, null, ExplorerTheme.GBack, null, "Back (Alt+Left)", GoBack);
         Cmd(_navForward, null, ExplorerTheme.GForward, null, "Forward (Alt+Right)", GoForward);
@@ -219,6 +220,7 @@ internal sealed partial class MainForm
         for (int i = 0; i < _nav.Items.Count; i++) _nav.Items[i].Margin = new Padding(0, 0, i == _nav.Items.Count - 1 ? S(14) : S(16), 0);
         _searchBar.Padding = new Padding(0, S(8), S(11), S(8));
         _searchBar.Height = S(48);
+        ApplyTitleRowMetrics();
         _addressGap.Width = S(8);
         LayoutAddressRow();
         _body.SplitterWidth = Math.Max(3, S(4));
@@ -428,11 +430,13 @@ internal sealed partial class MainForm
     protected override void OnActivated(EventArgs e)
     {
         base.OnActivated(e);
+        _captionButtons.Active = true;
         UpdateCommandStates(); // the clipboard may have changed while we were in the background
     }
 
     protected override void WndProc(ref Message m)
     {
+        if (HandleTitleBarMessage(ref m)) return;
         if (ShellContextMenu.HandleMenuMessage(ref m)) return; // Explorer's New menu fills its submenu on WM_INITMENUPOPUP
         base.WndProc(ref m);
     }
@@ -619,6 +623,28 @@ internal sealed partial class MainForm
         _explorer.GoForward();
     }
 
+    /// <summary>
+    /// Opens the current location (or the selected result's folder) in a File Explorer window. explorer.exe with a
+    /// location always opens File Explorer itself, even when Rock Preview replaces it.
+    /// </summary>
+    void OpenInFileExplorer()
+    {
+        if (!ExplorerShown && SelectedPaths(1) is [var path])
+        {
+            FileOps.OpenPath(this, [path]); // File Explorer with the item selected
+            return;
+        }
+        string? location = _browsing ? _explorer.CurrentPath ?? _explorer.CurrentParsingName : null;
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", location is null ? "" : "\"" + location + "\"") { UseShellExecute = true })?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Unable to open File Explorer.\n\n{ex.Message}", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     void NavigateUp()
     {
         if (!_browsing) return;
@@ -631,9 +657,25 @@ internal sealed partial class MainForm
         if (!OpenFolder(HomeLocation)) BrowseTo(ThisPcLocation);
     }
 
+    bool _explorerStart;            // opened in place of File Explorer: start at _explorerLocation, or Home
+    string? _explorerLocation;
+
+    /// <summary>Before the window shows: open at this folder (null = Home) instead of the last folder.</summary>
+    public void OpenAsExplorer(string? location)
+    {
+        _explorerStart = true;
+        _explorerLocation = location;
+    }
+
     /// <summary>Opens the last folder (or Home) when the window starts, like File Explorer.</summary>
     void OpenStartLocation()
     {
+        if (_explorerStart)
+        {
+            if (_explorerLocation is { Length: > 0 } where && BrowseTo(where)) return;
+            GoHome();
+            return;
+        }
         string last = _app.Settings.LastLocation;
         if (last.Length > 0 && BrowseTo(last)) return;
         GoHome();

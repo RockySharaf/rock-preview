@@ -192,13 +192,16 @@ internal sealed partial class MainForm
         var invert = Item("Invert selection", InvertSelectionAny);
         var properties = Item("Properties", PropertiesAny, display: "Alt+Enter");
         var options = Item("Options", () => _app.ShowOptions(this), display: "Ctrl+P");
+        // The way to the real File Explorer (useful when Rock Preview replaces it): this location, in a File Explorer window.
+        var inExplorer = Item("Open in File Explorer", OpenInFileExplorer);
         selectAll.Image = MenuIcon(ExplorerIcons.SelectAll);
         selectNone.Image = MenuIcon(ExplorerIcons.SelectNone);
         invert.Image = MenuIcon(ExplorerIcons.InvertSelection);
         properties.Image = MenuIcon(ExplorerIcons.Properties);
         options.Image = MenuIcon(ExplorerIcons.Options);
+        inExplorer.Image = MenuIcon(ExplorerIcons.OpenNewWindow);
         _miFiltersBar.Visible = false; // the filter now lives in Search options
-        _cmdMore.DropDownItems.AddRange([selectAll, selectNone, invert, new ToolStripSeparator(), properties, options, new ToolStripSeparator(),
+        _cmdMore.DropDownItems.AddRange([selectAll, selectNone, invert, new ToolStripSeparator(), properties, inExplorer, options, new ToolStripSeparator(),
                                          file, edit, view, browse, search, _miBookmarks, tools, help]);
         SyncMenus();
     }

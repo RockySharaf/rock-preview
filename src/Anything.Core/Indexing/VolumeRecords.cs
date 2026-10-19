@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace Anything.Core.Indexing;
 
 /// <summary>
@@ -314,5 +316,73 @@ public sealed class VolumeRecords
         });
         progress?.Invoke(count);
         return (rootId, map, count);
+    }
+
+    // ---- transfer: the Rock Preview service sends the records it read to the app ---------------------
+
+    /// <summary>Writes the records (metadata only: names, parents, sizes, dates, attributes) for <see cref="ReadFrom"/>.</summary>
+    public void WriteTo(BinaryWriter w)
+    {
+        int n = _length;
+        w.Write(n);
+        for (int i = 0; i < n; i++)
+        {
+            string? name = _names[i];
+            w.Write(name != null);
+            if (name != null) w.Write(name);
+        }
+        w.Write(MemoryMarshal.AsBytes(_parents.AsSpan(0, n)));
+        w.Write(MemoryMarshal.AsBytes(_sizes.AsSpan(0, n)));
+        w.Write(MemoryMarshal.AsBytes(_created.AsSpan(0, n)));
+        w.Write(MemoryMarshal.AsBytes(_modified.AsSpan(0, n)));
+        w.Write(MemoryMarshal.AsBytes(_attrs.AsSpan(0, n)));
+        w.Write(_flags.AsSpan(0, n));
+        var links = _extraLinks ?? [];
+        w.Write(links.Count);
+        foreach (var (rec, parent, name) in links) { w.Write(rec); w.Write(parent); w.Write(name); }
+        var dos = _dosFallback ?? [];
+        w.Write(dos.Count);
+        foreach (var (rec, (parent, name)) in dos) { w.Write(rec); w.Write(parent); w.Write(name); }
+    }
+
+    /// <summary>Reads records written by <see cref="WriteTo"/>.</summary>
+    public static VolumeRecords ReadFrom(BinaryReader r)
+    {
+        int n = r.ReadInt32();
+        if (n < 0 || n > 1 << 30) throw new InvalidDataException("invalid record count");
+        var v = new VolumeRecords(n);
+        for (int i = 0; i < n; i++) v._names[i] = r.ReadBoolean() ? r.ReadString() : null;
+        ReadExactly(r, MemoryMarshal.AsBytes(v._parents.AsSpan(0, n)));
+        ReadExactly(r, MemoryMarshal.AsBytes(v._sizes.AsSpan(0, n)));
+        ReadExactly(r, MemoryMarshal.AsBytes(v._created.AsSpan(0, n)));
+        ReadExactly(r, MemoryMarshal.AsBytes(v._modified.AsSpan(0, n)));
+        ReadExactly(r, MemoryMarshal.AsBytes(v._attrs.AsSpan(0, n)));
+        ReadExactly(r, v._flags.AsSpan(0, n));
+        v._length = n;
+        int links = r.ReadInt32();
+        if (links < 0 || links > n * 8 + 1024) throw new InvalidDataException("invalid link count");
+        if (links > 0)
+        {
+            v._extraLinks = new(links);
+            for (int i = 0; i < links; i++) v._extraLinks.Add((r.ReadInt32(), r.ReadInt64(), r.ReadString()));
+        }
+        int dos = r.ReadInt32();
+        if (dos < 0 || dos > n) throw new InvalidDataException("invalid short-name count");
+        if (dos > 0)
+        {
+            v._dosFallback = new(dos);
+            for (int i = 0; i < dos; i++) v._dosFallback[r.ReadInt32()] = (r.ReadInt64(), r.ReadString());
+        }
+        return v;
+    }
+
+    static void ReadExactly(BinaryReader r, Span<byte> into)
+    {
+        while (into.Length > 0)
+        {
+            int got = r.Read(into);
+            if (got <= 0) throw new EndOfStreamException();
+            into = into[got..];
+        }
     }
 }

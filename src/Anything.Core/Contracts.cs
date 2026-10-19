@@ -61,6 +61,8 @@ public interface IIndexManager : IDisposable
     string StatusText { get; }
     event Action? StateChanged;
     bool IsElevated { get; }
+    /// <summary>NTFS volumes are read through the Rock Preview service (instant indexing without administrator).</summary>
+    bool UsesService { get; }
 
     /// <summary>Loads the database (if present) then starts background (re)indexing and change monitoring. Returns immediately.</summary>
     void Start(IndexSettings settings);

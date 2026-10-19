@@ -38,6 +38,7 @@ internal sealed class DemoIndexManager : IIndexManager
     public string StatusText => _status;
     public event Action? StateChanged;
     public bool IsElevated => Program.IsElevated();
+    public bool UsesService => false;
 
     public void Start(IndexSettings settings) => StartScan();
 

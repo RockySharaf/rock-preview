@@ -85,11 +85,28 @@ The arrow next to it shows the same files as a list instead (`Ctrl+Shift+Z`), or
 <img src="docs/images/search.png" alt="Instant search results with highlighted matches" width="900">
 </div>
 
+### Use it instead of File Explorer (optional)
+Tick **Options › General › Use Rock Preview instead of File Explorer** (or the same box in Setup) and Rock Preview
+takes over:
+
+- opening folders and drives (from the desktop, the Start menu and other apps), **Win+E**, and **This PC**;
+- **File Explorer's taskbar button**: it becomes Rock Preview's, in the same place, and every Rock Preview window groups
+  under it.
+
+Inside Rock Preview, folders open in the same window. Untick the box (or uninstall) and File Explorer comes back
+exactly as it was: Rock Preview keeps a copy of everything it changes and puts it back. Only your own Windows account
+is affected. **⋯ › Open in File Explorer** always opens the real File Explorer.
+
+One thing Windows doesn't allow: folders **double-clicked on the desktop** still open in File Explorer. The desktop is
+part of File Explorer and opens them itself, without asking the settings other apps use (tested on Windows 11), and
+Rock Preview doesn't patch File Explorer to change that.
+
 ## Install
 
 1. Download **`RockPreview-Setup.exe`** from the [latest release](https://github.com/RockySharaf/rock-preview/releases/latest)
-   and run it. Choose *Just me* (no administrator needed) or *Everyone on this PC*, plus optional desktop shortcut
-   and *Always run as administrator*. *Start with Windows* is on by default, so `Alt+X` opens Rock Preview at any time.
+   and run it. Choose *Just me* (no administrator needed) or *Everyone on this PC*, plus optional desktop shortcut,
+   *Always run as administrator* and *Use Rock Preview instead of File Explorer*. *Start with Windows* is on by
+   default, so `Alt+X` opens Rock Preview at any time.
 2. Prefer no install? Download **`RockPreview.exe`** — the portable version runs from any folder or USB stick.
 
 Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall from **Settings › Apps**.
@@ -97,8 +114,11 @@ Both are self-contained: nothing else (not even .NET) needs to be installed. Uni
 > **Windows SmartScreen** may say "Windows protected your PC" because the download isn't code-signed yet.
 > Click **More info › Run anyway**.
 
-> **Administrator rights** give the instant NTFS index (reading the Master File Table needs them). Without them,
-> Rock Preview still works — it indexes by scanning folders, which is slower the first time.
+> **Instant indexing, approved once.** Reading a drive's Master File Table needs administrator rights, so Setup offers
+> *Instant indexing for all drives*: it installs the small **Rock Preview Service** and Windows asks for permission one
+> time. After that Rock Preview runs as a normal app (no more prompts) and the service reads the drives for it, like
+> Everything's service. You can also turn it on later from the yellow bar or **Options › General**. Without it,
+> Rock Preview still works: it indexes by scanning folders, which is slower the first time.
 
 ## Keyboard shortcuts
 
@@ -144,6 +164,7 @@ Press `F1` in the app for the complete reference.
 ```text
 RockPreview.exe [search text]        open with a search
 RockPreview.exe -path "D:\Projects"  open a folder
+RockPreview.exe -explorer [-path X]  a new window, like File Explorer (at X, or Home)
 RockPreview.exe -admin               restart elevated (instant NTFS index)
 RockPreview.exe -startup             start in the background
 RockPreview.exe -exit                close the running instance
@@ -176,6 +197,11 @@ powershell -ExecutionPolicy Bypass -File build\Publish.ps1
 
 Rock Preview runs entirely on your PC. It makes no network connections, has no telemetry and no account.
 Its index and settings stay in `%LOCALAPPDATA%\Rock Preview` and `%APPDATA%\Rock Preview`.
+
+The optional Rock Preview Service runs from `C:\Program Files\Rock Preview Service` (only administrators can change
+it). It answers only the Windows accounts that installed it, only on this PC, never over the network. It returns file
+names, folders, sizes and dates from local NTFS drives, and never raw disk data or file contents. Uninstalling Rock
+Preview removes it.
 
 ## Roadmap
 
