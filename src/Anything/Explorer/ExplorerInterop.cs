@@ -95,6 +95,20 @@ internal interface IShellItemArray
     [PreserveSig] int EnumItems(out IntPtr ppenumShellItems);
 }
 
+/// <summary>The folder view's look: colours, item height, font and theme (shobjidl.h).</summary>
+[ComImport, Guid("e693cf68-d967-4112-8763-99172aee5e5a"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IVisualProperties
+{
+    [PreserveSig] int SetWatermark(IntPtr hbmp, int vpwf);
+    [PreserveSig] int SetColor(int vpcf, int cr);
+    [PreserveSig] int GetColor(int vpcf, out int pcr);
+    [PreserveSig] int SetItemHeight(int cyItemInPixels);
+    [PreserveSig] int GetItemHeight(out int cyItemInPixels);
+    [PreserveSig] int SetFont(IntPtr plf, [MarshalAs(UnmanagedType.Bool)] bool bRedraw);
+    [PreserveSig] int GetFont(IntPtr plf);
+    [PreserveSig] int SetTheme([MarshalAs(UnmanagedType.LPWStr)] string? pszSubAppName, [MarshalAs(UnmanagedType.LPWStr)] string? pszSubIdList);
+}
+
 [ComImport, Guid("000214E3-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IShellView
 {
@@ -233,6 +247,7 @@ internal static class ShellNative
     public static readonly Guid CLSID_ExplorerBrowser = new("71f96385-ddd6-48d3-a0c1-ae06e8b055fb");
     public static readonly Guid IID_IShellView = new("000214E3-0000-0000-C000-000000000046");
     public static readonly Guid IID_IFolderView2 = new("1af3a467-214f-4298-908e-06b03e0b39f9");
+    public static readonly Guid IID_IVisualProperties = new("e693cf68-d967-4112-8763-99172aee5e5a");
     public static readonly Guid IID_IShellItem = new("43826d1e-e718-42ee-bc55-a1e261c37bfe");
     public static readonly Guid IID_IExplorerPaneVisibility = new("e07010ec-bc17-44c0-97b0-46c7c95b9edc");
     public static readonly Guid IID_ICommDlgBrowser = new("000214F1-0000-0000-C000-000000000046"); // also SID_SExplorerBrowserFrame

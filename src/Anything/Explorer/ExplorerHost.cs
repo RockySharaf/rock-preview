@@ -21,6 +21,7 @@ internal sealed class ExplorerHost : Control
     int _selectAttempts;
     readonly System.Windows.Forms.Timer _selectionTimer = new() { Interval = 200 };
     readonly System.Windows.Forms.Timer _selectTimer = new() { Interval = 100 };
+    readonly System.Windows.Forms.Timer _themeTimer = new() { Interval = 400 };
     string? _lastSelection;
     int _lastSelectionCount = -1;
     int _itemCount, _lastItemCount = -1;
@@ -47,6 +48,8 @@ internal sealed class ExplorerHost : Control
         TabStop = true;
         _selectionTimer.Tick += (_, _) => PollSelection();
         _selectTimer.Tick += (_, _) => TrySelectPending();
+        _themeTimer.Tick += (_, _) => { _themeTimer.Stop(); ApplyViewTheme(); };
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
     }
 
     // ---- state --------------------------------------------------------------------------------
@@ -120,8 +123,10 @@ internal sealed class ExplorerHost : Control
     {
         if (disposing)
         {
+            Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
             _selectionTimer.Dispose();
             _selectTimer.Dispose();
+            _themeTimer.Dispose();
             ReleaseBrowser();
         }
         base.Dispose(disposing);
@@ -277,8 +282,34 @@ internal sealed class ExplorerHost : Control
         _lastSelection = null;
         _lastSelectionCount = -1;
         if (_selectAfterNavigate != null) { _selectAttempts = 0; _selectTimer.Start(); }
+        ApplyViewTheme();
         Navigated?.Invoke();
         SelectionChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Keeps the folder view in the app's theme when it differs from Windows' app theme (light app, dark Windows, or the
+    /// other way round). Left alone, the view can then switch to Windows' theme on its own (it did, running as
+    /// administrator: a black view inside a light window). When the two themes agree the view keeps its native style:
+    /// setting any theme gives it slightly larger group headers. Applied after every navigation and when Windows'
+    /// settings change.
+    /// </summary>
+    void ApplyViewTheme()
+    {
+        bool windowsDark = Microsoft.Win32.Registry.GetValue(
+            @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "AppsUseLightTheme", 1) is 0;
+        if (windowsDark == ExplorerTheme.Dark) return;
+        var props = GetView<IVisualProperties>(ShellNative.IID_IVisualProperties);
+        if (props == null) return;
+        try { props.SetTheme(ExplorerTheme.Dark ? "DarkMode_ItemsView" : "ItemsView", null); }
+        catch (COMException) { }
+        finally { Marshal.ReleaseComObject(props); }
+    }
+
+    void OnUserPreferenceChanged(object? sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
+    {
+        // The view reacts to the change itself first; set the app's theme back once it has.
+        if (IsHandleCreated && !IsDisposed) BeginInvoke(() => _themeTimer.Start());
     }
 
     void OnNavigationFailedInternal(IntPtr pidl)
