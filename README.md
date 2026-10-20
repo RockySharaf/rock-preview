@@ -45,6 +45,12 @@ like PSD, AI or CorelDRAW that take ages to launch. Ultimate File Explorer fixes
 ### Instant search
 - Indexes NTFS volumes from the Master File Table and keeps up with changes through the USN change journal.
   Without administrator rights it falls back to fast folder scanning and file-system notifications.
+- Every drive, not just the internal ones: exFAT, FAT32 and ReFS drives (Dev Drives too), USB sticks and memory cards
+  while they're plugged in (they can still be safely removed), CDs and DVDs, disks mounted in a folder, and mapped
+  network drives. Network drives are checked for changes on a schedule and stay searchable while the network is away.
+  Drives that appear while the app runs are added within seconds; SUBST drives are skipped so nothing shows up twice.
+- Also search any folder, including `\\server\share`, even inside a drive or folder you leave out.
+  **Settings › Indexing** shows every drive with how many items it holds.
 - Results update as you type, across every drive. Select folders first to search only inside them: the search box
   says where it looks ("Search images").
 - Powerful query language: wildcards, regular expressions, AND / OR / NOT, and functions for size, dates, type,
@@ -238,7 +244,7 @@ downloads nothing by itself. Turn it off in Setup or **Settings › General**.
 
 The optional Ultimate File Explorer Service runs from `C:\Program Files\Rock Preview Service` (only administrators can change
 it). It answers only the Windows accounts that installed it, only on this PC, never over the network. It returns file
-names, folders, sizes and dates from local NTFS drives, and never raw disk data or file contents. Uninstalling Rock
+names, folders, sizes and dates from local NTFS drives (internal and USB), and never raw disk data or file contents. Uninstalling Rock
 Preview removes it.
 
 ## Roadmap

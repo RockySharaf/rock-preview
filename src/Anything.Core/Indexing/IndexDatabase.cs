@@ -10,6 +10,8 @@ public sealed class DbRoot
     public RootKind Kind { get; init; }
     public ulong JournalId { get; init; }
     public long NextUsn { get; init; }
+    /// <summary><see cref="ExclusionFilter.Stamp"/> of the rules the entries were built with (0 = unknown).</summary>
+    public ulong RulesStamp { get; init; }
     public required int RootId { get; init; }
     /// <summary>Index id → NTFS record number (-1 if unknown). Only for NTFS roots.</summary>
     public long[]? IdToFrn { get; init; }
@@ -22,6 +24,8 @@ public sealed class LoadedRoot
     public RootKind Kind { get; init; }
     public ulong JournalId { get; init; }
     public long NextUsn { get; init; }
+    /// <summary>The stamp it was saved with; 0 for databases from before stamps (taken as current).</summary>
+    public ulong RulesStamp { get; init; }
     public int RootId { get; init; }
     /// <summary>Index ids of the root's entries in saved order (entry 0 is the root).</summary>
     public required int[] Ids { get; init; }
@@ -31,13 +35,13 @@ public sealed class LoadedRoot
 
 /// <summary>
 /// Binary database: 8-byte magic + int32 version, then a Brotli-compressed body with, per root, its path, kind,
-/// journal id/next USN and its live entries (parent index, name, attributes, size, modified, created[, FRN]).
-/// Written to a temp file and moved into place.
+/// journal id/next USN, (version 2) the stamp of its exclusion rules, and its live entries (parent index, name,
+/// attributes, size, modified, created[, FRN]). Written to a temp file and moved into place. Version 1 files load too.
 /// </summary>
 public static class IndexDatabase
 {
     static ReadOnlySpan<byte> Magic => "ANYTHGDB"u8;
-    public const int Version = 1;
+    public const int Version = 2;
     const int EndMarker = 0x21444E45; // "END!"
 
     public static void Save(string path, FileIndex index, IReadOnlyList<DbRoot> roots)
@@ -95,6 +99,7 @@ public static class IndexDatabase
                     w.Write((byte)r.Kind);
                     w.Write(r.JournalId);
                     w.Write(r.NextUsn);
+                    w.Write(r.RulesStamp);
                     w.Write(ids.Count);
                     bool frns = r.Kind == RootKind.Ntfs;
                     for (int i = 0; i < ids.Count; i++)
@@ -130,7 +135,8 @@ public static class IndexDatabase
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16);
             Span<byte> header = stackalloc byte[12];
             fs.ReadExactly(header);
-            if (!header[..8].SequenceEqual(Magic) || BitConverter.ToInt32(header[8..]) != Version) return null;
+            int version = BitConverter.ToInt32(header[8..]);
+            if (!header[..8].SequenceEqual(Magic) || version is not (1 or Version)) return null;
             using var brotli = new BrotliStream(fs, CompressionMode.Decompress);
             using var buffered = new BufferedStream(brotli, 1 << 20);
             using var r = new BinaryReader(buffered, Encoding.UTF8);
@@ -145,6 +151,7 @@ public static class IndexDatabase
                     Kind = (RootKind)r.ReadByte(),
                     JournalId = r.ReadUInt64(),
                     NextUsn = r.ReadInt64(),
+                    RulesStamp = version >= 2 ? r.ReadUInt64() : 0,
                 };
                 if (root.Kind is not (RootKind.Ntfs or RootKind.Folder)) return null;
                 int n = r.ReadInt32();
@@ -201,6 +208,7 @@ public static class IndexDatabase
                     Kind = root.Kind,
                     JournalId = root.JournalId,
                     NextUsn = root.NextUsn,
+                    RulesStamp = root.RulesStamp,
                     RootId = ids[0],
                     Ids = ids,
                     Frns = root.Frns,
@@ -234,6 +242,7 @@ public static class IndexDatabase
         public RootKind Kind;
         public ulong JournalId;
         public long NextUsn;
+        public ulong RulesStamp;
         public int[] Parents = [];
         public string[] Names = [];
         public uint[] Attrs = [];

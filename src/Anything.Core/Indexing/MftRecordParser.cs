@@ -7,6 +7,8 @@ namespace Anything.Core.Indexing;
 public readonly record struct NtfsBootSector(
     int BytesPerSector, int SectorsPerCluster, long TotalSectors, long MftLcn, long MftMirrorLcn, int BytesPerFileRecord)
 {
+    const long MaxClusterSize = 2 << 20;
+
     public int BytesPerCluster => BytesPerSector * SectorsPerCluster;
 
     public static NtfsBootSector Parse(ReadOnlySpan<byte> sector)
@@ -16,18 +18,21 @@ public readonly record struct NtfsBootSector(
         int bps = BinaryPrimitives.ReadUInt16LittleEndian(sector[0x0B..]);
         if (bps < 256 || bps > 4096 || (bps & (bps - 1)) != 0) throw new InvalidDataException("invalid bytes_per_sector");
         byte rawSpc = sector[0x0D];
-        // Values above 0x80 encode 2^(256-x) (clusters larger than 64 KB).
-        int spc = rawSpc <= 0x80 ? rawSpc : 1 << (256 - rawSpc);
-        if (spc == 0 || (spc & (spc - 1)) != 0) throw new InvalidDataException("invalid sectors_per_cluster");
-        long cluster = (long)bps * spc;
+        // Values above 0x80 encode 2^(256-x) (clusters larger than 64 KB). NTFS clusters are at most 2 MB.
+        long spc = rawSpc <= 0x80 ? rawSpc : 256 - rawSpc < 32 ? 1L << (256 - rawSpc) : 0;
+        if (spc == 0 || (spc & (spc - 1)) != 0 || bps * spc > MaxClusterSize) throw new InvalidDataException("invalid sectors_per_cluster");
+        long cluster = bps * spc;
         long total = BinaryPrimitives.ReadInt64LittleEndian(sector[0x28..]);
         long mftLcn = BinaryPrimitives.ReadInt64LittleEndian(sector[0x30..]);
         long mirr = BinaryPrimitives.ReadInt64LittleEndian(sector[0x38..]);
         sbyte cpfr = (sbyte)sector[0x40];
-        long recordSize = cpfr > 0 ? cpfr * cluster : 1L << -cpfr;
-        if (recordSize < 256 || recordSize > 65536 || (recordSize & (recordSize - 1)) != 0) throw new InvalidDataException("invalid bytes_per_file_record");
-        if (mftLcn <= 0 || (total > 0 && mftLcn * spc > total)) throw new InvalidDataException("invalid mft_lcn");
-        return new NtfsBootSector(bps, spc, total, mftLcn, mirr, (int)recordSize);
+        long recordSize = cpfr > 0 ? cpfr * cluster : cpfr > -32 ? 1L << -cpfr : 0;
+        // Windows formats 1 KB records, 4 KB on 4K-sector disks. Bigger ones would let a crafted disk pack thousands of
+        // attribute-list entries and tens of thousands of $MFT runs into every record.
+        if (recordSize is not (1024 or 4096)) throw new InvalidDataException("invalid bytes_per_file_record");
+        if (total <= 0) throw new InvalidDataException("invalid total_sectors");
+        if (mftLcn <= 0 || mftLcn > total / spc) throw new InvalidDataException("invalid mft_lcn");
+        return new NtfsBootSector(bps, (int)spc, total, mftLcn, mirr, (int)recordSize);
     }
 }
 

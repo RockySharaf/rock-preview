@@ -23,7 +23,7 @@ internal interface IVolumeSource : IDisposable
 
     /// <summary>
     /// Journal records from <paramref name="start"/>: bytes in <paramref name="buffer"/> (the first 8 are the next
-    /// USN), or -Win32 error. Returns quickly when there is nothing new.
+    /// USN), or -Win32 error. Never waits: with nothing new it returns just the next USN (the caller polls).
     /// </summary>
     unsafe int ReadJournal(ulong journalId, long start, byte* buffer, int size);
 }
@@ -57,6 +57,9 @@ internal sealed class LocalVolumeSource : IVolumeSource
             return records;
         }
         catch (OperationCanceledException) { throw; }
+        // Cancelled, or the handle was closed for an eject: reading the volume another way would only hold it open.
+        catch (Exception) when (ct.IsCancellationRequested) { throw new OperationCanceledException(ct); }
+        catch (ObjectDisposedException) { throw; }
         catch (Exception)
         {
             progress(0);

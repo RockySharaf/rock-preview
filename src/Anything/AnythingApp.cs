@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Anything.Core;
+using Anything.Core.Indexing;
 using Anything.Demo;
 using Anything.Interop;
 
@@ -25,7 +26,7 @@ internal sealed class AnythingApp : ApplicationContext
     System.Windows.Forms.Timer? _updateTimer;
     Task<Version?>? _updateCheck;
     Version? _updateNoticeHidden;
-    int _changePending, _statePending;
+    int _changePending, _statePending, _drivesSeq;
     bool _exiting;
 
     public AppSettings Settings { get; }
@@ -36,6 +37,10 @@ internal sealed class AnythingApp : ApplicationContext
     public string? HotkeyError { get; private set; }
     public bool Exiting => _exiting;
     public IReadOnlyList<MainForm> Windows => _windows;
+    /// <summary>The drives Windows had when they were last listed (at startup and when index settings change); empty until then.</summary>
+    public IReadOnlyList<DriveEntry> KnownDrives { get; private set; } = [];
+    /// <summary>Drives that Folders › Leave these folders out leaves out whole and that would be searched otherwise (the windows' bar).</summary>
+    public IReadOnlyList<string> LeftOutDrives { get; private set; } = [];
 
     public static AnythingApp? Create(CommandLine cmd)
     {
@@ -91,6 +96,7 @@ internal sealed class AnythingApp : ApplicationContext
         RegisterHotkey();
         HandleCommandLine(cmd, initial: true);
         StartUpdateChecks();
+        RefreshDrives();
     }
 
     static Icon LoadIcon()
@@ -277,8 +283,9 @@ internal sealed class AnythingApp : ApplicationContext
     }
 
     /// <summary>
-    /// Turns on instant indexing for good: installs the Rock Preview service (Windows asks for permission this once),
-    /// then re-indexes through it. Rock Preview itself keeps running as a normal app.
+    /// Turns on instant indexing for good: installs (or updates) the Rock Preview service (Windows asks for permission
+    /// this once), then restarts indexing from the database so the drives are read through it: what offline network
+    /// drives had is kept, and everything stays searchable meanwhile. Rock Preview itself keeps running as a normal app.
     /// </summary>
     public async void TurnOnInstantIndexing(IWin32Window? owner)
     {
@@ -304,7 +311,12 @@ internal sealed class AnythingApp : ApplicationContext
             return;
         }
         for (int i = 0; i < 40 && !Anything.Core.Indexing.VolumeService.IsRunning(); i++) await Task.Delay(250);
-        RebuildIndex();
+        try { IndexManager.Start(Settings.Index); }
+        catch (Exception ex)
+        {
+            MessageBox.Show(owner, $"Unable to restart indexing.\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        SubscribeIndex();
         foreach (var w in _windows) w.OnIndexStateChanged();
     }
 
@@ -605,8 +617,12 @@ internal sealed class AnythingApp : ApplicationContext
         finally { _settings.Dispose(); _settings = null; }
     }
 
-    /// <summary>Applies changed settings everywhere. Index settings changes rebuild the index.</summary>
-    public void ApplySettings(bool indexChanged)
+    /// <summary>
+    /// Applies changed settings everywhere. Changed index settings go to the index, which adds or drops only the drives
+    /// and folders that changed and keeps everything else searchable meanwhile. <paramref name="rebuildIndex"/>
+    /// (Settings › Indexing › Rebuild now) discards the index and scans everything again instead.
+    /// </summary>
+    public void ApplySettings(bool indexChanged, bool rebuildIndex = false)
     {
         Settings.Save();
         if (!IsDemo)
@@ -616,17 +632,100 @@ internal sealed class AnythingApp : ApplicationContext
         }
         UpdateTray();
         RegisterHotkey();
+        FindLeftOutDrives();
         foreach (var w in _windows) w.ApplyUiSettings();
         if (!IsDemo)
         {
             if (!Settings.CheckForUpdates) { if (NewVersion is not null) SetNewVersion(null); }
             else _ = CheckForUpdatesIfDue();
         }
-        if (indexChanged) RebuildIndex();
+        if (rebuildIndex) RebuildIndex();
+        else if (indexChanged) ApplyIndexSettings();
+        if (indexChanged || rebuildIndex) RefreshDrives();
     }
 
+    /// <summary>Hands the index the changed settings (it keeps its own copy): it returns at once and works in the background.</summary>
+    void ApplyIndexSettings()
+    {
+        if (IsDemo) return; // the sample index doesn't follow the settings (and would only be added again)
+        try { IndexManager.Apply(Settings.Index); }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Unable to apply the new index settings.\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        SubscribeIndex();
+    }
+
+    // ---- drives left out ----------------------------------------------------------------------
+
+    /// <summary>Lists the drives in the background (a network drive can take a moment to answer), then updates the windows' bar.</summary>
+    void RefreshDrives()
+    {
+        int seq = ++_drivesSeq;
+        Task.Run(() => Drives.List()).ContinueWith(t =>
+        {
+            if (!t.IsCompletedSuccessfully) return;
+            Post(() =>
+            {
+                if (seq != _drivesSeq || _exiting) return; // a newer listing is on its way
+                KnownDrives = t.Result;
+                FindLeftOutDrives();
+                foreach (var w in _windows) w.UpdateLeftOutBar();
+            });
+        }, TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Which drives are left out whole by Folders › Leave these folders out (C:\ on the list, say) although they would
+    /// be searched otherwise, leaving out the ones the user chose to keep left out and those added to Also search
+    /// these folders, which are searched anyway.
+    /// </summary>
+    void FindLeftOutDrives()
+    {
+        var found = new List<string>();
+        if (!IsDemo)
+        {
+            var ix = Settings.Index;
+            var filter = new ExclusionFilter(ix);
+            var leftOut = new List<string>(); // found or kept left out: what is mounted in their folders is left out with them
+            // Drive letters first, so a drive comes before the volumes mounted in its folders.
+            foreach (var d in KnownDrives.OrderBy(d => d.IsDriveLetter ? 0 : 1).ThenBy(d => d.Root, StringComparer.OrdinalIgnoreCase))
+            {
+                if (IndexPlan.ForDrive(ix, d, filter) != DriveIndexing.LeftOut || Settings.IsSearchedAsFolder(d.Root)) continue;
+                bool inside = leftOut.Any(r => AppSettings.IsUnder(d.Root, r)); // mounted in a folder of a drive named already, or kept left out
+                leftOut.Add(d.Root);
+                if (!inside && !Settings.IsLeftOutDriveKept(d.Root)) found.Add(d.Root);
+            }
+        }
+        LeftOutDrives = found;
+    }
+
+    /// <summary>
+    /// The bar's "Show C: in searches": takes the drives off the list of folders to leave out (or, for one mounted in a
+    /// folder that is left out, adds it to the folders to search), and indexes them. False when no folder on the list
+    /// was the reason (a name in "Leave out files named like" is).
+    /// </summary>
+    public bool IncludeLeftOutDrives(IEnumerable<string> roots)
+    {
+        bool changed = false;
+        foreach (var root in roots) changed |= Settings.IncludeDrive(root);
+        if (changed) ApplySettings(indexChanged: true);
+        return changed;
+    }
+
+    /// <summary>The bar's "Keep it left out": stops asking about these drives.</summary>
+    public void KeepDrivesLeftOut(IEnumerable<string> roots)
+    {
+        foreach (var root in roots) Settings.KeepDriveLeftOut(root);
+        Settings.Save();
+        FindLeftOutDrives();
+        foreach (var w in _windows) w.UpdateLeftOutBar();
+    }
+
+    /// <summary>Discards the index and scans everything again (Rebuild now, and after turning on instant indexing).</summary>
     public void RebuildIndex()
     {
+        // Rebuild takes a fresh copy of the settings it was given, so changes not applied yet are included.
         try { IndexManager.Rebuild(); }
         catch (Exception ex)
         {

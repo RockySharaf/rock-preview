@@ -1,4 +1,6 @@
 using System.Drawing.Drawing2D;
+using Anything.Core;
+using Anything.Core.Indexing;
 using Anything.Interop;
 
 namespace Anything;
@@ -6,7 +8,8 @@ namespace Anything;
 /// <summary>
 /// Settings, laid out like Windows 11's Settings app: sections on the left; on the right the section's cards, each a
 /// setting with a line explaining it and its switch or button. Changes apply as they are made. Changes to what is
-/// indexed (drives, folders, what to leave out) rebuild the index once, when the window closes.
+/// indexed (drives, folders, what to leave out) go to the index once, when the window closes; it adds or drops only
+/// what changed, so searches keep working meanwhile.
 /// </summary>
 internal sealed class SettingsForm : Form
 {
@@ -24,8 +27,17 @@ internal sealed class SettingsForm : Form
     // Search
     readonly ToggleSwitch _matchCase = new(), _wholeWord = new(), _matchPath = new(), _diacritics = new(), _regex = new();
     // Indexing
-    readonly ToggleSwitch _ntfs = new();
-    readonly List<(string Root, ToggleSwitch Switch)> _drives = [];
+    readonly ToggleSwitch _ntfs = new(), _removable = new(), _network = new();
+    readonly ComboBox _rescan = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly RowList _driveRows = new();
+    readonly NoteLabel _alsoSearched = new();
+    readonly List<(DriveEntry Drive, ToggleSwitch Switch, SubRow Row)> _drives = [];
+    readonly System.Windows.Forms.Timer _rootsTimer = new() { Interval = 2000 };
+    readonly ToolTip _tips = new();
+    IReadOnlyList<DriveEntry>? _driveList;     // the drives the rows show; null until listed
+    IReadOnlyList<IndexedRootInfo> _roots = []; // what the index holds now, from the last look
+    uint _driveMask;                           // the drive letters there were then
+    Task? _rootsTask;
     // Folders
     readonly FolderList _include = new(), _exclude = new();
     readonly TextBox _patterns = new();
@@ -89,8 +101,10 @@ internal sealed class SettingsForm : Form
 
         _hotkey.Enter += (_, _) => _app.SuspendHotkey();
         _hotkey.Leave += (_, _) => ApplyHotkey();
+        _rootsTimer.Tick += (_, _) => { if (IndexingShown) RefreshRoots(); };
         FormClosed += (_, _) =>
         {
+            _rootsTimer.Stop();
             ApplyHotkey();
             if (_indexChanged) _app.ApplySettings(indexChanged: true);
             _app.RegisterHotkey();
@@ -101,6 +115,23 @@ internal sealed class SettingsForm : Form
     {
         base.OnHandleCreated(e);
         ExplorerTheme.ApplyFrame(this);
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        RefreshRoots(); // the drives and their item counts, also for when Indexing is opened later
+        _rootsTimer.Start();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _rootsTimer.Dispose();
+            _tips.Dispose();
+        }
+        base.Dispose(disposing);
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -141,7 +172,10 @@ internal sealed class SettingsForm : Form
         _content.ResumeLayout();
         _content.AutoScrollPosition = Point.Empty;
         if (_sections[index].Name == "Folders") _app.Tried(GettingStarted.Folders);
+        if (IndexingShown) RefreshRoots();
     }
+
+    bool IndexingShown => _nav.SelectedIndex >= 0 && _sections[_nav.SelectedIndex].Name == "Indexing";
 
     void DrawNavItem(object? sender, DrawItemEventArgs e)
     {
@@ -246,43 +280,263 @@ internal sealed class SettingsForm : Form
     {
         var index = _app.IndexManager;
         bool service = !_app.IsDemo && IndexService.IsInstalled();
-        string status = index.UsesService ? "On: the Ultimate File Explorer Service reads your drives, so every change shows up at once."
+        // An older service (setup's update declined, say) still works, but reads only fixed drives.
+        bool outdated = service && IndexService.NeedsUpdate();
+        string status = index.UsesService && outdated ? "On, through an older Ultimate File Explorer Service. Update it to read USB drives instantly too; Windows asks for permission once."
+            : index.UsesService ? "On: the Ultimate File Explorer Service reads your drives, so every change shows up at once."
             : index.IsElevated ? "On, because Ultimate File Explorer runs as administrator."
+            : service && outdated ? "The Ultimate File Explorer Service isn't answering. Updating it usually brings it back; Windows asks for permission once."
             : service ? "The Ultimate File Explorer Service isn't answering. Restarting the PC usually brings it back."
             : "Off: folders are scanned instead, which is slower. Windows asks for permission once to turn it on.";
-        Control? turnOn = service || _app.IsDemo ? null : CardButton("Turn on", () => { Close(); _app.Post(() => _app.TurnOnInstantIndexing(null)); });
+        bool offer = !_app.IsDemo && (!service || (outdated && (index.UsesService || !index.IsElevated)));
+        Control? turnOn = !offer ? null : CardButton(service ? "Update" : "Turn on", () => { Close(); _app.Post(() => _app.TurnOnInstantIndexing(null)); });
 
-        var drives = new RowList();
-        try
-        {
-            foreach (var d in DriveInfo.GetDrives())
-            {
-                if (d.DriveType != DriveType.Fixed || !d.IsReady) continue;
-                string label = string.IsNullOrWhiteSpace(d.VolumeLabel) ? $"{d.Name.TrimEnd('\\')}  ({d.DriveFormat})" : $"{d.Name.TrimEnd('\\')}  {d.VolumeLabel}  ({d.DriveFormat})";
-                var sw = new ToggleSwitch();
-                sw.CheckedChanged += (_, _) => DrivesChanged();
-                _drives.Add((d.Name, sw));
-                drives.Controls.Add(new SubRow(label, sw));
-            }
-        }
-        catch (IOException) { }
+        // The drives the app listed last show at once; the look in the background (RefreshRoots) brings them up to date.
+        if (_app.KnownDrives.Count > 0) ShowDrives(_app.KnownDrives);
+        else _driveRows.Controls.Add(new NoteLabel { Text = "Looking for drives..." });
+
+        _rescan.Width = S(200);
+        _rescan.AccessibleName = "Check network drives again";
+        foreach (int minutes in RescanChoices) _rescan.Items.Add(new RescanChoice(minutes));
+        var rescanRow = new RowList();
+        rescanRow.Controls.Add(new SubRow("Check them again", _rescan, detail: "Network drives and folders don't always say when files change."));
 
         return Page("Indexing",
             Card("Instant indexing", status, turnOn),
-            Card("Index whole drives", "Reads each drive's file table: millions of files in seconds, kept up to date as they change.", _ntfs, drives),
-            Card("Rebuild the index", "Scans everything again from the start.", CardButton("Rebuild now", () => { _indexChanged = false; _app.ApplySettings(indexChanged: true); })));
+            Card("Index whole drives", "Search every drive. NTFS drives are read in seconds and kept up to date as files change; others are scanned.", _ntfs, _driveRows),
+            Card("USB drives and memory cards",
+                "Search them, and CDs and DVDs, while they're plugged in. NTFS drives are read instantly; others are scanned. They can still be safely removed.", _removable),
+            Card("Network drives",
+                "Mapped network drives (like Z:) are scanned and kept up to date. Their files stay searchable while the network is away.", _network, rescanRow),
+            Card("Rebuild the index", "Scans everything again from the start.", CardButton("Rebuild now", () => { _indexChanged = false; _app.ApplySettings(indexChanged: true, rebuildIndex: true); })));
+    }
+
+    /// <summary>
+    /// One row per drive: local drives, then USB drives and discs, then network drives. SUBST drives repeat another
+    /// drive's files (indexed there) and aren't listed.
+    /// </summary>
+    void ShowDrives(IReadOnlyList<DriveEntry> drives)
+    {
+        _driveList = drives;
+        var ix = _app.Settings.Index;
+        _driveRows.SuspendLayout();
+        _driveRows.Controls.Remove(_alsoSearched);
+        while (_driveRows.Controls.Count > 0) _driveRows.Controls[0].Dispose();
+        _drives.Clear();
+        var shown = drives.Where(d => d.SubstTarget == null)
+            .OrderBy(d => d.Kind switch { DriveKind.Removable or DriveKind.Optical => 1, DriveKind.Network => 2, _ => 0 })
+            .ThenBy(d => d.IsDriveLetter ? 0 : 1).ThenBy(d => d.Root, StringComparer.OrdinalIgnoreCase);
+        foreach (var d in shown)
+        {
+            var drive = d;
+            var sw = new ToggleSwitch { Checked = !TurnedOff(ix, d), AccessibleName = DriveName(d.Root) };
+            sw.CheckedChanged += (_, _) => DrivesChanged();
+            var row = new SubRow(DriveLabel(d), sw, CardButton("Include it", () => IncludeDrive(drive)), detail: "");
+            _drives.Add((d, sw, row));
+            _driveRows.Controls.Add(row);
+        }
+        if (_drives.Count == 0) _driveRows.Controls.Add(new NoteLabel { Text = "No drives found." });
+        _driveRows.Controls.Add(_alsoSearched);
+        _driveRows.ResumeLayout();
+        UpdateDriveRows();
+        _driveRows.Parent?.PerformLayout();
+        _driveRows.Parent?.Parent?.PerformLayout();
+    }
+
+    /// <summary>"C:  Windows  (NTFS)", "E:  USB Drive  (exFAT)", "Z:  Network Drive  (NTFS)  \\server\share".</summary>
+    static string DriveLabel(DriveEntry d)
+    {
+        string kind = d.Kind switch
+        {
+            DriveKind.Fixed => "Local Disk",
+            DriveKind.Removable => "USB Drive",
+            DriveKind.Optical => "CD/DVD Drive",
+            DriveKind.Network => "Network Drive",
+            DriveKind.Ram => "RAM Disk",
+            _ => "Drive",
+        };
+        string text = $"{DriveName(d.Root)}  {(string.IsNullOrWhiteSpace(d.Label) ? kind : d.Label.Trim())}";
+        if (d.FileSystem.Length > 0) text += $"  ({d.FileSystem})";
+        if (d.NetworkPath is { } share) text += $"  {share}";
+        return text;
+    }
+
+    /// <summary>"C:" for a drive letter, "C:\Mount\Data" for a volume mounted in a folder.</summary>
+    static string DriveName(string root) => root.Length == 3 && root[1] == ':' ? root[..2] : root.TrimEnd('\\');
+
+    /// <summary>
+    /// The drive's own switch is off (or, from 1.4.0's settings, it isn't on the list of drives to index), the way the
+    /// index's plan sees it: asked with only the drive switches set, so nothing else (all drives off, a folder left
+    /// out) gets in the way.
+    /// </summary>
+    static bool TurnedOff(IndexSettings ix, DriveEntry d) =>
+        IndexPlan.ForDrive(new IndexSettings { SkipDrives = ix.SkipDrives, Volumes = ix.Volumes }, d with { SubstTarget = null }) == DriveIndexing.TurnedOff;
+
+    /// <summary>USB drives (and discs) or network drives are switched off as a group.</summary>
+    static bool KindOff(IndexSettings ix, DriveEntry d) => d.Kind switch
+    {
+        DriveKind.Removable or DriveKind.Optical => !ix.IndexRemovableDrives,
+        DriveKind.Network => !ix.IndexNetworkDrives,
+        _ => false,
+    };
+
+    /// <summary>Each drive's line under its name: what it holds, or why it isn't searched. The same plan the index uses.</summary>
+    void UpdateDriveRows()
+    {
+        var ix = _app.Settings.Index;
+        var filter = new ExclusionFilter(ix);
+        var plans = _drives.Select(d => IndexPlan.ForDrive(ix, d.Drive, filter)).ToList();
+        // Two letters mapped to one share are searched once, under the first.
+        var shares = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (d, plan) in _drives.Select((d, i) => (d.Drive, plans[i])).OrderBy(x => x.Drive.IsDriveLetter ? 0 : 1).ThenBy(x => x.Drive.Root, StringComparer.OrdinalIgnoreCase))
+            if (plan == DriveIndexing.Indexed && d.NetworkPath is { } share) shares.TryAdd(share, d.Root);
+
+        for (int i = 0; i < _drives.Count; i++)
+        {
+            var (drive, _, row) = _drives[i];
+            var info = _roots.FirstOrDefault(r => AppSettings.SamePath(r.Path, drive.Root));
+            // Left out by a folder it is mounted in, but on Also search these folders itself ("Include it"): searched.
+            bool asFolder = plans[i] == DriveIndexing.LeftOut && _app.Settings.IsSearchedAsFolder(drive.Root);
+            string text = plans[i] switch
+            {
+                DriveIndexing.Indexed when drive.NetworkPath is { } share && shares.TryGetValue(share, out var first) && first != drive.Root =>
+                    $"Searched as {DriveName(first)}, the same share",
+                DriveIndexing.Indexed => IndexedStatus(drive, info),
+                DriveIndexing.TurnedOff => "Turned off",
+                DriveIndexing.KindOff => drive.Kind switch { DriveKind.Network => "Network drives are off", DriveKind.Optical => "CDs and DVDs are off", _ => "USB drives are off" },
+                DriveIndexing.LeftOut when asFolder => IndexedStatus(drive, info),
+                DriveIndexing.LeftOut => LeftOutStatus(drive),
+                DriveIndexing.NotReady => "Locked or empty",
+                _ => "", // all drives are off: the main switch says so
+            };
+            row.SetDetail(text);
+            if (row.DetailLabel is { } detail) _tips.SetToolTip(detail, info?.Detail);
+            row.ShowExtra(plans[i] == DriveIndexing.LeftOut && !asFolder && _app.Settings.ExclusionsHidingDrive(drive.Root).Count > 0);
+        }
+        UpdateAlsoSearched();
+        UpdateDrivesEnabled();
+    }
+
+    /// <summary>For a drive that is searched: how many items it holds, or where it stands.</summary>
+    string IndexedStatus(DriveEntry drive, IndexedRootInfo? info)
+    {
+        if (info is null)
+        {
+            if (!drive.IsReady) return "Offline: searched once it's back"; // a network drive that is away
+            if (_roots.Count == 0) return ""; // nothing to tell yet (or the demo)
+            return _indexChanged ? "Added when you close Settings" : "Waiting...";
+        }
+        return info.Status switch
+        {
+            RootStatus.Waiting => "Waiting...",
+            RootStatus.Scanning => (info.Method == "scan" ? "Scanning..." : "Reading...") + (info.Items > 1 ? $" {Items(info.Items)} so far" : ""),
+            RootStatus.Offline => info.Items > 1 ? $"Offline: searches show the {Items(info.Items)} it had" : "Offline: searched once it's back",
+            _ => Items(info.Items),
+        };
+    }
+
+    static string Items(int n) => n == 1 ? "1 item" : $"{n:N0} items";
+
+    string LeftOutStatus(DriveEntry drive)
+    {
+        var hiding = _app.Settings.ExclusionsHidingDrive(drive.Root);
+        if (hiding.Count == 0) return "Left out: its folder matches Folders › Leave out files named like"; // a volume mounted in a folder
+        return hiding.Any(h => AppSettings.SamePath(h, drive.Root))
+            ? "Left out: it's on Folders › Leave these folders out"
+            : $"Left out: {hiding[0].Trim()} is on Folders › Leave these folders out";
+    }
+
+    /// <summary>Under the drives: the folders searched besides them (Folders › Also search these folders).</summary>
+    void UpdateAlsoSearched()
+    {
+        var folders = _roots.Where(r => !_drives.Any(d => AppSettings.SamePath(d.Drive.Root, r.Path)
+                                                          || (d.Drive.NetworkPath is { } share && AppSettings.SamePath(share, r.Path)))).ToList();
+        string text = folders.Count == 0 ? "" : "Also searched: " + string.Join("  ·  ", folders.Select(r => r.Path.TrimEnd('\\') + " (" + (r.Status switch
+        {
+            RootStatus.Waiting => "waiting",
+            RootStatus.Scanning => "scanning",
+            RootStatus.Offline => "offline",
+            _ => Items(r.Items),
+        }) + ")"));
+        if (_alsoSearched.Text == text) return;
+        var width = new Size(_driveRows.ClientSize.Width, 0);
+        int height = _alsoSearched.GetPreferredSize(width).Height;
+        _alsoSearched.Text = text;
+        if (_alsoSearched.GetPreferredSize(width).Height == height) return;
+        _driveRows.PerformLayout();
+        _driveRows.Parent?.PerformLayout();
+        _driveRows.Parent?.Parent?.PerformLayout();
+    }
+
+    /// <summary>
+    /// "Include it": takes the drive off Folders › Leave these folders out, or, when a folder it's mounted in is what's
+    /// left out, adds it to Also search these folders (the rest of that folder stays left out).
+    /// </summary>
+    void IncludeDrive(DriveEntry drive)
+    {
+        if (!_app.Settings.IncludeDrive(drive.Root)) return;
+        _exclude.Folders = _app.Settings.Index.ExcludeFolders;
+        _include.Folders = _app.Settings.Index.Folders;
+        IndexChanged();
+    }
+
+    /// <summary>
+    /// Asks the index what each drive and folder holds now (it walks the whole index, so in the background), and lists
+    /// the drives again when a drive letter came or went. One look at a time: every 2 seconds while Indexing shows.
+    /// </summary>
+    void RefreshRoots()
+    {
+        if (_rootsTask is { IsCompleted: false } || IsDisposed || !IsHandleCreated) return;
+        var index = _app.IndexManager;
+        uint mask = Drives.LetterMask();
+        bool listDrives = _driveList is null || mask != _driveMask;
+        _rootsTask = Task.Run(() =>
+        {
+            IReadOnlyList<IndexedRootInfo> roots;
+            try { roots = index.GetRoots(); }
+            catch (Exception) { roots = []; }
+            IReadOnlyList<DriveEntry>? drives = null;
+            if (listDrives)
+            {
+                try { drives = Drives.List(); }
+                catch (Exception) { }
+            }
+            try { BeginInvoke(() => ShowRoots(roots, drives, mask)); }
+            catch (InvalidOperationException) { } // the window closed meanwhile
+        });
+    }
+
+    void ShowRoots(IReadOnlyList<IndexedRootInfo> roots, IReadOnlyList<DriveEntry>? drives, uint mask)
+    {
+        if (IsDisposed) return;
+        _roots = roots;
+        if (drives is not null)
+        {
+            _driveMask = mask;
+            if (_driveList is null || !drives.SequenceEqual(_driveList))
+            {
+                ShowDrives(drives); // also updates the rows
+                return;
+            }
+        }
+        UpdateDriveRows();
     }
 
     PageStack FoldersPage()
     {
         _include.Changed += () => { _app.Settings.Index.Folders = _include.Folders; IndexChanged(); };
         _exclude.Changed += () => { _app.Settings.Index.ExcludeFolders = _exclude.Folders; IndexChanged(); };
+        _exclude.Confirm = ConfirmLeaveOut;
         _patterns.Width = S(260);
         _patterns.PlaceholderText = "*.tmp; ~$*";
         _patterns.Leave += (_, _) => PatternsChanged();
+        var includeButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty };
+        includeButtons.Controls.Add(CardButton("Type a path...", AddTypedFolder));
+        includeButtons.Controls.Add(CardButton("Add a folder", () => _include.AddWithPicker(this, "Search this folder too")));
         return Page("Folders",
-            Card("Also search these folders", "Folders on other drives, USB sticks or the network. They are scanned and kept up to date.",
-                CardButton("Add a folder", () => _include.AddWithPicker(this, "Search this folder too")), _include),
+            Card("Also search these folders",
+                @"Folders on other drives, USB sticks or the network (\\server\share). They're searched even inside a drive or folder you leave out.",
+                includeButtons, _include),
             Card("Leave these folders out", "Nothing inside them shows up in searches or in Thumbnails' every-file view.",
                 CardButton("Add a folder", () => _exclude.AddWithPicker(this, "Leave this folder out")), _exclude),
             Card("Leave out files named like", "Wildcards, separated by semicolons. For example *.tmp; ~$*", _patterns),
@@ -344,8 +598,9 @@ internal sealed class SettingsForm : Form
         _regex.Checked = s.Regex;
         var ix = s.Index;
         _ntfs.Checked = ix.IndexNtfsVolumes;
-        foreach (var (root, sw) in _drives)
-            sw.Checked = ix.Volumes.Count == 0 || ix.Volumes.Any(v => string.Equals(v.TrimEnd('\\'), root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase));
+        _removable.Checked = ix.IndexRemovableDrives;
+        _network.Checked = ix.IndexNetworkDrives;
+        SelectRescan(ix.NetworkRescanMinutes);
         UpdateDrivesEnabled();
         _include.Folders = ix.Folders;
         _exclude.Folders = ix.ExcludeFolders;
@@ -361,6 +616,14 @@ internal sealed class SettingsForm : Form
                                    _matchCase, _wholeWord, _matchPath, _diacritics, _regex })
             sw.CheckedChanged += (_, _) => GeneralChanged();
         _ntfs.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.IndexNtfsVolumes = _ntfs.Checked; UpdateDrivesEnabled(); IndexChanged(); };
+        _removable.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.IndexRemovableDrives = _removable.Checked; IndexChanged(); };
+        _network.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.IndexNetworkDrives = _network.Checked; IndexChanged(); };
+        _rescan.SelectedIndexChanged += (_, _) =>
+        {
+            if (_loading || _rescan.SelectedItem is not RescanChoice choice || choice.Minutes == _app.Settings.Index.NetworkRescanMinutes) return;
+            _app.Settings.Index.NetworkRescanMinutes = choice.Minutes;
+            IndexChanged();
+        };
         _exHidden.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.ExcludeHidden = _exHidden.Checked; IndexChanged(); };
         _exSystem.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.ExcludeSystem = _exSystem.Checked; IndexChanged(); };
         _hotkeyWin.CheckedChanged += (_, _) => { if (_loading) return; _hotkey.SetWin(_hotkeyWin.Checked); ApplyHotkey(); };
@@ -387,36 +650,149 @@ internal sealed class SettingsForm : Form
         _app.ApplySettings(indexChanged: false);
     }
 
-    /// <summary>What is indexed changed: saved now, the index is rebuilt once when the window closes.</summary>
+    /// <summary>What is indexed changed: saved now, handed to the index once when the window closes.</summary>
     void IndexChanged()
     {
         if (_loading) return;
         _indexChanged = true;
         _app.Settings.Save();
+        UpdateDriveRows();
     }
 
+    /// <summary>
+    /// A drive's switch: the drives switched off are kept (with those not plugged in now, which stay off). Switched on,
+    /// a drive comes off that list, and joins 1.4.0's list of drives to index while there is one: that list stays,
+    /// since it still keeps off the drives that aren't plugged in now, and it only ever gains drives here.
+    /// </summary>
     void DrivesChanged()
     {
         if (_loading) return;
-        var on = _drives.Where(d => d.Switch.Checked).Select(d => d.Root).ToList();
-        if (on.Count == 0)
+        var ix = _app.Settings.Index;
+        if (_drives.All(d => !d.Switch.Checked || KindOff(ix, d.Drive)))
         {
             // No drive at all means not indexing drives: say so with the main switch, and keep the drives ready for later.
             _loading = true;
-            foreach (var (_, sw) in _drives) sw.Checked = true;
+            foreach (var d in _drives) if (!KindOff(ix, d.Drive)) d.Switch.Checked = true;
             _ntfs.Checked = false;
             _loading = false;
-            _app.Settings.Index.IndexNtfsVolumes = false;
-            _app.Settings.Index.Volumes = [];
-            UpdateDrivesEnabled();
+            ix.IndexNtfsVolumes = false;
         }
-        else _app.Settings.Index.Volumes = on.Count == _drives.Count ? [] : on;
+        foreach (var (drive, sw, _) in _drives)
+        {
+            if (sw.Checked != TurnedOff(ix, drive)) continue; // as it was
+            if (!sw.Checked)
+            {
+                ix.SkipDrives = [.. ix.SkipDrives, drive.Root];
+                continue;
+            }
+            ix.SkipDrives = [.. ix.SkipDrives.Where(r => !AppSettings.SamePath(r, drive.Root))];
+            if (TurnedOff(ix, drive)) ix.Volumes = [.. ix.Volumes, drive.Root];
+        }
         IndexChanged();
     }
 
     void UpdateDrivesEnabled()
     {
-        foreach (var (_, sw) in _drives) sw.Enabled = _ntfs.Checked;
+        var ix = _app.Settings.Index;
+        foreach (var d in _drives) d.Switch.Enabled = _ntfs.Checked && !KindOff(ix, d.Drive);
+        _removable.Enabled = _network.Enabled = _ntfs.Checked;
+    }
+
+    static readonly int[] RescanChoices = [15, 60, 360, 1440, 0];
+
+    void SelectRescan(int minutes)
+    {
+        var choices = _rescan.Items.Cast<RescanChoice>().ToList();
+        if (!choices.Any(c => c.Minutes == minutes))
+        {
+            // A time typed into the settings file: kept, and listed in its place.
+            choices = [.. choices.Append(new RescanChoice(minutes)).OrderBy(c => c.Minutes == 0 ? int.MaxValue : c.Minutes)];
+            _rescan.Items.Clear();
+            foreach (var c in choices) _rescan.Items.Add(c);
+        }
+        _rescan.SelectedIndex = choices.FindIndex(c => c.Minutes == minutes);
+    }
+
+    /// <summary>Asks first when a whole drive is about to be left out: nothing on it would show up any more.</summary>
+    bool ConfirmLeaveOut(string path)
+    {
+        if (!IndexPlan.IsDriveRoot(path)) return true;
+        string drive = char.ToUpperInvariant(path.Trim()[0]) + ":";
+        var yes = TaskDialogButton.Yes;
+        var no = TaskDialogButton.No;
+        var page = new TaskDialogPage
+        {
+            Caption = Text,
+            Heading = $"Leave out all of {drive}?",
+            Text = $"Nothing on {drive} will show up in searches or in Thumbnails. To stop indexing a drive, you can also turn it off under Indexing.",
+            Icon = TaskDialogIcon.Warning,
+            Buttons = { yes, no },
+            DefaultButton = no,
+        };
+        if (TaskDialog.ShowDialog(this, page) != yes) return false;
+        _app.Settings.KeepDriveLeftOut(drive + "\\"); // asked already: the window's bar doesn't ask again
+        return true;
+    }
+
+    /// <summary>"Type a path...": for a folder the folder picker can't always reach, like a share on another PC.</summary>
+    async void AddTypedFolder()
+    {
+        const string title = "Search this folder too";
+        string text = "";
+        while (true)
+        {
+            var typed = InputDialog.Show(this, title, @"The folder's path, like D:\Projects or \\server\share:", text, text.Length);
+            if (string.IsNullOrWhiteSpace(typed) || IsDisposed) return;
+            text = typed.Trim();
+            if (FolderPath(text) is not { } path)
+            {
+                MessageBox.Show(this, @"That isn't a folder's path. Type all of it, like D:\Projects or \\server\share.", title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                continue;
+            }
+            bool there = await FolderExists(path);
+            if (IsDisposed) return;
+            if (!there && MessageBox.Show(this, $"{path} can't be reached right now. Add it anyway? It's searched whenever it can be reached.",
+                    title, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                continue;
+            _include.Add(path);
+            return;
+        }
+    }
+
+    /// <summary>
+    /// A typed folder path, tidied ("d:" is "D:\", no backslash at the end), or null when it isn't a whole local path
+    /// (D:\Projects) or network path (\\server\share).
+    /// </summary>
+    internal static string? FolderPath(string text)
+    {
+        string p = text.Trim().Trim('"').Trim().Replace('/', '\\');
+        if (p.Length == 2 && p[1] == ':') p += "\\";
+        if (p.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            if (p.StartsWith(@"\\?\", StringComparison.Ordinal) || p.StartsWith(@"\\.\", StringComparison.Ordinal)) return null;
+            if (p[2..].Split('\\', StringSplitOptions.RemoveEmptyEntries).Length < 2) return null; // a server alone isn't a folder; \\server\share is
+        }
+        else if (p.Length < 3 || !char.IsAsciiLetter(p[0]) || p[1] != ':' || p[2] != '\\') return null;
+        if (p.IndexOfAny([.. Path.GetInvalidPathChars(), '*', '?']) >= 0 || p.IndexOf(':', 2) >= 0) return null;
+        try { p = Path.GetFullPath(p); }
+        catch (Exception) { return null; }
+        if (p[1] == ':') p = char.ToUpperInvariant(p[0]) + p[1..];
+        return p.Length > 3 ? p.TrimEnd('\\') : p;
+    }
+
+    /// <summary>Whether a folder is there, waiting at most a few seconds (a PC that's away can take half a minute to say so).</summary>
+    async Task<bool> FolderExists(string path)
+    {
+        UseWaitCursor = true;
+        try
+        {
+            var check = Task.Run(() => Directory.Exists(path));
+            return await Task.WhenAny(check, Task.Delay(3000)) == check && check.Result;
+        }
+        finally
+        {
+            if (!IsDisposed) UseWaitCursor = false;
+        }
     }
 
     void PatternsChanged()
@@ -467,35 +843,175 @@ internal sealed class SettingsForm : Form
 
     // ---- controls -----------------------------------------------------------------------------
 
-    /// <summary>A labelled row inside a card (a drive and its switch).</summary>
+    /// <summary>The smaller text of a card's description, for <paramref name="font"/> (the window's 14px font).</summary>
+    static Font SmallFont(Font font) => new(font.FontFamily, font.Size * 12f / 14f, FontStyle.Regular, font.Unit);
+
+    /// <summary>
+    /// A labelled row inside a card (a drive and its switch). Optionally a smaller second line under the label (what
+    /// the drive holds), and a button before the control that shows only when it's wanted ("Include it").
+    /// </summary>
     sealed class SubRow : Panel
     {
         readonly Label _label;
+        readonly Label? _detail;
         readonly Control _control;
+        readonly Control? _extra;
+        bool _extraShown;
+        Font? _small;
 
-        public SubRow(string text, Control control)
+        /// <param name="detail">The second line; null for a row without one. Rows with one keep its room while it's empty.</param>
+        public SubRow(string text, Control control, Control? extra = null, string? detail = null)
         {
-            _label = new Label { Text = text, AutoSize = false, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent };
+            _label = new Label { Text = text, AutoSize = false, AutoEllipsis = true, UseMnemonic = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent };
             _control = control;
+            _extra = extra;
             BackColor = Color.Transparent;
             Controls.Add(_label);
+            if (detail is not null)
+            {
+                _small = SmallFont(Font);
+                _detail = new Label { Text = detail, Font = _small, AutoSize = false, AutoEllipsis = true, UseMnemonic = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = ExplorerTheme.SecondaryText };
+                Controls.Add(_detail);
+            }
+            if (extra is not null)
+            {
+                extra.Visible = false;
+                Controls.Add(extra);
+            }
             Controls.Add(control);
             Margin = Padding.Empty;
         }
 
+        public Label? DetailLabel => _detail;
+
+        public void SetDetail(string text)
+        {
+            if (_detail is null || _detail.Text == text) return;
+            bool relayout = (_detail.Text.Length == 0) != (text.Length == 0);
+            _detail.Text = text;
+            if (relayout) PerformLayout();
+        }
+
+        public void ShowExtra(bool show)
+        {
+            if (_extra is null || _extraShown == show) return;
+            _extraShown = show;
+            _extra.Visible = show;
+            PerformLayout();
+        }
+
+        static Size SizeOf(Control c) => c is ComboBox box ? box.Size : c.GetPreferredSize(Size.Empty);
+
         public override Size GetPreferredSize(Size proposed)
         {
             int w = proposed.Width is > 0 and < 100_000 ? proposed.Width : Parent?.ClientSize.Width ?? 400;
-            return new Size(w, Math.Max(LogicalToDeviceUnits(36), _control.GetPreferredSize(Size.Empty).Height + LogicalToDeviceUnits(4)));
+            int h = Math.Max(LogicalToDeviceUnits(36), SizeOf(_control).Height + LogicalToDeviceUnits(4));
+            if (_detail is not null) h = Math.Max(h, _label.Font.Height + _detail.Font.Height + LogicalToDeviceUnits(14));
+            return new Size(w, h);
         }
 
         protected override void OnLayout(LayoutEventArgs e)
         {
             base.OnLayout(e);
-            var cs = _control.GetPreferredSize(Size.Empty);
+            int gap = LogicalToDeviceUnits(12);
+            var cs = SizeOf(_control);
             _control.Bounds = new Rectangle(ClientSize.Width - cs.Width, (ClientSize.Height - cs.Height) / 2, cs.Width, cs.Height);
-            _label.Bounds = new Rectangle(0, 0, Math.Max(0, _control.Left - LogicalToDeviceUnits(12)), ClientSize.Height);
+            int right = _control.Left;
+            if (_extra is not null && _extraShown)
+            {
+                var es = SizeOf(_extra);
+                _extra.Bounds = new Rectangle(right - gap - es.Width, (ClientSize.Height - es.Height) / 2, es.Width, es.Height);
+                right = _extra.Left;
+            }
+            int width = Math.Max(0, right - gap);
+            if (_detail is null || _detail.Text.Length == 0)
+            {
+                _label.Bounds = new Rectangle(0, 0, width, ClientSize.Height);
+                _detail?.SetBounds(0, 0, 0, 0);
+                return;
+            }
+            int line = _label.Font.Height, small = _detail.Font.Height + LogicalToDeviceUnits(2);
+            int top = (ClientSize.Height - line - small) / 2;
+            _label.Bounds = new Rectangle(0, top, width, line);
+            _detail.Bounds = new Rectangle(0, top + line, width, small);
         }
+
+        protected override void OnFontChanged(EventArgs e)
+        {
+            base.OnFontChanged(e);
+            if (_detail is null) return;
+            var old = _small;
+            _small = SmallFont(Font);
+            _detail.Font = _small;
+            old?.Dispose();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _small?.Dispose();
+            base.Dispose(disposing);
+        }
+    }
+
+    /// <summary>A line of small text under a card's rows, wrapped to the card's width; it takes no room while empty.</summary>
+    sealed class NoteLabel : Label
+    {
+        Font? _small;
+
+        public NoteLabel()
+        {
+            AutoSize = false;
+            UseMnemonic = false;
+            BackColor = Color.Transparent;
+            ForeColor = ExplorerTheme.SecondaryText;
+            Margin = Padding.Empty;
+        }
+
+        const TextFormatFlags Wrap = TextFormatFlags.NoPadding | TextFormatFlags.WordBreak;
+        Font Small => _small ??= SmallFont(Font);
+
+        public override Size GetPreferredSize(Size proposed)
+        {
+            int w = proposed.Width is > 0 and < 100_000 ? proposed.Width : Width;
+            if (Text.Length == 0) return new Size(w, 0);
+            var text = TextRenderer.MeasureText(Text, Small, new Size(Math.Max(1, w), int.MaxValue), Wrap);
+            return new Size(w, text.Height + LogicalToDeviceUnits(14));
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            int top = LogicalToDeviceUnits(8);
+            TextRenderer.DrawText(e.Graphics, Text, Small, new Rectangle(0, top, Width, Math.Max(0, Height - top)), ForeColor, Wrap);
+        }
+
+        protected override void OnFontChanged(EventArgs e)
+        {
+            _small?.Dispose();
+            _small = null;
+            base.OnFontChanged(e);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _small?.Dispose();
+            base.Dispose(disposing);
+        }
+    }
+
+    /// <summary>An entry of Network drives › Check them again: minutes between rescans (0 = only when rebuilding).</summary>
+    sealed record RescanChoice(int Minutes)
+    {
+        public override string ToString() => Minutes switch
+        {
+            0 => "Only when I rebuild",
+            1 => "Every minute",
+            60 => "Every hour",
+            1440 => "Once a day",
+            < 60 => $"Every {Minutes} minutes",
+            _ when Minutes % 1440 == 0 => $"Every {Minutes / 1440} days",
+            _ when Minutes % 60 == 0 => $"Every {Minutes / 60} hours",
+            _ => $"Every {Minutes} minutes",
+        };
     }
 
     /// <summary>Rows under a card's text, each as wide as the card.</summary>
@@ -512,7 +1028,7 @@ internal sealed class SettingsForm : Form
         protected override void OnLayout(LayoutEventArgs e)
         {
             foreach (Control c in Controls)
-                if (c is SubRow) c.Size = new Size(ClientSize.Width, c.GetPreferredSize(new Size(ClientSize.Width, 0)).Height);
+                if (c is SubRow or NoteLabel) c.Size = new Size(ClientSize.Width, c.GetPreferredSize(new Size(ClientSize.Width, 0)).Height);
             base.OnLayout(e);
         }
 
@@ -538,12 +1054,22 @@ internal sealed class SettingsForm : Form
             set { _folders = [.. value]; Rebuild(); }
         }
 
+        /// <summary>Asked before a folder goes on the list; false keeps it off.</summary>
+        [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+        public Func<string, bool>? Confirm { get; set; }
+
         public void AddWithPicker(IWin32Window owner, string title)
         {
             using var fb = new FolderBrowserDialog { Description = title, UseDescriptionForTitle = true, ShowNewFolderButton = false };
             if (fb.ShowDialog(owner) != DialogResult.OK) return;
-            if (_folders.Contains(fb.SelectedPath, StringComparer.OrdinalIgnoreCase)) return;
-            _folders.Add(fb.SelectedPath);
+            Add(fb.SelectedPath);
+        }
+
+        public void Add(string folder)
+        {
+            if (_folders.Any(f => AppSettings.SamePath(f, folder))) return;
+            if (Confirm is { } confirm && !confirm(folder)) return;
+            _folders.Add(folder);
             Rebuild();
             Changed?.Invoke();
         }

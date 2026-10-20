@@ -133,12 +133,20 @@ public sealed class VolumeRecords
     uint[] _attrs;
     byte[] _flags;
     int _length;
+    readonly int _recordLimit;
     List<(int Rec, long Parent, string Name)>? _extraLinks;
+    HashSet<(int Rec, long Parent, string Name)>? _extraLinkSet;
     Dictionary<int, (long Parent, string Name)>? _dosFallback;
+    List<(int Base, bool HasData, long Size, MftFileName[] Names)>? _laterExtensions;
 
-    public VolumeRecords(int capacity = 4096)
+    /// <param name="recordLimit">
+    /// Record numbers at or above it are ignored: the size of the MFT the records come from, so a corrupt or crafted
+    /// record can't make the arrays grow to a record number the volume doesn't have.
+    /// </param>
+    public VolumeRecords(int capacity = 4096, int recordLimit = int.MaxValue)
     {
-        capacity = Math.Max(capacity, 64);
+        _recordLimit = Math.Max(recordLimit, RootRecord + 1);
+        capacity = Math.Clamp(capacity, 64, Math.Max(_recordLimit, 64));
         _names = new string?[capacity];
         _parents = new long[capacity];
         _sizes = new long[capacity];
@@ -161,7 +169,7 @@ public sealed class VolumeRecords
     {
         if (rec >= _names.Length)
         {
-            int n = Math.Max(rec + 1, _names.Length * 2);
+            int n = (int)Math.Min(Math.Max(rec + 1L, _names.Length * 2L), Math.Max(_recordLimit, rec + 1L));
             Array.Resize(ref _names, n);
             Array.Resize(ref _parents, n);
             Array.Resize(ref _sizes, n);
@@ -173,13 +181,24 @@ public sealed class VolumeRecords
         if (rec >= _length) _length = rec + 1;
     }
 
-    /// <summary>Merges one parsed FILE record. Extension records are folded into their base record.</summary>
+    /// <summary>
+    /// Merges one parsed FILE record. Extension records are folded into their base record (those whose base lies
+    /// beyond the records seen so far wait for <see cref="FinishMerge"/>).
+    /// </summary>
     public void Merge(MftRecord r)
     {
         if (!r.InUse) return;
         long target = r.BaseRecord != 0 ? r.BaseRecord : r.RecordNumber;
-        if (target < 0 || target > int.MaxValue - 1) return;
+        // Both numbers come from the disk: outside the MFT means corrupt (or crafted), not a reason to allocate.
+        if (r.RecordNumber < 0 || r.RecordNumber >= _recordLimit || target < 0 || target >= _recordLimit) return;
         int t = (int)target;
+        if (r.BaseRecord != 0 && t >= _names.Length)
+        {
+            // Its base comes later in the MFT: keep just this record's data until then, so the arrays only ever grow
+            // with the records actually read, whatever base reference a record claims.
+            (_laterExtensions ??= []).Add((t, r.HasData, r.DataSize, [.. r.FileNames]));
+            return;
+        }
         Ensure(t);
         if (r.BaseRecord == 0)
         {
@@ -192,8 +211,24 @@ public sealed class VolumeRecords
                 _modified[t] = r.ModificationTime;
             }
         }
-        if (r.HasData) _sizes[t] = r.DataSize;
-        foreach (var fn in r.FileNames)
+        MergeData(t, r.HasData, r.DataSize, CollectionsMarshal.AsSpan(r.FileNames));
+    }
+
+    /// <summary>Folds in the extension records <see cref="Merge"/> held back, now that every base record has been read.</summary>
+    public void FinishMerge()
+    {
+        var later = _laterExtensions;
+        _laterExtensions = null;
+        if (later == null) return;
+        // A base that never turned up (or isn't in use) owns nothing: its extensions are dropped, as BuildInto would.
+        foreach (var (t, hasData, size, names) in later)
+            if (IsInUse(t)) MergeData(t, hasData, size, names);
+    }
+
+    void MergeData(int t, bool hasData, long size, ReadOnlySpan<MftFileName> names)
+    {
+        if (hasData) _sizes[t] = size;
+        foreach (var fn in names)
         {
             if (fn.Namespace == FileNameNamespace.Dos)
             {
@@ -218,15 +253,15 @@ public sealed class VolumeRecords
         }
         if (_parents[rec] == parent && string.Equals(_names[rec], name, StringComparison.Ordinal)) return;
         _extraLinks ??= [];
-        foreach (var l in _extraLinks)
-            if (l.Rec == rec && l.Parent == parent && string.Equals(l.Name, name, StringComparison.Ordinal)) return;
-        _extraLinks.Add((rec, parent, name));
+        // A set, not a scan of the list: a volume with millions of hard links (real or crafted) would take hours.
+        _extraLinkSet ??= [.. _extraLinks];
+        if (_extraLinkSet.Add((rec, parent, name))) _extraLinks.Add((rec, parent, name));
     }
 
     /// <summary>Sets a record from a USN enumeration record (fallback path: no sizes or dates).</summary>
     public void SetFromUsn(long rec, long parent, string name, FileAttributes attributes)
     {
-        if (rec < 0 || rec > int.MaxValue - 1) return;
+        if (rec < 0 || rec >= _recordLimit) return;
         int t = (int)rec;
         Ensure(t);
         _flags[t] |= FlagInUse;
@@ -247,9 +282,12 @@ public sealed class VolumeRecords
     /// Adds every reachable record under the root (record 5) to <paramref name="index"/> in breadth-first order,
     /// so parents always precede children. System metafiles (records &lt; 16) and orphans are skipped,
     /// exclusions are applied (an excluded folder drops its subtree). Returns the new root id and the record map.
+    /// When <paramref name="abandoned"/> (asked under the index's write lock) says so, adds nothing and returns RootId -1.
     /// </summary>
-    public (int RootId, RecordMap Map, int Count) BuildInto(FileIndex index, string rootName, ExclusionFilter filter, Action<int>? progress = null)
+    public (int RootId, RecordMap Map, int Count) BuildInto(FileIndex index, string rootName, ExclusionFilter filter, Action<int>? progress = null,
+        Func<bool>? abandoned = null)
     {
+        FinishMerge();
         int n = Math.Max(_length, RootRecord + 1);
         Ensure(RootRecord);
         if (_dosFallback != null)
@@ -283,6 +321,7 @@ public sealed class VolumeRecords
         string rootPath = rootName.TrimEnd('\\') + "\\";
         index.BulkAdd(b =>
         {
+            if (abandoned?.Invoke() == true) return;
             rootId = b.Add(rootName.TrimEnd('\\'), FileIndex.NoParent, FileAttributes.Directory, -1, _modified[RootRecord], _created[RootRecord]);
             map.Set(RootRecord, rootId);
             var visited = new bool[n];

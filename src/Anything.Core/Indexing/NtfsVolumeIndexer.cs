@@ -13,7 +13,8 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
 {
     const int ErrorInvalidParameter = 87;
 
-    IVolumeSource? _volume;
+    IVolumeSource? _volume; // null once released or disposed; changed under _gate
+    readonly bool _viaService;
     RecordMap _map = new();
     ulong _journalId;
     long _nextUsn;
@@ -30,14 +31,19 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
     int _flushing;
     long _lastScanTicks;
 
-    public NtfsVolumeIndexer(IIndexerHost host, string drive, IVolumeSource source) : base(host, drive) => _volume = source;
+    public NtfsVolumeIndexer(IIndexerHost host, string drive, IVolumeSource source) : base(host, drive)
+    {
+        _volume = source;
+        _viaService = source.Kind == "service";
+    }
 
     public override RootKind Kind => RootKind.Ntfs;
-    public long ProgressCount => Interlocked.Read(ref _progress.Value);
+    public override long ProgressCount => Interlocked.Read(ref _progress.Value);
     /// <summary>"MFT" or "USN" depending on how the last scan enumerated the volume.</summary>
     public string ScanMethod { get; private set; } = "";
+    public override string Method => ScanMethod.Length > 0 ? ScanMethod : "MFT";
     /// <summary>True when the volume is read through the Rock Preview service.</summary>
-    public bool ViaService => _volume?.Kind == "service";
+    public bool ViaService => _viaService;
 
     public override (ulong JournalId, long NextUsn) JournalPosition => (_journalId, _nextUsn);
 
@@ -62,49 +68,73 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
             _journalId = loaded.JournalId;
             _nextUsn = loaded.NextUsn;
         }
-        if (_volume == null || !_volume.TryQueryJournal(create: false, out var info)) return false;
+        var volume = _volume;
+        if (volume == null || !volume.TryQueryJournal(create: false, out var info)) return false;
         // Current when the journal is the same one and still holds every record since the saved position.
         bool current = info.JournalId == loaded.JournalId && loaded.NextUsn >= info.FirstUsn && loaded.NextUsn <= info.NextUsn;
         _hasJournal = current;
+        if (current) Status = RootStatus.Ready;
         return current;
     }
 
     public override void Scan(CancellationToken ct)
     {
         StopMonitoring();
-        if (_volume == null) throw new InvalidOperationException("volume not open");
-        // Capture the journal position *before* reading the MFT so changes made during the scan are replayed.
-        _hasJournal = _volume.TryQueryJournal(create: true, out var info);
-        long startUsn = _hasJournal ? info.NextUsn : 0;
-        Interlocked.Exchange(ref _progress.Value, 0);
-        Host.ReportProgress(this, 0);
-
-        var records = _volume.ReadRecords(startUsn, ct, n => { Interlocked.Exchange(ref _progress.Value, n); }, out string method);
-        ScanMethod = method;
-        ct.ThrowIfCancellationRequested();
-
-        lock (Sync)
+        var volume = _volume ?? throw new InvalidOperationException("volume not open");
+        // The index this scan writes into: a scan the manager stopped waiting for must not write into the next one.
+        long generation;
+        lock (Sync) generation = Index.Generation;
+        Status = RootStatus.Scanning;
+        try
         {
-            var (rootId, map, count) = records.BuildInto(Index, RootName, Filter, n => Interlocked.Exchange(ref _progress.Value, n));
-            int old = RootId;
-            RootId = rootId;
-            _map = map;
-            _journalId = info.JournalId;
-            _nextUsn = startUsn;
-            _dirty.Clear();
-            _pendingOld.Clear();
-            if (old >= 0 && old != rootId) Index.Remove(old);
-            Interlocked.Exchange(ref _progress.Value, count);
-            _lastScanTicks = Environment.TickCount64;
+            // Capture the journal position *before* reading the MFT so changes made during the scan are replayed.
+            _hasJournal = volume.TryQueryJournal(create: true, out var info);
+            long startUsn = _hasJournal ? info.NextUsn : 0;
+            Interlocked.Exchange(ref _progress.Value, 0);
+            Host.ReportProgress(this, 0);
+
+            var records = volume.ReadRecords(startUsn, ct, n => { Interlocked.Exchange(ref _progress.Value, n); }, out string method);
+            ScanMethod = method;
+            ct.ThrowIfCancellationRequested();
+
+            lock (Sync)
+            {
+                bool Abandoned() => ct.IsCancellationRequested || Index.Generation != generation;
+                if (Abandoned()) throw new OperationCanceledException(ct);
+                // Checked again under the index's write lock, which Clear takes too.
+                var (rootId, map, count) = records.BuildInto(Index, RootName, Filter, n => Interlocked.Exchange(ref _progress.Value, n), Abandoned);
+                if (rootId < 0) throw new OperationCanceledException(ct);
+                int old = RootId;
+                RootId = rootId;
+                _map = map;
+                _journalId = info.JournalId;
+                _nextUsn = startUsn;
+                _dirty.Clear();
+                _pendingOld.Clear();
+                if (old >= 0 && old != rootId) Index.Remove(old);
+                Interlocked.Exchange(ref _progress.Value, count);
+                _lastScanTicks = Environment.TickCount64;
+                LastScanUtc = DateTime.UtcNow.ToFileTimeUtc();
+                Status = RootStatus.Ready;
+                Detail = null;
+            }
+            Host.ReportProgress(this, ProgressCount);
         }
-        Host.ReportProgress(this, ProgressCount);
+        catch (Exception ex)
+        {
+            // Back to what the index still holds (the previous scan, or nothing yet); the manager retries.
+            Status = RootId >= 0 ? RootStatus.Ready : RootStatus.Waiting;
+            if (ex is not OperationCanceledException) Detail = ex.Message;
+            throw;
+        }
     }
 
     public override void StartMonitoring()
     {
         lock (_gate)
         {
-            if (!_hasJournal || _volume == null || _thread != null || RootId < 0) return;
+            // Released for an eject: a monitor now would reopen the drive (or use its closed handle).
+            if (Released || !_hasJournal || _volume == null || _thread != null || RootId < 0) return;
             _cts = new CancellationTokenSource();
             var token = _cts.Token;
             _thread = new Thread(() => MonitorLoop(token)) { IsBackground = true, Name = "Rock Preview USN monitor " + RootName };
@@ -116,9 +146,12 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
     public override void StopMonitoring()
     {
         Thread? t;
+        CancellationTokenSource? cts;
         lock (_gate)
         {
-            _cts?.Cancel();
+            cts = _cts;
+            _cts = null;
+            cts?.Cancel();
             t = _thread;
             _thread = null;
             _flushTimer?.Dispose();
@@ -126,7 +159,11 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
         }
         if (t != null && t != Thread.CurrentThread)
         {
-            // The journal read may block; cancel it.
+            // Journal reads return at once, so the loop normally ends within one round trip. Through the service, let
+            // it finish: cancelling the pipe read would cut the connection, and the service could no longer be asked
+            // to close the volume (it keeps it open until it notices, which can veto an eject).
+            if (_viaService) t.Join(1500);
+            // A read that hangs anyway (a dying drive): cancel it.
             for (int i = 0; i < 50 && !t.Join(100); i++)
             {
                 uint tid = _nativeThreadId;
@@ -135,16 +172,65 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
                 if (th != 0) { Native.CancelSynchronousIo(th); Native.CloseHandle(th); }
             }
         }
-        _cts?.Dispose();
-        _cts = null;
+        // After the join: a loop still running sees a disposed token and exits (MonitorLoop catches that).
+        cts?.Dispose();
         FlushDirty();
+    }
+
+    /// <summary>Stops the journal monitor and closes the volume (through the service too), so the drive can be ejected.</summary>
+    public override void Release()
+    {
+        IVolumeSource? volume;
+        lock (_gate)
+        {
+            // Under the gate, so a StartMonitoring racing with this either sees Released or is stopped just below.
+            Released = true;
+            volume = _volume;
+            _volume = null;
+        }
+        StopMonitoring();
+        volume?.Dispose();
+    }
+
+    /// <summary>
+    /// The eject (or volume lock) didn't happen: carries on with <paramref name="source"/>, keeping the entries, the map
+    /// and the journal position, so the next <see cref="StartMonitoring"/> replays the journal from where it stopped
+    /// (a journal that moved on asks for a rescan, which replaces the entries when done). True: the root owns
+    /// <paramref name="source"/> (and disposes it if it was never released). False when there is nothing to carry on
+    /// with (no source, or released before its first scan finished): the caller keeps the source.
+    /// </summary>
+    public override bool Revive(IVolumeSource? source)
+    {
+        if (source == null) return false;
+        IVolumeSource? old;
+        lock (_gate)
+        {
+            if (!Released)
+            {
+                old = source; // still has its own
+            }
+            else
+            {
+                if (RootId < 0) return false;
+                old = _volume;
+                _volume = source;
+                base.Revive(source);
+            }
+        }
+        old?.Dispose();
+        return true;
     }
 
     public override void Dispose()
     {
-        StopMonitoring();
-        _volume?.Dispose();
-        _volume = null;
+        base.Dispose();
+        IVolumeSource? volume;
+        lock (_gate)
+        {
+            volume = _volume;
+            _volume = null;
+        }
+        volume?.Dispose();
     }
 
     void MonitorLoop(CancellationToken ct)
@@ -200,6 +286,8 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
                 if (ret == 8 || next == start) ct.WaitHandle.WaitOne(250);
             }
         }
+        // The volume was closed for an eject (or the token disposed) while a read was under way: nothing left to watch.
+        catch (ObjectDisposedException) { }
         finally
         {
             _nativeThreadId = 0;
@@ -372,6 +460,8 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
     /// <summary>Re-reads size/dates/attributes of records touched by the journal (coalesced, timer driven).</summary>
     void FlushDirty()
     {
+        // A drive being ejected isn't touched again: each re-read opens a file on it.
+        if (Released) return;
         if (Interlocked.Exchange(ref _flushing, 1) != 0) return;
         bool changed = false;
         try

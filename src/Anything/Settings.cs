@@ -2,6 +2,7 @@ using System.Globalization;
 using SortKey = Anything.Core.SortKey;
 using System.Text;
 using Anything.Core;
+using Anything.Core.Indexing;
 using Microsoft.Win32;
 
 namespace Anything;
@@ -117,6 +118,13 @@ internal sealed class AppSettings
     /// <summary>The version a Windows notification was shown for: once per version.</summary>
     public string NotifiedVersion { get; set; } = "";
 
+    // Drives left out
+    /// <summary>
+    /// Drive roots ("C:\") that are on Folders › Leave these folders out and that the user chose to keep left out:
+    /// the window's "Nothing on C: shows up in searches" bar no longer asks about them.
+    /// </summary>
+    public List<string> LeftOutDrivesKept { get; set; } = [];
+
     public IndexSettings Index { get; } = new();
     public List<Bookmark> Bookmarks { get; } = [];
 
@@ -204,12 +212,18 @@ internal sealed class AppSettings
             DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var checkedAt) ? checkedAt : default;
         s.LatestVersion = Str("latest_version", "").Trim();
         s.NotifiedVersion = Str("notified_version", "").Trim();
+        s.LeftOutDrivesKept = List("left_out_drive_notice_dismissed", s.LeftOutDrivesKept);
         s.StartWithWindows = ReadStartWithWindows();
         s.UseInsteadOfExplorer = ExplorerReplacement.IsEnabled();
 
         var ix = s.Index;
         ix.IndexNtfsVolumes = Bool("index_ntfs_volumes", ix.IndexNtfsVolumes);
         ix.Volumes = List("volumes", ix.Volumes);
+        ix.SkipDrives = List("skip_drives", ix.SkipDrives);
+        if (ix.Volumes.Count > 0 && !v.ContainsKey("skip_drives")) MigrateVolumes(ix);
+        ix.IndexRemovableDrives = Bool("index_removable_drives", ix.IndexRemovableDrives);
+        ix.IndexNetworkDrives = Bool("index_network_drives", ix.IndexNetworkDrives);
+        ix.NetworkRescanMinutes = Math.Max(0, Int("network_rescan_minutes", ix.NetworkRescanMinutes));
         ix.Folders = List("folders", ix.Folders);
         ix.ExcludeFolders = List("exclude_folders", ix.ExcludeFolders);
         ix.ExcludePatterns = List("exclude_patterns", ix.ExcludePatterns);
@@ -290,8 +304,13 @@ internal sealed class AppSettings
         if (LastUpdateCheck != default) W("last_update_check", LastUpdateCheck.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
         W("latest_version", Clean(LatestVersion));
         W("notified_version", Clean(NotifiedVersion));
+        W("left_out_drive_notice_dismissed", string.Join('|', LeftOutDrivesKept));
         B("index_ntfs_volumes", Index.IndexNtfsVolumes);
         W("volumes", string.Join('|', Index.Volumes));
+        W("skip_drives", string.Join('|', Index.SkipDrives));
+        B("index_removable_drives", Index.IndexRemovableDrives);
+        B("index_network_drives", Index.IndexNetworkDrives);
+        W("network_rescan_minutes", Index.NetworkRescanMinutes);
         W("folders", string.Join('|', Index.Folders));
         W("exclude_folders", string.Join('|', Index.ExcludeFolders));
         W("exclude_patterns", string.Join('|', Index.ExcludePatterns));
@@ -324,6 +343,88 @@ internal sealed class AppSettings
     }
 
     static string Clean(string s) => s.Replace('\r', ' ').Replace('\n', ' ');
+
+    /// <summary>
+    /// 1.4.0 and earlier kept the drives that are switched on ("only these"); now Settings keeps the ones switched off,
+    /// so drives that come later (a USB stick, a network drive) are searched too. Converted once: every fixed drive
+    /// there is now and that wasn't on the list is turned off. The old list stays: the index still applies it to fixed
+    /// drives, so a disk that was off and isn't plugged in now (an external disk Windows calls fixed) stays off too.
+    /// </summary>
+    static void MigrateVolumes(IndexSettings ix)
+    {
+        try
+        {
+            // Runs while the settings load (on the UI thread): drive types only, and a look at the fixed drives alone
+            // (to leave out SUBST drives), never the network or the volumes mounted in folders.
+            var skip = new List<string>(ix.SkipDrives);
+            uint mask = Drives.LetterMask();
+            for (int i = 0; i < 26; i++)
+            {
+                if ((mask & (1u << i)) == 0) continue;
+                string root = (char)('A' + i) + @":\";
+                if (Drives.KindOf(root) != DriveKind.Fixed || ix.Volumes.Any(v => SamePath(v, root)) || skip.Any(v => SamePath(v, root))) continue;
+                if (Drives.Describe(root).SubstTarget != null) continue;
+                skip.Add(root);
+            }
+            ix.SkipDrives = skip;
+        }
+        catch (Exception) { /* the old list alone: the index still honours it */ }
+    }
+
+    /// <summary>Two paths name the same folder or drive: case and a trailing backslash don't matter ("C:" = "c:\").</summary>
+    public static bool SamePath(string a, string b) => string.Equals(TrimPath(a), TrimPath(b), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary><paramref name="path"/> is <paramref name="folder"/> or inside it.</summary>
+    public static bool IsUnder(string path, string folder)
+    {
+        string p = TrimPath(path), f = TrimPath(folder);
+        return p.Equals(f, StringComparison.OrdinalIgnoreCase)
+               || (f.Length > 0 && p.Length > f.Length && p.StartsWith(f, StringComparison.OrdinalIgnoreCase) && p[f.Length] == '\\');
+    }
+
+    static string TrimPath(string path) => path.Trim().Trim('"').Replace('/', '\\').TrimEnd('\\');
+
+    /// <summary>
+    /// The entries of Folders › Leave these folders out that leave out all of a drive (<paramref name="root"/>, "C:\"):
+    /// the drive itself, or a folder it is mounted in.
+    /// </summary>
+    public List<string> ExclusionsHidingDrive(string root) =>
+        [.. Index.ExcludeFolders.Where(f => IndexPlan.IsLeftOut(new ExclusionFilter(new IndexSettings { ExcludeFolders = [f] }), root))];
+
+    /// <summary>
+    /// Shows a drive that Folders › Leave these folders out hides: the drive itself comes off that list. When what hides
+    /// it is a folder it is mounted in (C:\VMs, for a disk at C:\VMs\Disk2), that folder stays left out and the drive
+    /// goes on Also search these folders instead, which are searched even inside folders left out. False when nothing
+    /// on the list hides it.
+    /// </summary>
+    public bool IncludeDrive(string root)
+    {
+        var hiding = ExclusionsHidingDrive(root);
+        if (hiding.Count == 0) return false;
+        bool changed = false;
+        if (hiding.Any(f => SamePath(f, root)))
+        {
+            Index.ExcludeFolders = [.. Index.ExcludeFolders.Where(f => !SamePath(f, root))];
+            changed = true;
+        }
+        if (hiding.Any(f => !SamePath(f, root)) && !IsSearchedAsFolder(root))
+        {
+            Index.Folders = [.. Index.Folders, root.Length > 3 ? root.TrimEnd('\\') : root];
+            changed = true;
+        }
+        return changed;
+    }
+
+    /// <summary>The drive (<paramref name="root"/>) is on Folders › Also search these folders itself, so it is searched even while left out.</summary>
+    public bool IsSearchedAsFolder(string root) => Index.Folders.Any(f => SamePath(f, root));
+
+    public bool IsLeftOutDriveKept(string root) => LeftOutDrivesKept.Any(r => SamePath(r, root));
+
+    /// <summary>The user wants <paramref name="root"/> left out: the window's bar stops asking about it.</summary>
+    public void KeepDriveLeftOut(string root)
+    {
+        if (!IsLeftOutDriveKept(root)) LeftOutDrivesKept.Add(root);
+    }
 
     /// <summary>
     /// One-time move of settings, index and the startup entry from the app's former name ("Anything") so the

@@ -23,6 +23,9 @@ public sealed class FileIndex
     long[] _created = new long[1024];
     FileAttributes[] _attrs = new FileAttributes[1024];
     bool[] _alive = new bool[1024];
+    // Live children per entry, so removing an empty folder (what the change journal reports for every deleted folder,
+    // children first) is instant instead of a pass over millions of entries.
+    int[] _kids = new int[1024];
     // Name interning: about two thirds of all names on a typical disk are repeats ("index.js", "desktop.ini",
     // "#", "LICENSE"...), so every distinct name is stored once and shared.
     HashSet<string> _pool = new(StringComparer.Ordinal);
@@ -121,7 +124,7 @@ public sealed class FileIndex
         /// <summary>Re-parents an entry inside a bulk operation (used when a child is seen before its parent).</summary>
         public void SetParent(int id, int parent)
         {
-            _index._parent[id] = parent;
+            _index.Reparent(id, parent);
             _index.Touch(id);
         }
     }
@@ -132,6 +135,8 @@ public sealed class FileIndex
         int id = _count;
         _names[id] = Intern(name);
         _parent[id] = parent;
+        _kids[id] = 0;
+        if ((uint)parent < (uint)id) _kids[parent]++;
         _attrs[id] = attributes;
         _size[id] = (attributes & FileAttributes.Directory) != 0 && size == 0 ? -1 : size;
         _modified[id] = modified;
@@ -144,6 +149,16 @@ public sealed class FileIndex
         return id;
     }
 
+    /// <summary>Moves an entry under another parent, keeping the child counts right (caller holds the write lock).</summary>
+    void Reparent(int id, int parent)
+    {
+        int old = _parent[id];
+        if (old == parent) return;
+        if ((uint)old < (uint)_count && _kids[old] > 0) _kids[old]--;
+        if ((uint)parent < (uint)_count) _kids[parent]++;
+        _parent[id] = parent;
+    }
+
     // Grow by 50% (not 100%) once large: big indexes would otherwise carry up to 2x unused capacity.
     void Grow() => Resize(_names.Length < 1 << 20 ? _names.Length * 2 : _names.Length + _names.Length / 2);
 
@@ -154,8 +169,11 @@ public sealed class FileIndex
         try
         {
             if (!IsAliveNoCheck(id)) return;
-            if ((_attrs[id] & FileAttributes.Directory) == 0)
+            int parent = _parent[id];
+            if ((uint)parent < (uint)_count && _kids[parent] > 0) _kids[parent]--;
+            if ((_attrs[id] & FileAttributes.Directory) == 0 || _kids[id] == 0)
             {
+                // A file, or a folder with nothing in it: just this entry.
                 _alive[id] = false;
                 _names[id] = null!; // release the name now; the slot itself is reclaimed by Compact
                 _liveCount--;
@@ -199,7 +217,7 @@ public sealed class FileIndex
         {
             if (!IsAliveNoCheck(id)) return;
             _names[id] = Intern(newName);
-            _parent[id] = newParent;
+            Reparent(id, newParent);
             Touch(id);
             Interlocked.Increment(ref _version);
         }
@@ -232,6 +250,7 @@ public sealed class FileIndex
         {
             Array.Clear(_alive, 0, _count);
             Array.Clear(_names, 0, _count);
+            Array.Clear(_kids, 0, _count);
             _count = 0;
             _liveCount = 0;
             _pool = new HashSet<string>(StringComparer.Ordinal);
@@ -242,6 +261,43 @@ public sealed class FileIndex
         }
         finally { Lock.ExitWriteLock(); }
         RaiseChanged();
+    }
+
+    /// <summary>Live entries under each root (root id → count, the root included), in one pass over the index.</summary>
+    public Dictionary<int, int> CountByRoot()
+    {
+        var counts = new Dictionary<int, int>();
+        Lock.EnterReadLock();
+        try
+        {
+            int n = _count;
+            // Root id + 1 per slot once known (0 = not resolved yet, -1 = orphaned), so each chain is walked once.
+            var rootOf = new int[n];
+            var chain = new List<int>(64);
+            for (int i = 0; i < n; i++)
+            {
+                if (!_alive[i]) continue;
+                int root = rootOf[i];
+                if (root == 0)
+                {
+                    chain.Clear();
+                    int cur = i;
+                    root = -1;
+                    while ((uint)cur < (uint)n && chain.Count <= 4096)
+                    {
+                        if (rootOf[cur] != 0) { root = rootOf[cur]; break; }
+                        chain.Add(cur);
+                        int parent = _parent[cur];
+                        if (parent == NoParent) { root = cur + 1; break; }
+                        cur = parent;
+                    }
+                    foreach (int c in chain) rootOf[c] = root;
+                }
+                if (root > 0) counts[root - 1] = counts.GetValueOrDefault(root - 1) + 1;
+            }
+        }
+        finally { Lock.ExitReadLock(); }
+        return counts;
     }
 
     /// <summary>Pre-sizes the arrays for <paramref name="capacity"/> slots (exact size, no doubling slack).</summary>
@@ -285,6 +341,10 @@ public sealed class FileIndex
             }
             Array.Clear(_names, k, n - k);
             Array.Clear(_alive, k, n - k);
+            // Counted again for the new ids (removed subtrees left their own counts behind).
+            Array.Clear(_kids, 0, n);
+            for (int j = 0; j < k; j++)
+                if ((uint)_parent[j] < (uint)k) _kids[_parent[j]]++;
             _count = k;
             _liveCount = k;
             _pool = pool;
@@ -308,6 +368,7 @@ public sealed class FileIndex
         Array.Resize(ref _created, n);
         Array.Resize(ref _attrs, n);
         Array.Resize(ref _alive, n);
+        Array.Resize(ref _kids, n);
     }
 
     /// <summary>Raise <see cref="Changed"/> explicitly (for callers batching several mutations).</summary>

@@ -27,9 +27,10 @@ internal static class IndexService
     /// <summary>
     /// Bumped only when the service itself changes (not with every Rock Preview release), so updating Rock Preview
     /// asks for administrator permission again only when the service really needs it. 2: frees memory after a scan.
-    /// 3: the new name (Ultimate File Explorer Service) in Windows' Services list.
+    /// 3: the new name (Ultimate File Explorer Service) in Windows' Services list. 4: reads USB drives formatted NTFS
+    /// too, lets go of a drive when asked (so it can be safely removed at once) and never waits on a busy change journal.
     /// </summary>
-    public const int ServiceVersion = 3;
+    public const int ServiceVersion = 4;
 
     public static string InstallFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Rock Preview Service");
     public static string InstalledExe => Path.Combine(InstallFolder, "RockPreviewService.exe");

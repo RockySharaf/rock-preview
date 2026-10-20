@@ -16,6 +16,10 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
+        // Looking at an empty card reader or DVD drive (on any thread, in the app, setup or the service) just fails
+        // instead of Windows asking "There is no disk in the drive".
+        SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+
         // The Rock Preview service and its one-time install (IndexService): no windows.
         if (args.Length > 0 && args[0].TrimStart('-', '/').Equals("service", StringComparison.OrdinalIgnoreCase)) return IndexService.RunAsService();
         if (args.Any(a => a.TrimStart('-', '/').Equals("installservice", StringComparison.OrdinalIgnoreCase))) return InstallServiceCommand(args);
@@ -240,4 +244,11 @@ static class Program
         }
         finally { Marshal.FreeHGlobal(mem); }
     }
+
+    const uint SEM_FAILCRITICALERRORS = 0x0001, SEM_NOOPENFILEERRORBOX = 0x8000;
+
+    [DllImport("kernel32.dll")]
+    static extern uint SetErrorMode(uint mode);
+    [DllImport("kernel32.dll")]
+    static extern uint GetErrorMode();
 }

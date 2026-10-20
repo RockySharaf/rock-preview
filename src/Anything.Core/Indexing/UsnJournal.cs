@@ -152,18 +152,22 @@ internal static unsafe class UsnJournal
     }
 
     /// <summary>
-    /// Reads journal records from <paramref name="startUsn"/>, blocking briefly until data is available.
+    /// Reads journal records from <paramref name="startUsn"/> without waiting: when there is nothing new it returns
+    /// just the next USN (8 bytes, equal to <paramref name="startUsn"/>), and the caller polls again a little later.
     /// Returns bytes in <paramref name="buffer"/> (first 8 bytes = next USN), or -Win32Error on failure.
     /// </summary>
     public static int Read(SafeFileHandle volume, ulong journalId, long startUsn, byte* buffer, int size)
     {
+        // BytesToWaitFor = 0 returns at once. Any wait (even with a timeout) keeps the call outstanding until a record
+        // arrives, which on a quiet drive can be forever: the monitor could then not stop, and through the service the
+        // volume handle could not be closed for an eject.
         var rd = new ReadUsnJournalDataV0
         {
             StartUsn = startUsn,
             ReasonMask = 0xFFFFFFFF,
             ReturnOnlyOnClose = 0,
-            Timeout = 1,
-            BytesToWaitFor = 1,
+            Timeout = 0,
+            BytesToWaitFor = 0,
             UsnJournalId = journalId,
         };
         if (!Native.DeviceIoControl(volume, Native.FSCTL_READ_USN_JOURNAL, &rd, sizeof(ReadUsnJournalDataV0), buffer, size, out int ret, 0))

@@ -16,6 +16,10 @@ internal sealed partial class MainForm : Form
     readonly FlowLayoutPanel _infoBar = new();
     readonly FlowLayoutPanel _updateBar = new();  // a new version is out
     readonly Label _updateText = new() { AutoSize = true, Margin = new Padding(0, 2, 6, 2) };
+    readonly FlowLayoutPanel _leftOutBar = new(); // a whole drive is on the list of folders to leave out
+    readonly Label _leftOutText = new() { AutoSize = true, UseMnemonic = false, Margin = new Padding(0, 2, 6, 2) };
+    readonly LinkLabel _leftOutInclude = new() { AutoSize = true, UseMnemonic = false, Margin = new Padding(0, 2, 12, 2) };
+    readonly LinkLabel _leftOutKeep = new() { AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
     readonly ResultListView _list = new();
     readonly ThumbnailGrid _grid = new();
     readonly SplitContainer _split = new();
@@ -88,6 +92,7 @@ internal sealed partial class MainForm : Form
         BuildSearchBar();
         BuildInfoBar();
         BuildUpdateBar();
+        BuildLeftOutBar();
         BuildList();
         BuildStatusBar();
 
@@ -96,6 +101,7 @@ internal sealed partial class MainForm : Form
         BackColor = ExplorerTheme.Content;
         Controls.Add(_body);
         Controls.Add(_infoBar);
+        Controls.Add(_leftOutBar);
         Controls.Add(_updateBar);
         Controls.Add(_commands);
         Controls.Add(_searchBar);
@@ -212,6 +218,53 @@ internal sealed partial class MainForm : Form
         bool show = _app.ShowUpdateNotice;
         if (show) _updateText.Text = $"Ultimate File Explorer {_app.NewVersion!.ToString(3)} is available. You have {AnythingApp.CurrentVersion.ToString(3)}.";
         if (_updateBar.Visible != show) _updateBar.Visible = show;
+    }
+
+    void BuildLeftOutBar()
+    {
+        _leftOutBar.Dock = DockStyle.Top;
+        _leftOutBar.AutoSize = true;
+        _leftOutBar.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _leftOutBar.WrapContents = true;
+        _leftOutBar.Padding = new Padding(6, 3, 6, 3);
+        _leftOutBar.BackColor = SystemColors.Info;
+        _leftOutBar.ForeColor = SystemColors.InfoText;
+        _leftOutInclude.LinkClicked += (_, _) =>
+        {
+            if (!_app.IncludeLeftOutDrives(_app.LeftOutDrives)) _app.ShowSettings(this, "Folders");
+        };
+        var settings = new LinkLabel { AutoSize = true, Text = "Settings", Margin = new Padding(0, 2, 12, 2) };
+        settings.LinkClicked += (_, _) => _app.ShowSettings(this, "Folders");
+        _leftOutKeep.LinkClicked += (_, _) => _app.KeepDrivesLeftOut(_app.LeftOutDrives);
+        _leftOutBar.Controls.AddRange([_leftOutText, _leftOutInclude, settings, _leftOutKeep]);
+        _leftOutBar.Visible = false;
+    }
+
+    /// <summary>
+    /// Shows the bar while a whole drive is on Settings › Folders › Leave these folders out, so that nothing (or only
+    /// the folders added from it) shows up in searches; "Keep it left out" stops it asking.
+    /// </summary>
+    internal void UpdateLeftOutBar()
+    {
+        var roots = _app.LeftOutDrives;
+        bool show = roots.Count > 0;
+        if (show)
+        {
+            var s = _app.Settings;
+            var names = roots.Select(r => r.Length == 3 && r[1] == ':' ? r[..2] : r.TrimEnd('\\')).ToList();
+            string drives = names.Count == 1 ? names[0] : string.Join(", ", names.Take(names.Count - 1)) + " and " + names[^1];
+            bool someFolders = s.Index.Folders.Any(f => roots.Any(r => AppSettings.IsUnder(f, r)));
+            string what = someFolders ? $"Only the folders you added from {drives} show up in searches" : $"Nothing on {drives} shows up in searches";
+            string why = roots.Count == 1
+                ? $"{s.ExclusionsHidingDrive(roots[0]).FirstOrDefault() ?? roots[0]} is on the list of folders to leave out."
+                : roots.All(r => s.ExclusionsHidingDrive(r).Any(f => AppSettings.SamePath(f, r)))
+                    ? "they're on the list of folders to leave out."
+                    : "they, or folders they're mounted in, are on the list of folders to leave out.";
+            _leftOutText.Text = $"{what}: {why}";
+            _leftOutInclude.Text = roots.Count == 1 ? $"Show {names[0]} in searches" : "Show them in searches";
+            _leftOutKeep.Text = roots.Count == 1 ? "Keep it left out" : "Keep them left out";
+        }
+        if (_leftOutBar.Visible != show) _leftOutBar.Visible = show;
     }
 
     void BuildList()
@@ -606,6 +659,7 @@ internal sealed partial class MainForm : Form
             ApplyViewMode();
         }
         UpdateInfoBar();
+        UpdateLeftOutBar();
         _miRunAsAdmin.Visible = !_app.IndexManager.IsElevated;
         SyncMenus();
         UpdateStatus();
