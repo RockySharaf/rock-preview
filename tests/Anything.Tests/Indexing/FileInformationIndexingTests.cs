@@ -154,7 +154,7 @@ public sealed class FileInformationIndexingTests : IDisposable
         Assert.Equal(@"C:\old.txt", index.GetFullPath(old));
         Assert.Equal(12, index.Size(old));
         Assert.Equal(0, index.Accessed(old));
-        Assert.Equal([5L, 64L], root.Frns);
+        Assert.Equal([5L, 64L], root.Frns!);
     }
 
     sealed class Host(bool fromJournal) : IIndexerHost
