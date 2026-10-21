@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 
 namespace Anything.Core.Indexing;
 
@@ -62,6 +63,44 @@ public static class Drives
                 try { list.AddRange(MountedFolders()); }
                 catch (Exception) { }
             }
+            try { list.AddRange(HiddenMappings(mask, RememberedMappings())); }
+            catch (Exception) { }
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Network drives the user mapped that this program can't see by their letter: Windows keeps a program running as
+    /// administrator apart from the drive letters of the user's normal session (unless EnableLinkedConnections is set),
+    /// so a mapped Z: is missing there. The remembered ones are listed by their share ("\\server\share"), which works
+    /// in either session; one whose letter is here is listed under the letter as usual.
+    /// </summary>
+    internal static List<DriveEntry> HiddenMappings(uint mask, IEnumerable<(string Letter, string RemotePath)> remembered)
+    {
+        var found = new List<DriveEntry>();
+        foreach (var (letter, remote) in remembered)
+        {
+            if (letter.Length == 0 || !char.IsAsciiLetter(letter[0])) continue;
+            int bit = char.ToUpperInvariant(letter[0]) - 'A';
+            if ((mask & (1u << bit)) != 0) continue; // seen under its letter
+            string share = remote.Trim().TrimEnd('\\');
+            if (!share.StartsWith(@"\\", StringComparison.Ordinal) || share.Length < 5) continue;
+            if (found.Exists(d => string.Equals(d.NetworkPath, share, StringComparison.OrdinalIgnoreCase))) continue;
+            found.Add(new DriveEntry(share + "\\", DriveKind.Network, "", $"{char.ToUpperInvariant(letter[0])}: from your normal session", true, share, null));
+        }
+        return found;
+    }
+
+    /// <summary>The user's remembered network drives (HKCU\Network: one key per letter, with its share in RemotePath).</summary>
+    static IEnumerable<(string Letter, string RemotePath)> RememberedMappings()
+    {
+        using var network = Registry.CurrentUser.OpenSubKey("Network");
+        if (network == null) return [];
+        var list = new List<(string, string)>();
+        foreach (var letter in network.GetSubKeyNames())
+        {
+            using var key = network.OpenSubKey(letter);
+            if (key?.GetValue("RemotePath") is string remote) list.Add((letter, remote));
         }
         return list;
     }

@@ -357,7 +357,7 @@ internal sealed class SettingsForm : Form
         };
         string text = $"{DriveName(d.Root)}  {(string.IsNullOrWhiteSpace(d.Label) ? kind : d.Label.Trim())}";
         if (d.FileSystem.Length > 0) text += $"  ({d.FileSystem})";
-        if (d.NetworkPath is { } share) text += $"  {share}";
+        if (d.NetworkPath is { } share && d.IsDriveLetter) text += $"  {share}"; // a share listed by itself shows it already
         return text;
     }
 
