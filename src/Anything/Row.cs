@@ -15,6 +15,11 @@ internal sealed class Row
     public bool IsDir, IsRoot;
     public long Size = -1;
     public string SizeText = "", ModifiedText = "", CreatedText = "", AttrText = "";
+    /// <summary>Date accessed from the index (FILETIME UTC), or read from the disk when it isn't indexed (<see cref="AccessedText"/>).</summary>
+    public long Accessed;
+    bool _accessedFromDisk;
+    public long RecentChange, LastRun;
+    public int RunCount;
     string? _type;
     public int Icon = -1;
     public IReadOnlyList<(int Start, int Length)>? NameHighlights, PathHighlights;
@@ -35,10 +40,18 @@ internal sealed class Row
             r.Path = r.IsRoot ? "" : index.GetParentPath(id);
             r.Ext = index.Extension(id);
             r.Size = index.Size(id);
-            r.SizeText = r.IsDir || r.Size < 0 ? "" : FormatKb(r.Size);
+            // Folders have a size only with folder sizes on (Settings › Indexing); otherwise it's unknown (-1).
+            r.SizeText = r.Size < 0 ? "" : FormatKb(r.Size);
             r.ModifiedText = FormatDate(index.Modified(id));
             r.CreatedText = FormatDate(index.Created(id));
             r.AttrText = FormatAttributes(index.Attributes(id));
+            // Not indexed, or not known to the index (a drive read through an older service): from the disk.
+            r.Accessed = index.Accessed(id);
+            r._accessedFromDisk = r.Accessed == 0;
+            r.RecentChange = index.RecentChange(id);
+            var run = index.RunHistory.Get(r.FullPath);
+            r.RunCount = run.Count;
+            r.LastRun = run.LastRun;
         }
         catch (Exception ex) when (ex is IndexOutOfRangeException or NullReferenceException or ArgumentException)
         {
@@ -57,8 +70,28 @@ internal sealed class Row
         "date_modified" => ModifiedText,
         "date_created" => CreatedText,
         "attributes" => AttrText,
+        "date_accessed" => Name.Length == 0 ? "" : FormatDate(AccessedValue),
+        "date_recently_changed" => FormatDate(RecentChange),
+        "run_count" => RunCount > 0 ? RunCount.ToString("N0", CultureInfo.CurrentCulture) : "",
+        "date_run" => FormatDate(LastRun),
         _ => "",
     };
+
+    /// <summary>
+    /// Date accessed; when it isn't indexed, read from the disk in the background (0 until it is: the window repaints
+    /// when <see cref="DiskDates.Resolved"/> says it came in).
+    /// </summary>
+    public long AccessedValue
+    {
+        get
+        {
+            if (!_accessedFromDisk || FullPath.Length == 0) return Accessed;
+            if (!DiskDates.TryGet(FullPath, out long t)) return 0;
+            Accessed = t;
+            _accessedFromDisk = false;
+            return t;
+        }
+    }
 
     /// <summary>Everything style: kilobytes rounded up with thousands separators.</summary>
     public static string FormatKb(long bytes) => ((bytes + 1023) / 1024).ToString("N0", CultureInfo.CurrentCulture) + " KB";

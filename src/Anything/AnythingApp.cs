@@ -80,11 +80,13 @@ internal sealed class AnythingApp : ApplicationContext
 
         ShellInfo.Initialize();
         ShellInfo.IconsResolved += () => Post(() => { foreach (var w in _windows) w.OnIconsResolved(); });
+        DiskDates.Resolved += () => Post(() => { foreach (var w in _windows) w.OnDatesResolved(); });
 
         _messageWindow = new MessageWindow(this, Program.MessageWindowTitle + (cmd.Demo ? ".Demo" : ""));
 
         IndexManager.StateChanged += OnStateChangedBackground;
         SubscribeIndex();
+        if (!cmd.Demo) LoadRunHistory();
         try { IndexManager.Start(Settings.Index); }
         catch (Exception ex)
         {
@@ -119,6 +121,44 @@ internal sealed class AnythingApp : ApplicationContext
     public string TitleWithHotkey => ActiveHotkey is not { } h ? Title : IsDemo ? $"Ultimate File Explorer (Demo, {h})" : $"Ultimate File Explorer ({h})";
 
     public void Post(Action a) => _sync.Post(_ => { try { a(); } catch (ObjectDisposedException) { } }, null);
+
+    // ---- run history ----------------------------------------------------------------------------
+
+    /// <summary>"Run History.csv" beside the settings, as Everything keeps it beside Everything.ini.</summary>
+    public static string RunHistoryPath => Path.Combine(Path.GetDirectoryName(AppSettings.DefaultPath(false))!, "Run History.csv");
+
+    /// <summary>Everything's own run history, which <see cref="ImportEverythingRunHistory"/> brings in.</summary>
+    public static string EverythingRunHistoryPath =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Everything", "Run History.csv");
+
+    void LoadRunHistory()
+    {
+        var history = IndexManager.Index.RunHistory;
+        history.Load(RunHistoryPath);
+        history.Changed += OnRunHistoryChanged;
+    }
+
+    void OnRunHistoryChanged()
+    {
+        // Saved at once (a small file); the windows search again to show the new counts.
+        try { IndexManager.Index.RunHistory.Save(RunHistoryPath); } catch (Exception) { }
+        OnIndexChangedBackground();
+    }
+
+    /// <summary>Counts a run of each path opened from the results (Run Count, Date Run), unless run history is off.</summary>
+    public void RecordRuns(IEnumerable<string> paths)
+    {
+        if (IsDemo || !Settings.RunHistoryEnabled) return;
+        long now = DateTime.UtcNow.ToFileTimeUtc();
+        foreach (var p in paths) IndexManager.Index.RunHistory.Increment(p, now);
+    }
+
+    /// <summary>Adds Everything's run history to ours (higher count and later date win). Returns how many files changed, -1 when there is none.</summary>
+    public int ImportEverythingRunHistory()
+    {
+        if (IsDemo || !File.Exists(EverythingRunHistoryPath)) return -1;
+        return IndexManager.Index.RunHistory.Import(EverythingRunHistoryPath);
+    }
 
     // ---- index events -------------------------------------------------------------------------
 

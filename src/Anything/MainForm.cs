@@ -623,6 +623,12 @@ internal sealed partial class MainForm : Form
         if (_loaded && !_iconTimer.Enabled) _iconTimer.Start();
     }
 
+    /// <summary>Dates accessed read from the disk came in (date accessed not indexed): the rows show them now.</summary>
+    public void OnDatesResolved()
+    {
+        if (_loaded && _cols.TryGetValue("date_accessed", out var c) && c.Visible) _list.Invalidate();
+    }
+
     public void SaveStateTo(AppSettings s)
     {
         if (!_loaded) return;

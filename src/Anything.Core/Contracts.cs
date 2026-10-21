@@ -1,7 +1,7 @@
 namespace Anything.Core;
 
-/// <summary>Result columns / sort orders (mirrors Everything's sort menu).</summary>
-public enum SortKey { Name, Path, Size, Extension, Type, DateModified, DateCreated, Attributes }
+/// <summary>Result columns / sort orders (mirrors Everything's sort menu; new ones go last, settings keep the names).</summary>
+public enum SortKey { Name, Path, Size, Extension, Type, DateModified, DateCreated, Attributes, RunCount, DateRecentlyChanged, DateAccessed, DateRun }
 
 /// <summary>Global match toggles from the Search menu. Query modifiers (case:, regex:, ...) override them per term.</summary>
 public sealed record SearchOptions
@@ -78,6 +78,17 @@ public sealed class IndexSettings
     public List<string> ExcludePatterns { get; set; } = [];
     public bool ExcludeHidden { get; set; }
     public bool ExcludeSystem { get; set; }
+    /// <summary>
+    /// Keep every file's and folder's date accessed in the index (8 bytes each), for instant da: searches and sorting.
+    /// Off (Everything's default too): the date is read from the disk when shown or searched, which is slow.
+    /// </summary>
+    public bool IndexDateAccessed { get; set; }
+    /// <summary>Folders show the total size of everything in them, kept current as files change (Everything: index_folder_size).</summary>
+    public bool IndexFolderSizes { get; set; }
+    /// <summary>Remember what changed while the app runs (Date Recently Changed, rc:), like Everything's index_recent_changes.</summary>
+    public bool IndexRecentChanges { get; set; } = true;
+    /// <summary>At startup, take recent changes from the NTFS change journal, so they reach back days, not just since the start.</summary>
+    public bool RecentChangesFromJournal { get; set; }
     /// <summary>Database file; loaded at startup for instant results, saved on exit.</summary>
     public string DatabasePath { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Rock Preview", "RockPreview.db");
@@ -96,6 +107,10 @@ public sealed class IndexSettings
         ExcludePatterns = [.. ExcludePatterns],
         ExcludeHidden = ExcludeHidden,
         ExcludeSystem = ExcludeSystem,
+        IndexDateAccessed = IndexDateAccessed,
+        IndexFolderSizes = IndexFolderSizes,
+        IndexRecentChanges = IndexRecentChanges,
+        RecentChangesFromJournal = RecentChangesFromJournal,
         DatabasePath = DatabasePath,
     };
 }

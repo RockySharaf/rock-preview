@@ -28,6 +28,7 @@ internal sealed class SettingsForm : Form
     readonly ToggleSwitch _matchCase = new(), _wholeWord = new(), _matchPath = new(), _diacritics = new(), _regex = new();
     // Indexing
     readonly ToggleSwitch _ntfs = new(), _removable = new(), _network = new();
+    readonly ToggleSwitch _dateAccessed = new(), _folderSizes = new(), _recentChanges = new(), _recentFromJournal = new(), _runHistory = new();
     readonly ComboBox _rescan = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly RowList _driveRows = new();
     readonly NoteLabel _alsoSearched = new();
@@ -282,7 +283,7 @@ internal sealed class SettingsForm : Form
         bool service = !_app.IsDemo && IndexService.IsInstalled();
         // An older service (setup's update declined, say) still works, but reads only fixed drives.
         bool outdated = service && IndexService.NeedsUpdate();
-        string status = index.UsesService && outdated ? "On, through an older Ultimate File Explorer Service. Update it to read USB drives instantly too; Windows asks for permission once."
+        string status = index.UsesService && outdated ? "On, through an older Ultimate File Explorer Service. Update it to read USB drives instantly too, and dates accessed; Windows asks for permission once."
             : index.UsesService ? "On: the Ultimate File Explorer Service reads your drives, so every change shows up at once."
             : index.IsElevated ? "On, because Ultimate File Explorer runs as administrator."
             : service && outdated ? "The Ultimate File Explorer Service isn't answering. Updating it usually brings it back; Windows asks for permission once."
@@ -301,6 +302,16 @@ internal sealed class SettingsForm : Form
         var rescanRow = new RowList();
         rescanRow.Controls.Add(new SubRow("Check them again", _rescan, detail: "Network drives and folders don't always say when files change."));
 
+        var journalRow = new RowList();
+        journalRow.Controls.Add(new SubRow("Reach back with the change journal", _recentFromJournal,
+            detail: "At startup, NTFS drives tell what changed in the days before."));
+        var runRows = new RowList();
+        var import = CardButton("Import", ImportRunHistory);
+        var clear = CardButton("Clear", ClearRunHistory);
+        import.Enabled = clear.Enabled = _runHistory.Enabled = !_app.IsDemo;
+        runRows.Controls.Add(new SubRow("Bring in what Everything counted", import, detail: "Everything's Run History.csv, if it's on this PC."));
+        runRows.Controls.Add(new SubRow("Forget every count", clear, detail: ""));
+
         return Page("Indexing",
             Card("Instant indexing", status, turnOn),
             Card("Index whole drives", "Search every drive. NTFS drives are read in seconds and kept up to date as files change; others are scanned.", _ntfs, _driveRows),
@@ -308,7 +319,37 @@ internal sealed class SettingsForm : Form
                 "Search them, and CDs and DVDs, while they're plugged in. NTFS drives are read instantly; others are scanned. They can still be safely removed.", _removable),
             Card("Network drives",
                 "Mapped network drives (like Z:) are scanned and kept up to date. Their files stay searchable while the network is away.", _network, rescanRow),
+            Header("Information about each file"),
+            Card("Date accessed",
+                "Keep when each file was last opened, for instant da: searches and sorting. It takes 8 bytes per file and folder (27 MB for 3.2 million). " +
+                "Off: the Date Accessed column reads it from the disk, which is slower.", _dateAccessed),
+            Card("Folder sizes", "Folders show the size of everything in them, kept up to date as files change. size: finds folders too.", _folderSizes),
+            Card("Recent changes",
+                "Remember files created, changed, moved or renamed: the Date Recently Changed column and rc:today.", _recentChanges, journalRow),
+            Card("Run history",
+                "Count the files you open from the results: the Run Count and Date Run columns, runcount: and dr:.", _runHistory, runRows),
             Card("Rebuild the index", "Scans everything again from the start.", CardButton("Rebuild now", () => { _indexChanged = false; _app.ApplySettings(indexChanged: true, rebuildIndex: true); })));
+    }
+
+    void ImportRunHistory()
+    {
+        int n = _app.ImportEverythingRunHistory();
+        string text = n < 0 ? "Everything's run history isn't on this PC."
+            : n == 0 ? "Nothing new: every file Everything counted is counted here already."
+            : n == 1 ? "1 file's count came in from Everything." : $"{n:N0} files' counts came in from Everything.";
+        MessageBox.Show(this, text, "Run history", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    void ClearRunHistory()
+    {
+        var history = _app.IndexManager.Index.RunHistory;
+        if (history.Count == 0)
+        {
+            MessageBox.Show(this, "No file has been counted yet.", "Run history", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (MessageBox.Show(this, $"Forget how often {history.Count:N0} files were opened?", "Run history", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+            history.Clear();
     }
 
     /// <summary>
@@ -607,6 +648,12 @@ internal sealed class SettingsForm : Form
         _patterns.Text = string.Join("; ", ix.ExcludePatterns);
         _exHidden.Checked = ix.ExcludeHidden;
         _exSystem.Checked = ix.ExcludeSystem;
+        _dateAccessed.Checked = ix.IndexDateAccessed;
+        _folderSizes.Checked = ix.IndexFolderSizes;
+        _recentChanges.Checked = ix.IndexRecentChanges;
+        _recentFromJournal.Checked = ix.RecentChangesFromJournal;
+        _recentFromJournal.Enabled = ix.IndexRecentChanges;
+        _runHistory.Checked = s.RunHistoryEnabled;
         Hotkey.TryParse(s.Hotkey, out uint mods, out Keys key);
         _hotkey.Set(mods, key);
         _hotkeyWin.Checked = (mods & Native.MOD_WIN) != 0;
@@ -626,6 +673,17 @@ internal sealed class SettingsForm : Form
         };
         _exHidden.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.ExcludeHidden = _exHidden.Checked; IndexChanged(); };
         _exSystem.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.ExcludeSystem = _exSystem.Checked; IndexChanged(); };
+        _dateAccessed.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.IndexDateAccessed = _dateAccessed.Checked; IndexChanged(); };
+        _folderSizes.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.IndexFolderSizes = _folderSizes.Checked; IndexChanged(); };
+        _recentChanges.CheckedChanged += (_, _) =>
+        {
+            if (_loading) return;
+            _app.Settings.Index.IndexRecentChanges = _recentChanges.Checked;
+            _recentFromJournal.Enabled = _recentChanges.Checked;
+            IndexChanged();
+        };
+        _recentFromJournal.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.RecentChangesFromJournal = _recentFromJournal.Checked; IndexChanged(); };
+        _runHistory.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.RunHistoryEnabled = _runHistory.Checked; _app.Settings.Save(); };
         _hotkeyWin.CheckedChanged += (_, _) => { if (_loading) return; _hotkey.SetWin(_hotkeyWin.Checked); ApplyHotkey(); };
     }
 

@@ -14,6 +14,8 @@ internal sealed class SortOrderCache(SortKey key)
 
     long _generation = -1;
     long _sequence;
+    long _runSequence = -1; // run history change log position (Run Count / Date Run orders)
+    long _pathVersion = -1;  // FileIndex.PathVersion the order was built with (Path order)
     int[] _order = [];
     int[] _rank = [];      // rank[id] = position in _order, -1 when absent
     readonly List<int> _touched = [];
@@ -24,27 +26,28 @@ internal sealed class SortOrderCache(SortKey key)
     public void Refresh(FileIndex index, SearchContext ctx, CancellationToken ct)
     {
         _touched.Clear();
-        if (_generation == index.Generation && index.TryGetChangesSince(_sequence, _touched))
+        // Run counts live outside the index: their changes come from the run history's own log.
+        var runs = IsRunKey ? ctx.Runs : null;
+        if (_generation == index.Generation && index.TryGetChangesSince(_sequence, _touched)
+            && (runs == null || runs.Sequence <= _runSequence || runs.TryGetChangesSince(_runSequence, _touched)))
         {
             if (_touched.Count == 0) return;
             if (_touched.Count <= Math.Max(2000, _order.Length / 20) && CanMergeIncrementally(index))
             {
                 Merge(index, ctx);
                 _sequence = index.ChangeSequence;
+                if (runs != null) _runSequence = Math.Max(_runSequence, runs.Sequence);
                 return;
             }
         }
         Rebuild(index, ctx, ct);
     }
 
+    bool IsRunKey => Key is SortKey.RunCount or SortKey.DateRun;
+
     // Renaming or moving a folder changes the path of everything below it, which a path order cannot patch locally.
-    bool CanMergeIncrementally(FileIndex index)
-    {
-        if (Key != SortKey.Path) return true;
-        foreach (int id in _touched)
-            if (index.IsAlive(id) && index.IsDirectory(id) && (uint)id < (uint)_rank.Length && _rank[id] >= 0) return false;
-        return true;
-    }
+    // Folders touched for other reasons (their size, with folder sizes on, changes with every file below) are merged.
+    bool CanMergeIncrementally(FileIndex index) => Key != SortKey.Path || index.PathVersion == _pathVersion;
 
     void Rebuild(FileIndex index, SearchContext ctx, CancellationToken ct)
     {
@@ -58,6 +61,8 @@ internal sealed class SortOrderCache(SortKey key)
         BuildRank(n);
         _generation = index.Generation;
         _sequence = index.ChangeSequence;
+        _runSequence = ctx.Runs?.Sequence ?? -1;
+        _pathVersion = index.PathVersion;
     }
 
     void Merge(FileIndex index, SearchContext ctx)
@@ -188,6 +193,9 @@ internal sealed class SortOrderCache(SortKey key)
                 SortKey.DateModified => index.Modified(a).CompareTo(index.Modified(b)),
                 SortKey.DateCreated => index.Created(a).CompareTo(index.Created(b)),
                 SortKey.Attributes => ((long)index.Attributes(a)).CompareTo((long)index.Attributes(b)),
+                SortKey.DateRecentlyChanged => index.RecentChange(a).CompareTo(index.RecentChange(b)),
+                SortKey.RunCount => (ctx.Runs?.Get(a).Count ?? 0).CompareTo(ctx.Runs?.Get(b).Count ?? 0),
+                SortKey.DateRun => (ctx.Runs?.Get(a).LastRun ?? 0).CompareTo(ctx.Runs?.Get(b).LastRun ?? 0),
                 _ => 0,
             };
             if (c == 0)

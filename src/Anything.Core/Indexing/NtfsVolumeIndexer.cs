@@ -23,6 +23,16 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
     readonly HashSet<long> _dirty = [];
     readonly Dictionary<long, (long Parent, string Name)> _pendingOld = [];
     readonly List<int> _ids = [];
+    // Recent changes seen in one batch of journal records, recorded together (Date Recently Changed).
+    readonly List<(int Id, long Time)> _recent = [];
+    // Recent changes taken from the whole journal once, at the first monitoring after startup (see LoadRecentChanges).
+    bool _recentLoaded;
+
+    /// <summary>
+    /// Journal reasons that count as a change for Date Recently Changed: all but a delete and a rename's old name. As in
+    /// Everything (compared on a real PC), a change of permissions or attributes counts too.
+    /// </summary>
+    const UsnReason RecentReasons = ~(UsnReason.FileDelete | UsnReason.RenameOldName);
     readonly object _gate = new();
     Thread? _thread;
     CancellationTokenSource? _cts;
@@ -49,6 +59,8 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
 
     public override long[]? BuildIdToFrn(int indexCount) => _map.BuildInverse(indexCount);
 
+    public override bool CanReadDateAccessed => _volume?.ProvidesAccessTimes ?? false;
+
     public override void Remap(int[] remap)
     {
         base.Remap(remap);
@@ -67,6 +79,7 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
             _map = map;
             _journalId = loaded.JournalId;
             _nextUsn = loaded.NextUsn;
+            HasDateAccessed = loaded.HasDateAccessed;
         }
         var volume = _volume;
         if (volume == null || !volume.TryQueryJournal(create: false, out var info)) return false;
@@ -105,8 +118,11 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
                 var (rootId, map, count) = records.BuildInto(Index, RootName, Filter, n => Interlocked.Exchange(ref _progress.Value, n), Abandoned);
                 if (rootId < 0) throw new OperationCanceledException(ct);
                 int old = RootId;
+                var oldMap = _map;
                 RootId = rootId;
                 _map = map;
+                HasDateAccessed = Index.HasDateAccessed && records.HasAccessTimes;
+                if (old >= 0 && old != rootId) CarryRecentChanges(oldMap, map);
                 _journalId = info.JournalId;
                 _nextUsn = startUsn;
                 _dirty.Clear();
@@ -127,6 +143,28 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
             if (ex is not OperationCanceledException) Detail = ex.Message;
             throw;
         }
+    }
+
+    /// <summary>
+    /// A rescan made new entries; what changed before still did: their recent changes go to the new entries of the same
+    /// file record (and name, for a file with several hard links).
+    /// </summary>
+    void CarryRecentChanges(RecordMap from, RecordMap to)
+    {
+        var recent = Index.RecentChanges();
+        if (recent.Length == 0) return;
+        var records = from.BuildInverse(Index.Count);
+        var moved = new List<(int, long)>();
+        var ids = new List<int>();
+        foreach (var (id, time) in recent)
+        {
+            long rec = (uint)id < (uint)records.Length ? records[id] : -1;
+            if (rec < 0) continue; // another root's
+            to.GetAll(rec, ids);
+            int match = ids.Count == 1 ? ids[0] : ids.FirstOrDefault(n => string.Equals(Index.Name(n), Index.Name(id), StringComparison.OrdinalIgnoreCase), -1);
+            if (match >= 0) moved.Add((match, time));
+        }
+        Index.SetRecentChanges(moved);
     }
 
     public override void StartMonitoring()
@@ -240,6 +278,11 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
         byte* buf = (byte*)NativeMemory.Alloc(Size);
         try
         {
+            if (!_recentLoaded && Host.RecentChangesFromJournal && Index.RecordsRecentChanges)
+            {
+                _recentLoaded = true;
+                LoadRecentChanges(buf, Size, ct);
+            }
             while (!ct.IsCancellationRequested)
             {
                 long start; ulong jid;
@@ -281,6 +324,12 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
                         span = span[len..];
                     }
                     _nextUsn = next;
+                    if (_recent.Count > 0)
+                    {
+                        Index.SetRecentChanges(_recent);
+                        _recent.Clear();
+                        changed = true;
+                    }
                 }
                 if (changed) Host.MarkChanged();
                 if (ret == 8 || next == start) ct.WaitHandle.WaitOne(250);
@@ -295,8 +344,71 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
         }
     }
 
+    /// <summary>
+    /// Reads the journal from its oldest record up to where monitoring starts, for when each file there last changed
+    /// (Everything's "load recent changes from USN journal"): Date Recently Changed then reaches back as far as the
+    /// journal does, not just to the start of the app. The records aren't applied again: the index is current.
+    /// </summary>
+    void LoadRecentChanges(byte* buf, int size, CancellationToken ct)
+    {
+        var volume = _volume;
+        if (volume == null || !volume.TryQueryJournal(create: false, out var info)) return;
+        long stop, pos;
+        ulong jid;
+        lock (Sync) { stop = _nextUsn; jid = _journalId; }
+        if (info.JournalId != jid) return;
+        pos = info.FirstUsn;
+        // Per link (record, folder, name): a record names one hard link, and only that one changed as far as Everything says.
+        var latest = new Dictionary<(long Rec, long Parent, string Name), long>();
+        while (pos < stop && !ct.IsCancellationRequested)
+        {
+            int ret = volume.ReadJournal(jid, pos, buf, size);
+            if (ret < 8) break;
+            long next = *(long*)buf;
+            var span = new ReadOnlySpan<byte>(buf + 8, ret - 8);
+            while (span.Length > 0)
+            {
+                if (!UsnRecordParser.TryParse(span, out var r, out int len) || len <= 0) break;
+                if (r.Usn >= stop) { next = stop; break; }
+                if (r.Name != null && (r.Reason & RecentReasons) != 0 && (r.Reason & UsnReason.FileDelete) == 0)
+                {
+                    var key = (r.Record, r.ParentRecord, r.Name);
+                    if (!latest.TryGetValue(key, out long had) || r.TimeStamp > had) latest[key] = r.TimeStamp;
+                }
+                span = span[len..];
+            }
+            if (next <= pos) break;
+            pos = next;
+        }
+        if (ct.IsCancellationRequested || latest.Count == 0) return;
+        lock (Sync)
+        {
+            var found = new List<(int, long)>(latest.Count);
+            foreach (var ((rec, parent, name), time) in latest)
+            {
+                int id = FindLink(rec, parent, name, exact: true);
+                if (id >= 0 && id != RootId) found.Add((id, time));
+            }
+            Index.SetRecentChanges(found);
+        }
+        Host.MarkChanged();
+    }
+
     /// <summary>Applies one journal record (called with <see cref="RootIndexer.Sync"/> held). Returns true if the index changed.</summary>
     bool Apply(in UsnRecord r)
+    {
+        bool changed = ApplyChange(r);
+        // Date Recently Changed: whatever the journal says changed, at the journal's time (catching up at startup too).
+        // Only the link the record names: another hard link of the file isn't listed as changed (as in Everything).
+        if (Index.RecordsRecentChanges && (r.Reason & RecentReasons) != 0 && (r.Reason & UsnReason.FileDelete) == 0)
+        {
+            int id = FindLink(r.Record, r.ParentRecord, r.Name, exact: true);
+            if (id >= 0 && id != RootId) _recent.Add((id, r.TimeStamp));
+        }
+        return changed;
+    }
+
+    bool ApplyChange(in UsnRecord r)
     {
         long rec = r.Record;
         if (rec < VolumeRecords.FirstUserRecord) return false; // metafiles and the root itself
@@ -356,7 +468,7 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
         string path = ExclusionFilter.Join(Index.GetFullPath(parentId), r.Name);
         if (Filter.Excludes(r.Name, attrs, isDir ? path : null)) return false;
         bool created = (r.Reason & UsnReason.FileCreate) != 0;
-        int id = Index.Add(r.Name, parentId, attrs, isDir ? -1 : 0, r.TimeStamp, created ? r.TimeStamp : 0);
+        int id = Index.Add(r.Name, parentId, attrs, isDir ? -1 : 0, r.TimeStamp, created ? r.TimeStamp : 0, r.TimeStamp);
         _map.Add(r.Record, id);
         _dirty.Add(r.Record); // fetch real size/dates on the next flush
         if (isDir && enumerateChildren && (attrs & FileAttributes.ReparsePoint) == 0) AddChildren(path, id);
@@ -394,11 +506,11 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
         if (parentId < 0) return false;
         int existing = FindLink(r.Record, r.ParentRecord, r.Name, exact: true);
         string path = ExclusionFilter.Join(Index.GetFullPath(parentId), r.Name);
-        bool onDisk = Native.TryGetMetadata(path, out var attrs, out long size, out long mod, out long created);
+        bool onDisk = Native.TryGetMetadata(path, out var attrs, out long size, out long mod, out long created, out long accessed);
         if (onDisk && existing < 0)
         {
             if (Filter.Excludes(r.Name, attrs, null)) return false;
-            int id = Index.Add(r.Name, parentId, attrs, size, mod, created);
+            int id = Index.Add(r.Name, parentId, attrs, size, mod, created, accessed);
             _map.Add(r.Record, id);
             return true;
         }
@@ -443,7 +555,8 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
                             string childPath = ExclusionFilter.Join(path, name);
                             if (!Filter.Excludes(name, attrs, isDir ? childPath : null))
                             {
-                                int cid = Index.Add(name, id, attrs, isDir ? -1 : *(long*)(e + 40), *(long*)(e + 24), *(long*)(e + 8));
+                                // FILE_ID_BOTH_DIR_INFO: created at 8, accessed at 16, written at 24, size at 40.
+                                int cid = Index.Add(name, id, attrs, isDir ? -1 : *(long*)(e + 40), *(long*)(e + 24), *(long*)(e + 8), *(long*)(e + 16));
                                 _map.Add(frn, cid);
                                 if (isDir && (attrs & FileAttributes.ReparsePoint) == 0) stack.Push((childPath, cid));
                             }
@@ -479,13 +592,13 @@ internal sealed unsafe class NtfsVolumeIndexer : RootIndexer
                     foreach (int id in _ids)
                     {
                         if (id == RootId || !Index.IsAlive(id)) continue;
-                        if (!Native.TryGetMetadata(Index.GetFullPath(id), out var attrs, out long size, out long mod, out long created)) continue;
+                        if (!Native.TryGetMetadata(Index.GetFullPath(id), out var attrs, out long size, out long mod, out long created, out long accessed)) continue;
                         if (Filter.ExcludesAttributes(attrs))
                         {
                             Index.Remove(id);
                             _map.RemoveId(rec, id);
                         }
-                        else Index.Update(id, attrs, size, mod, created);
+                        else Index.Update(id, attrs, size, mod, created, accessed);
                         changed = true;
                     }
                 }

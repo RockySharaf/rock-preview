@@ -141,11 +141,13 @@ sealed class ExtMatcher : Matcher
     }
 }
 
-enum NumProp { Size, Modified, Created, Length, Depth, ChildCount, ChildFiles, ChildFolders }
+enum NumProp { Size, Modified, Created, Length, Depth, ChildCount, ChildFiles, ChildFolders, Accessed, RecentChange, RunCount, DateRun }
 
-sealed class NumMatcher(NumProp prop, NumCond[] conds) : Matcher
+sealed class NumMatcher(NumProp prop, NumCond[] conds, bool fromDisk = false) : Matcher
 {
-    public override int Cost => prop is NumProp.Depth or NumProp.ChildCount or NumProp.ChildFiles or NumProp.ChildFolders ? 2 : 1;
+    // Date accessed read from the disk (not indexed) is by far the slowest test: everything else filters first.
+    public override int Cost => fromDisk ? 1000
+        : prop is NumProp.Depth or NumProp.ChildCount or NumProp.ChildFiles or NumProp.ChildFolders or NumProp.RunCount or NumProp.DateRun ? 2 : 1;
 
     public override bool IsMatch(int id, SearchContext ctx)
     {
@@ -159,6 +161,10 @@ sealed class NumMatcher(NumProp prop, NumCond[] conds) : Matcher
             case NumProp.Created: v = idx.Created(id); known = v != 0; break;
             case NumProp.Length: v = idx.Name(id).Length; break;
             case NumProp.Depth: v = ctx.Depth(id); break;
+            case NumProp.Accessed: v = ctx.Accessed(id); known = v != 0; break;
+            case NumProp.RecentChange: v = idx.RecentChange(id); known = v != 0; break;
+            case NumProp.RunCount: v = ctx.Runs!.Get(id).Count; break;
+            case NumProp.DateRun: v = ctx.Runs!.Get(id).LastRun; known = v != 0; break;
             default:
                 if (!idx.IsDirectory(id)) return false;
                 v = prop switch
@@ -363,6 +369,16 @@ internal sealed class QueryCompiler(SearchContext ctx, bool largeIndex)
                 return Num(NumProp.Modified, f, s => ValueParsers.ParseDate(s, ctx.Now), dash: false);
             case "dc":
                 return Num(NumProp.Created, f, s => ValueParsers.ParseDate(s, ctx.Now), dash: false);
+            case "da":
+                return Num(NumProp.Accessed, f, s => ValueParsers.ParseDate(s, ctx.Now), dash: false, fromDisk: !ctx.Index.HasDateAccessed);
+            case "rc":
+                return Num(NumProp.RecentChange, f, s => ValueParsers.ParseDate(s, ctx.Now), dash: false);
+            case "dr":
+                ctx.NeedRuns = true;
+                return Num(NumProp.DateRun, f, s => ValueParsers.ParseDate(s, ctx.Now), dash: false);
+            case "runcount":
+                ctx.NeedRuns = true;
+                return Num(NumProp.RunCount, f, ValueParsers.ParseInt, dash: true);
             case "len":
                 return Num(NumProp.Length, f, ValueParsers.ParseInt, dash: true);
             case "depth":
@@ -424,9 +440,9 @@ internal sealed class QueryCompiler(SearchContext ctx, bool largeIndex)
         throw new QueryException($"Unknown function '{f.Name}:'");
     }
 
-    static Matcher Num(NumProp prop, FunctionNode f, Func<string, ValueRange?> parse, bool dash)
+    static Matcher Num(NumProp prop, FunctionNode f, Func<string, ValueRange?> parse, bool dash, bool fromDisk = false)
     {
         var conds = ValueParsers.ParseConds(f.Name, f.Op, f.Value, parse, dash);
-        return conds is null ? AllMatcher.Instance : new NumMatcher(prop, conds);
+        return conds is null ? AllMatcher.Instance : new NumMatcher(prop, conds, fromDisk);
     }
 }

@@ -49,6 +49,7 @@ public sealed class SearchEngine : ISearchEngine
             }
             (_releasePaths ??= new Timer(_ => _paths = null)).Change(PathCacheIdleMs, Timeout.Infinite);
             var ctx = new SearchContext(index, paths, Clock());
+            if (sort is SortKey.RunCount or SortKey.DateRun) ctx.NeedRuns = true;
             Matcher matcher;
             try
             {
@@ -60,7 +61,9 @@ public sealed class SearchEngine : ISearchEngine
                 return new SearchResults { Ids = [], Error = ex.Message, Elapsed = sw.Elapsed };
             }
 
-            if (index.Count >= SortCacheThreshold)
+            // Date accessed is never presorted (Everything's fast date accessed sort is off by default too): what the index
+            // doesn't know is read from the disk per result, which a lasting order can't follow.
+            if (index.Count >= SortCacheThreshold && sort != SortKey.DateAccessed)
             {
                 // Large index: filter a persistent presorted order instead of sorting the results.
                 lock (_orderGate)
@@ -107,11 +110,12 @@ public sealed class SearchEngine : ISearchEngine
             int cnt = 0;
             for (int id = lo; id < hi; id++)
             {
+                // Checked for every 2048 entries, matching or not: a slow test (date accessed from the disk) must stop too.
+                if ((id & 2047) == 0 && ct.IsCancellationRequested) break;
                 if (!index.IsAlive(id)) continue;
                 if (!all && !matcher.IsMatch(id, ctx)) continue;
                 buf ??= ArrayPool<int>.Shared.Rent(hi - lo);
                 buf[cnt++] = id;
-                if ((id & 2047) == 0 && ct.IsCancellationRequested) break;
             }
             if (buf != null)
             {

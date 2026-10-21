@@ -90,6 +90,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
     internal bool WatchDevices { get; set; } = true;
 
     ExclusionFilter IIndexerHost.Filter => _filter;
+    bool IIndexerHost.RecentChangesFromJournal => _settings.RecentChangesFromJournal;
 
     public string StatusText
     {
@@ -141,6 +142,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
         _settings = settings.Clone();
         _pendingApply = null;
         _filter = new ExclusionFilter(_settings);
+        ConfigureIndex(_settings);
         EnsureDeviceWatcher();
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
@@ -176,23 +178,49 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
     /// <summary>Applies <see cref="Apply"/>'s settings (on the drive tick, once settled).</summary>
     void ApplyPending()
     {
-        bool exclusionsChanged;
+        bool exclusionsChanged, accessedOn, journalChanges;
         lock (_gate)
         {
             var next = Interlocked.Exchange(ref _pendingApply, null);
             if (next == null || _disposed || !_settled) { if (next != null) _pendingApply ??= next; return; }
             exclusionsChanged = !SameExclusions(_settings, next);
+            accessedOn = next.IndexDateAccessed && !_settings.IndexDateAccessed;
+            // Recent changes from the journal asked for now: the NTFS monitors start over to read it.
+            journalChanges = next.IndexRecentChanges && next.RecentChangesFromJournal
+                             && !(_settings.IndexRecentChanges && _settings.RecentChangesFromJournal);
             _settings = next;
             if (exclusionsChanged) _filter = new ExclusionFilter(next);
+            ConfigureIndex(next);
         }
         Reconcile(drivesChanged: true);
-        if (!exclusionsChanged) return;
-        // Roots whose entries were built with other rules (their stamp says which) are rescanned in place.
         RootIndexer[] roots;
         lock (_roots) roots = [.. _roots];
         foreach (var root in roots)
-            if (!root.Released && root.RulesStamp != root.Filter.Stamp)
+        {
+            if (root.Released) continue;
+            // Roots whose entries were built with other rules (their stamp says which) are rescanned in place, and so
+            // are the ones without dates accessed once those are indexed (Everything rebuilds for either).
+            if (exclusionsChanged && root.RulesStamp != root.Filter.Stamp)
                 ((IIndexerHost)this).RequestRescan(root, "exclusions changed");
+            else if (accessedOn && !root.HasDateAccessed && root.CanReadDateAccessed)
+                ((IIndexerHost)this).RequestRescan(root, "reading dates accessed");
+            else if (journalChanges && root is NtfsVolumeIndexer && Volatile.Read(ref root.ScanBusy) == 0)
+            {
+                root.StopMonitoring();
+                root.StartMonitoring();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Turns the index's optional information on or off (date accessed, folder sizes, recent changes). Dates accessed
+    /// turned off are gone: the roots no longer have them, so turning them on again reads them anew.
+    /// </summary>
+    void ConfigureIndex(IndexSettings settings)
+    {
+        Index.Configure(settings.IndexDateAccessed, settings.IndexFolderSizes, settings.IndexRecentChanges);
+        if (settings.IndexDateAccessed) return;
+        lock (_roots) foreach (var r in _roots) r.HasDateAccessed = false;
     }
 
     static bool SameExclusions(IndexSettings a, IndexSettings b) =>
@@ -213,6 +241,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
             _settings = _live.Clone();
             _pendingApply = null;
             _filter = new ExclusionFilter(_settings);
+            ConfigureIndex(_settings);
             EnsureDeviceWatcher();
             _cts = new CancellationTokenSource();
             var ct = _cts.Token;
@@ -318,6 +347,8 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
                     // Built with other exclusions (changed while the app was closed, or a rescan for them interrupted):
                     // not current, whatever the journal says. 0: a database from before stamps.
                     if (match.RulesStamp != 0 && match.RulesStamp != root.Filter.Stamp) current = false;
+                    // Dates accessed are indexed now but weren't saved: read again (unless the source can't give them).
+                    if (settings.IndexDateAccessed && !match.HasDateAccessed && root.CanReadDateAccessed) current = false;
                     // A database from before stamps is taken as built with today's rules, as "current" assumes: from now
                     // on an exclusion rescan cut short leaves a real mismatch behind instead of "unknown".
                     root.RulesStamp = match.RulesStamp != 0 ? match.RulesStamp : root.Filter.Stamp;
@@ -517,7 +548,8 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
         RunRootTask(root, null, ct =>
         {
             if (startup && root.IsNetwork && root is FolderIndexer f && f.ScannedWithin(RescanInterval(fallback: TimeSpan.FromHours(1)))
-                && (root.RulesStamp == 0 || root.RulesStamp == root.Filter.Stamp) && f.ResumeLoaded(ct))
+                && (root.RulesStamp == 0 || root.RulesStamp == root.Filter.Stamp) && (!_settings.IndexDateAccessed || root.HasDateAccessed)
+                && f.ResumeLoaded(ct))
             {
                 MarkChanged();
                 return;
@@ -865,6 +897,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
                         JournalId = jid,
                         NextUsn = usn,
                         RulesStamp = r.RulesStamp,
+                        HasDateAccessed = r.HasDateAccessed,
                         RootId = r.RootId,
                         IdToFrn = r.Kind == RootKind.Ntfs ? r.BuildIdToFrn(count) : null,
                     });

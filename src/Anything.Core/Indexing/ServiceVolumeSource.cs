@@ -18,6 +18,9 @@ internal sealed unsafe class ServiceVolumeSource : IVolumeSource
 
     readonly string _drive;
     readonly object _gate = new();
+    // The protocol this connection speaks: the newest both sides know (a service from before dates accessed speaks 1).
+    int _protocol = VolumeService.ProtocolVersion;
+    bool _refused; // the last connection was turned down for its protocol
     NamedPipeClientStream? _pipe;
     BufferedStream? _stream;
     BinaryReader? _r;
@@ -55,9 +58,22 @@ internal sealed unsafe class ServiceVolumeSource : IVolumeSource
 
     public string Kind => "service";
 
+    /// <summary>Whether the records this service sends carry dates accessed (an older service's don't).</summary>
+    public bool ProvidesAccessTimes => _protocol >= 2;
+
     bool Connect(int timeoutMs)
     {
+        if (TryConnect(timeoutMs, _protocol)) return true;
+        // A service from before this app refuses a newer protocol: speak its own.
+        if (_disposed || _protocol <= VolumeService.OldestProtocolVersion || !_refused) return false;
+        _protocol = VolumeService.OldestProtocolVersion;
+        return TryConnect(timeoutMs, _protocol);
+    }
+
+    bool TryConnect(int timeoutMs, int protocol)
+    {
         Close();
+        _refused = false;
         // Asynchronous, so a read can be asked to stop while another thread waits on the pipe (on a synchronous pipe
         // the request would queue behind that wait).
         var pipe = new NamedPipeClientStream(".", VolumeService.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Identification);
@@ -66,11 +82,13 @@ internal sealed unsafe class ServiceVolumeSource : IVolumeSource
             pipe.Connect(timeoutMs);
             if (!IsServiceOwned(pipe)) { pipe.Dispose(); return false; }
             Attach(pipe);
-            _w.Write(VolumeService.ProtocolVersion);
+            _w.Write(protocol);
             _w.Write(_drive);
             _w.Flush();
             // Disposed meanwhile (Dispose doesn't wait long for the lock): don't leave the drive open in the service.
-            if (_r.ReadByte() == VolumeService.ReplyOk && !_disposed) return true;
+            byte reply = _r.ReadByte();
+            if (reply == VolumeService.ReplyOk && !_disposed) return true;
+            if (reply == VolumeService.ReplyError) _refused = _r.ReadString().Contains("protocol", StringComparison.OrdinalIgnoreCase);
         }
         catch (Exception) { }
         Close();
@@ -154,7 +172,7 @@ internal sealed unsafe class ServiceVolumeSource : IVolumeSource
                     if (reply == VolumeService.ReplyError) throw new IOException("Ultimate File Explorer service: " + _r.ReadString());
                     if (reply != VolumeService.ReplyOk) throw new InvalidDataException("unexpected reply from the Ultimate File Explorer service");
                     method = _r.ReadString();
-                    return VolumeRecords.ReadFrom(_r);
+                    return VolumeRecords.ReadFrom(_r, accessTimes: _protocol >= 2);
                 }
             }
             // Stopped: the service closed the volume and hung up (or was cut off).

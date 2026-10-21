@@ -15,7 +15,9 @@ namespace Anything.Core.Indexing;
 public static class VolumeService
 {
     public const string PipeName = "RockPreview.Volumes";
-    public const int ProtocolVersion = 1;
+    /// <summary>2: records carry dates accessed. Version 1 clients (and services) are still served (and used).</summary>
+    public const int ProtocolVersion = 2;
+    internal const int OldestProtocolVersion = 1;
 
     /// <summary>
     /// <see cref="OpClose"/> closes the volume and acknowledges, so a USB drive can be ejected right after; sent during
@@ -95,7 +97,7 @@ public static class VolumeService
 
         int version = r.ReadInt32();
         string drive = ReadShortString(r, 16);
-        if (version != ProtocolVersion) { Fail(w, $"Ultimate File Explorer service speaks protocol {ProtocolVersion}, not {version}."); return; }
+        if (version < OldestProtocolVersion || version > ProtocolVersion) { Fail(w, $"Ultimate File Explorer service speaks protocol {ProtocolVersion}, not {version}."); return; }
         if (!IsLocalNtfsVolume(drive)) { Fail(w, "Not a local NTFS volume."); return; }
         using var volume = LocalVolumeSource.TryOpen(drive.ToUpperInvariant());
         if (volume == null) { Fail(w, "The volume can't be opened."); return; }
@@ -122,7 +124,7 @@ public static class VolumeService
                     break;
                 }
                 case OpReadRecords:
-                    if (!ReadRecords(pipe, w, volume, r.ReadInt64(), ct, out early)) return;
+                    if (!ReadRecords(pipe, w, volume, r.ReadInt64(), ct, out early, accessTimes: version >= 2)) return;
                     break;
                 case OpReadJournal:
                 {
@@ -154,7 +156,8 @@ public static class VolumeService
     /// the end of the connection to mean the volume is closed, so after a hang-up it ends only once the read has let go
     /// of the volume. False when the connection is done; <paramref name="next"/> is a request that came in early, else -1.
     /// </summary>
-    internal static bool ReadRecords(PipeStream pipe, BinaryWriter w, IVolumeSource volume, long highUsn, CancellationToken ct, out int next)
+    internal static bool ReadRecords(PipeStream pipe, BinaryWriter w, IVolumeSource volume, long highUsn, CancellationToken ct, out int next,
+        bool accessTimes = true)
     {
         const int Unwatched = -1, Gone = -2;
         var gate = new object();
@@ -207,7 +210,7 @@ public static class VolumeService
             {
                 w.Write(ReplyOk);
                 w.Write(method);
-                records.WriteTo(w);
+                records.WriteTo(w, accessTimes);
                 w.Flush();
             }
             open = true;

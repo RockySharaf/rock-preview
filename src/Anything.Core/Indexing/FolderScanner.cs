@@ -20,6 +20,7 @@ public struct ScannedEntry
     public long Size;
     public long Modified;
     public long Created;
+    public long Accessed;
     /// <summary>Non-null for folders that were recursed into (reparse points are listed but not followed).</summary>
     public ScannedDirectory? Directory;
 }
@@ -278,6 +279,7 @@ public static unsafe class FolderScanner
                     Size = isDir ? -1 : ((long)data.FileSizeHigh << 32) | data.FileSizeLow,
                     Modified = data.LastWriteTime,
                     Created = data.CreationTime,
+                    Accessed = data.LastAccessTime,
                 };
                 if (isDir && (attrs & FileAttributes.ReparsePoint) == 0) entry.Directory = new ScannedDirectory(fullPath!);
                 into.Add(entry);
@@ -300,9 +302,9 @@ public static unsafe class FolderScanner
     /// Returns the id of the entry created for <paramref name="dir"/> itself.
     /// </summary>
     public static int AddTree(FileIndex.BulkAdder b, ScannedDirectory dir, string name, int parentId, FileAttributes attributes,
-        long modified, long created, Action<int, string, int>? onAdded)
+        long modified, long created, Action<int, string, int>? onAdded, long accessed = 0)
     {
-        int topId = b.Add(name, parentId, attributes | FileAttributes.Directory, -1, modified, created);
+        int topId = b.Add(name, parentId, attributes | FileAttributes.Directory, -1, modified, created, accessed);
         if (parentId != FileIndex.NoParent) onAdded?.Invoke(parentId, name, topId);
         var stack = new Stack<(ScannedDirectory Dir, int Id)>();
         stack.Push((dir, topId));
@@ -311,7 +313,7 @@ public static unsafe class FolderScanner
             var (d, id) = stack.Pop();
             foreach (var e in d.Entries)
             {
-                int cid = b.Add(e.Name, id, e.Attributes, e.Size, e.Modified, e.Created);
+                int cid = b.Add(e.Name, id, e.Attributes, e.Size, e.Modified, e.Created, e.Accessed);
                 onAdded?.Invoke(id, e.Name, cid);
                 if (e.Directory != null) stack.Push((e.Directory, cid));
             }

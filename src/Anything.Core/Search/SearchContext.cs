@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using Anything.Core.Indexing;
+
 namespace Anything.Core.Search;
 
 /// <summary>
@@ -67,6 +70,10 @@ internal sealed class SearchContext
     public DateTime Now { get; }
 
     public bool NeedChildCounts { get; set; }
+    /// <summary>The query or the sort uses run history (runcount:, dr:, Run Count, Date Run).</summary>
+    public bool NeedRuns { get; set; }
+    /// <summary>Run history by id, once <see cref="Prepare"/> has run with <see cref="NeedRuns"/>.</summary>
+    public RunLookup? Runs { get; private set; }
     public bool Dupe { get; set; }
     public int[]? ChildFiles { get; private set; }
     public int[]? ChildFolders { get; private set; }
@@ -86,6 +93,7 @@ internal sealed class SearchContext
 
     public void Prepare(CancellationToken ct)
     {
+        if (NeedRuns) Runs = Index.RunHistory.Lookup(Index);
         if (NeedChildCounts)
         {
             var files = new int[Count];
@@ -123,6 +131,30 @@ internal sealed class SearchContext
         name.CopyTo(0, buf, prefix.Length, name.Length);
         if (parent == FileIndex.NoParent) buf[len - 1] = '\\';
         return buf.AsSpan(0, len);
+    }
+
+    // Date accessed read from the disk when it isn't indexed (Everything does the same, slowly): once per entry and
+    // search; a drive or share that doesn't answer is given up on for the rest of the search.
+    ConcurrentDictionary<int, long>? _diskAccessed;
+    ConcurrentDictionary<int, bool>? _offlineRoots;
+
+    /// <summary>
+    /// Date accessed (FILETIME UTC, 0 = unknown): from the index when indexed, else (or when the index doesn't know it:
+    /// a drive read through an older service) read from the disk.
+    /// </summary>
+    public long Accessed(int id)
+    {
+        if (Index.HasDateAccessed && Index.Accessed(id) is not 0 and var indexed) return indexed;
+        var memo = _diskAccessed ?? Interlocked.CompareExchange(ref _diskAccessed, new ConcurrentDictionary<int, long>(), null) ?? _diskAccessed!;
+        if (memo.TryGetValue(id, out long known)) return known;
+        int root = id;
+        for (int guard = 0; Index.Parent(root) != FileIndex.NoParent && guard < 4096; guard++) root = Index.Parent(root);
+        var offline = _offlineRoots ?? Interlocked.CompareExchange(ref _offlineRoots, new ConcurrentDictionary<int, bool>(), null) ?? _offlineRoots!;
+        long value = 0;
+        if (!offline.ContainsKey(root) && !Native.TryGetAccessed(Index.GetFullPath(id), out value, out int error) && FolderScanner.IsOfflineError(error))
+            offline[root] = true;
+        memo[id] = value;
+        return value;
     }
 
     /// <summary>Number of ancestors (0 for roots).</summary>

@@ -107,6 +107,8 @@ internal sealed class AppSettings
     public const string DefaultHotkey = "Alt+X";
     /// <summary>The window that shows the hotkey and asks to try it was shown (once per user, after installing).</summary>
     public bool WelcomeShown { get; set; }
+    /// <summary>Count the files opened from the results (Run Count, Date Run), kept in "Run History.csv" like Everything's.</summary>
+    public bool RunHistoryEnabled { get; set; } = true;
 
     // New versions
     /// <summary>Ask GitHub at most once a day whether a newer Rock Preview is out (Options &gt; General, Setup).</summary>
@@ -207,6 +209,7 @@ internal sealed class AppSettings
         string hotkey = Str("hotkey", "").Trim();
         s.Hotkey = hotkey.Equals("none", StringComparison.OrdinalIgnoreCase) ? "" : hotkey.Length == 0 ? DefaultHotkey : hotkey;
         s.WelcomeShown = Bool("welcome_shown", false);
+        s.RunHistoryEnabled = Bool("run_history_enabled", true);
         s.CheckForUpdates = Bool("check_for_updates", true);
         s.LastUpdateCheck = DateTime.TryParse(Str("last_update_check", ""), CultureInfo.InvariantCulture,
             DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var checkedAt) ? checkedAt : default;
@@ -229,6 +232,11 @@ internal sealed class AppSettings
         ix.ExcludePatterns = List("exclude_patterns", ix.ExcludePatterns);
         ix.ExcludeHidden = Bool("exclude_hidden", ix.ExcludeHidden);
         ix.ExcludeSystem = Bool("exclude_system", ix.ExcludeSystem);
+        // Everything's ini names for the same switches.
+        ix.IndexDateAccessed = Bool("index_date_accessed", ix.IndexDateAccessed);
+        ix.IndexFolderSizes = Bool("index_folder_size", ix.IndexFolderSizes);
+        ix.IndexRecentChanges = Bool("index_recent_changes", ix.IndexRecentChanges);
+        ix.RecentChangesFromJournal = Bool("load_recent_changes", ix.RecentChangesFromJournal);
         if (Str("database_path", "") is { Length: > 0 } db) ix.DatabasePath = db;
 
         int count = Int("bookmark_count", 0);
@@ -300,6 +308,7 @@ internal sealed class AppSettings
         B("open_folders_in_tabs", OpenFoldersInTabs);
         W("hotkey", Hotkey.Length == 0 ? "none" : Hotkey);
         B("welcome_shown", WelcomeShown);
+        B("run_history_enabled", RunHistoryEnabled);
         B("check_for_updates", CheckForUpdates);
         if (LastUpdateCheck != default) W("last_update_check", LastUpdateCheck.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
         W("latest_version", Clean(LatestVersion));
@@ -316,6 +325,10 @@ internal sealed class AppSettings
         W("exclude_patterns", string.Join('|', Index.ExcludePatterns));
         B("exclude_hidden", Index.ExcludeHidden);
         B("exclude_system", Index.ExcludeSystem);
+        B("index_date_accessed", Index.IndexDateAccessed);
+        B("index_folder_size", Index.IndexFolderSizes);
+        B("index_recent_changes", Index.IndexRecentChanges);
+        B("load_recent_changes", Index.RecentChangesFromJournal);
         W("bookmark_count", Bookmarks.Count);
         for (int i = 0; i < Bookmarks.Count; i++)
         {

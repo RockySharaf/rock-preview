@@ -88,6 +88,10 @@ internal static unsafe partial class Native
 
     /// <summary>Reads size/dates/attributes for one path. Returns false if it no longer exists.</summary>
     public static bool TryGetMetadata(string path, out FileAttributes attributes, out long size, out long modified, out long created)
+        => TryGetMetadata(path, out attributes, out size, out modified, out created, out _);
+
+    /// <summary><see cref="TryGetMetadata(string, out FileAttributes, out long, out long, out long)"/> with date accessed too.</summary>
+    public static bool TryGetMetadata(string path, out FileAttributes attributes, out long size, out long modified, out long created, out long accessed)
     {
         if (GetFileAttributesEx(LongPath(path), 0, out var d))
         {
@@ -95,9 +99,24 @@ internal static unsafe partial class Native
             size = (attributes & FileAttributes.Directory) != 0 ? -1 : ((long)d.FileSizeHigh << 32) | d.FileSizeLow;
             modified = d.LastWriteTime;
             created = d.CreationTime;
+            accessed = d.LastAccessTime;
             return true;
         }
-        attributes = 0; size = 0; modified = 0; created = 0;
+        attributes = 0; size = 0; modified = 0; created = 0; accessed = 0;
+        return false;
+    }
+
+    /// <summary>Date accessed of one path, read from the disk; on failure <paramref name="error"/> is the Win32 error.</summary>
+    public static bool TryGetAccessed(string path, out long accessed, out int error)
+    {
+        if (GetFileAttributesEx(LongPath(path), 0, out var d))
+        {
+            accessed = d.LastAccessTime;
+            error = 0;
+            return true;
+        }
+        error = Marshal.GetLastPInvokeError();
+        accessed = 0;
         return false;
     }
 }

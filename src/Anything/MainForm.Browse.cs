@@ -695,9 +695,10 @@ internal sealed partial class MainForm
         if (paths.Count == 1 && Directory.Exists(paths[0]))
         {
             OpenFolder(paths[0]);
+            _app.RecordRuns(paths);
             return;
         }
-        FileOps.Open(this, paths);
+        _app.RecordRuns(FileOps.Open(this, paths));
     }
 
     /// <summary>Shows the item in its folder, inside Rock Preview, selected.</summary>

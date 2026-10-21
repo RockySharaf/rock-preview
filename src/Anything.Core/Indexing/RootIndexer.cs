@@ -12,6 +12,8 @@ internal interface IIndexerHost
     /// <summary>Asks for a background rescan of a root (journal wrap, watcher overflow...).</summary>
     void RequestRescan(RootIndexer root, string reason);
     void ReportProgress(RootIndexer root, long objects);
+    /// <summary>NTFS roots read the whole change journal at startup for recent changes (Settings › Indexing).</summary>
+    bool RecentChangesFromJournal => false;
 }
 
 /// <summary>One indexed root (an NTFS volume or a scanned folder). Owns its live-update machinery.</summary>
@@ -59,6 +61,12 @@ internal abstract class RootIndexer : IDisposable
     /// unknown. When it differs from <see cref="Filter"/>'s, the entries need a rescan to match the current exclusions.
     /// </summary>
     public ulong RulesStamp { get; set; }
+
+    /// <summary>The entries carry dates accessed (scanned while date accessed was indexed, by a source that has them).</summary>
+    public bool HasDateAccessed { get; set; }
+
+    /// <summary>Whether a scan of this root would get dates accessed (an older service sends none).</summary>
+    public virtual bool CanReadDateAccessed => true;
 
     /// <summary>The kind of drive this root is on (set by the manager from the plan).</summary>
     public DriveKind DriveKind { get; init; } = DriveKind.Unknown;

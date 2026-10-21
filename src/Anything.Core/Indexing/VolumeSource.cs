@@ -12,6 +12,9 @@ internal interface IVolumeSource : IDisposable
     /// <summary>"local" or "service", for the status text.</summary>
     string Kind { get; }
 
+    /// <summary>Whether the records it reads carry dates accessed (a service from before them doesn't send them).</summary>
+    bool ProvidesAccessTimes => true;
+
     /// <summary>Queries the USN journal; with <paramref name="create"/>, creates it first when the volume has none.</summary>
     bool TryQueryJournal(bool create, out UsnJournalInfo info);
 

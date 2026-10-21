@@ -12,6 +12,8 @@ public sealed class DbRoot
     public long NextUsn { get; init; }
     /// <summary><see cref="ExclusionFilter.Stamp"/> of the rules the entries were built with (0 = unknown).</summary>
     public ulong RulesStamp { get; init; }
+    /// <summary>Its entries carry dates accessed: saved too (version 3), when the index has them.</summary>
+    public bool HasDateAccessed { get; init; }
     public required int RootId { get; init; }
     /// <summary>Index id → NTFS record number (-1 if unknown). Only for NTFS roots.</summary>
     public long[]? IdToFrn { get; init; }
@@ -26,6 +28,8 @@ public sealed class LoadedRoot
     public long NextUsn { get; init; }
     /// <summary>The stamp it was saved with; 0 for databases from before stamps (taken as current).</summary>
     public ulong RulesStamp { get; init; }
+    /// <summary>Its entries were saved with dates accessed (version 3 and later).</summary>
+    public bool HasDateAccessed { get; init; }
     public int RootId { get; init; }
     /// <summary>Index ids of the root's entries in saved order (entry 0 is the root).</summary>
     public required int[] Ids { get; init; }
@@ -35,13 +39,16 @@ public sealed class LoadedRoot
 
 /// <summary>
 /// Binary database: 8-byte magic + int32 version, then a Brotli-compressed body with, per root, its path, kind,
-/// journal id/next USN, (version 2) the stamp of its exclusion rules, and its live entries (parent index, name,
-/// attributes, size, modified, created[, FRN]). Written to a temp file and moved into place. Version 1 files load too.
+/// journal id/next USN, (version 2) the stamp of its exclusion rules, (version 3) a flags byte, and its live entries
+/// (parent index, name, attributes, size, modified, created[, accessed when flagged][, FRN]). Folder sizes aren't
+/// saved: they are worked out from the files when loaded. Written to a temp file and moved into place. Versions 1
+/// and 2 load too.
 /// </summary>
 public static class IndexDatabase
 {
     static ReadOnlySpan<byte> Magic => "ANYTHGDB"u8;
-    public const int Version = 2;
+    public const int Version = 3;
+    const byte FlagDateAccessed = 1;
     const int EndMarker = 0x21444E45; // "END!"
 
     public static void Save(string path, FileIndex index, IReadOnlyList<DbRoot> roots)
@@ -100,6 +107,8 @@ public static class IndexDatabase
                     w.Write(r.JournalId);
                     w.Write(r.NextUsn);
                     w.Write(r.RulesStamp);
+                    bool accessed = r.HasDateAccessed && index.HasDateAccessed;
+                    w.Write(accessed ? FlagDateAccessed : (byte)0);
                     w.Write(ids.Count);
                     bool frns = r.Kind == RootKind.Ntfs;
                     for (int i = 0; i < ids.Count; i++)
@@ -109,9 +118,10 @@ public static class IndexDatabase
                         w.Write(i == 0 ? -1 : local[p]);
                         w.Write(index.Name(id));
                         w.Write((uint)index.Attributes(id));
-                        w.Write(index.Size(id));
+                        w.Write(index.IsDirectory(id) ? -1L : index.Size(id));
                         w.Write(index.Modified(id));
                         w.Write(index.Created(id));
+                        if (accessed) w.Write(index.Accessed(id));
                         if (frns) w.Write(r.IdToFrn != null && id < r.IdToFrn.Length ? r.IdToFrn[id] : -1L);
                     }
                 }
@@ -136,7 +146,7 @@ public static class IndexDatabase
             Span<byte> header = stackalloc byte[12];
             fs.ReadExactly(header);
             int version = BitConverter.ToInt32(header[8..]);
-            if (!header[..8].SequenceEqual(Magic) || version is not (1 or Version)) return null;
+            if (!header[..8].SequenceEqual(Magic) || version is < 1 or > Version) return null;
             using var brotli = new BrotliStream(fs, CompressionMode.Decompress);
             using var buffered = new BufferedStream(brotli, 1 << 20);
             using var r = new BinaryReader(buffered, Encoding.UTF8);
@@ -154,11 +164,14 @@ public static class IndexDatabase
                     RulesStamp = version >= 2 ? r.ReadUInt64() : 0,
                 };
                 if (root.Kind is not (RootKind.Ntfs or RootKind.Folder)) return null;
+                byte flags = version >= 3 ? r.ReadByte() : (byte)0;
+                if ((flags & ~FlagDateAccessed) != 0) return null;
                 int n = r.ReadInt32();
                 if (n < 1 || n > 200_000_000) return null;
                 bool frns = root.Kind == RootKind.Ntfs;
                 root.Parents = new int[n]; root.Names = new string[n]; root.Attrs = new uint[n];
                 root.Sizes = new long[n]; root.Modified = new long[n]; root.Created = new long[n];
+                root.Accessed = (flags & FlagDateAccessed) != 0 ? new long[n] : null;
                 root.Frns = frns ? new long[n] : null;
                 for (int i = 0; i < n; i++)
                 {
@@ -170,6 +183,7 @@ public static class IndexDatabase
                     root.Sizes[i] = r.ReadInt64();
                     root.Modified[i] = r.ReadInt64();
                     root.Created[i] = r.ReadInt64();
+                    if (root.Accessed != null) root.Accessed[i] = r.ReadInt64();
                     if (frns) root.Frns![i] = r.ReadInt64();
                 }
                 if (!ParentsAreAcyclic(root.Parents)) return null;
@@ -198,7 +212,8 @@ public static class IndexDatabase
                     int p = root.Parents[i];
                     int parentId = p < 0 ? FileIndex.NoParent : p < i ? ids[p] : FileIndex.NoParent;
                     if (p > i) (forward ??= []).Add(i);
-                    ids[i] = b.Add(root.Names[i], parentId, (FileAttributes)root.Attrs[i], root.Sizes[i], root.Modified[i], root.Created[i]);
+                    ids[i] = b.Add(root.Names[i], parentId, (FileAttributes)root.Attrs[i], root.Sizes[i], root.Modified[i], root.Created[i],
+                        root.Accessed?[i] ?? 0);
                 }
                 if (forward != null)
                     foreach (int i in forward) b.SetParent(ids[i], ids[root.Parents[i]]);
@@ -209,6 +224,8 @@ public static class IndexDatabase
                     JournalId = root.JournalId,
                     NextUsn = root.NextUsn,
                     RulesStamp = root.RulesStamp,
+                    // Only what the index keeps: dates loaded while date accessed isn't indexed are dropped.
+                    HasDateAccessed = root.Accessed != null && index.HasDateAccessed,
                     RootId = ids[0],
                     Ids = ids,
                     Frns = root.Frns,
@@ -249,6 +266,7 @@ public static class IndexDatabase
         public long[] Sizes = [];
         public long[] Modified = [];
         public long[] Created = [];
+        public long[]? Accessed;
         public long[]? Frns;
     }
 }

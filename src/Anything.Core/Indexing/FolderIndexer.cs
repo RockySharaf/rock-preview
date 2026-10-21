@@ -94,6 +94,7 @@ internal sealed class FolderIndexer : RootIndexer
             finally { Index.Lock.ExitReadLock(); }
             _children = map;
             RootId = loaded.RootId;
+            HasDateAccessed = loaded.HasDateAccessed;
             LastScanUtc = loaded.JournalId == ShareStamp ? loaded.NextUsn : 0; // another share now: scan it, don't resume
         }
         return false; // no journal for folders: always rescan (entries stay searchable meanwhile)
@@ -171,23 +172,30 @@ internal sealed class FolderIndexer : RootIndexer
                 tree = new ScannedDirectory(RootName); // the folder is gone or unreadable: nothing in it now
             }
             ct.ThrowIfCancellationRequested();
-            Native.TryGetMetadata(RootPath, out _, out _, out long mod, out long created);
+            Native.TryGetMetadata(RootPath, out _, out _, out long mod, out long created, out long accessed);
             lock (Sync)
             {
                 var map = new Dictionary<ChildKey, int>((int)Math.Min(ProgressCount + 16, 50_000_000), ChildKeyComparer.Instance);
                 int newRoot = -1;
+                bool withAccessed = false;
                 Index.BulkAdd(b =>
                 {
                     // Checked under the index's write lock, which Clear takes too.
                     if (ct.IsCancellationRequested || Index.Generation != generation) return;
+                    withAccessed = Index.HasDateAccessed;
                     newRoot = FolderScanner.AddTree(b, tree, RootName, FileIndex.NoParent, FileAttributes.Directory, mod, created,
-                        (p, n, id) => map[new ChildKey(p, n)] = id);
+                        (p, n, id) => map[new ChildKey(p, n)] = id, accessed);
                 });
                 if (newRoot < 0) throw new OperationCanceledException(ct);
                 int old = RootId;
                 RootId = newRoot;
                 _children = map;
-                if (old >= 0 && old != newRoot) Index.Remove(old);
+                HasDateAccessed = withAccessed;
+                if (old >= 0 && old != newRoot)
+                {
+                    CarryRecentChanges(old, newRoot, map);
+                    Index.Remove(old);
+                }
             }
             ScanFinished();
             Host.ReportProgress(this, ProgressCount);
@@ -198,6 +206,34 @@ internal sealed class FolderIndexer : RootIndexer
             if (Status == RootStatus.Scanning) Status = RootStatus.Ready;
             Wake();
         }
+    }
+
+    /// <summary>
+    /// A rescan made new entries (a network drive's are made again every hour); what changed before still did: their
+    /// recent changes go to the entries at the same paths in the new copy.
+    /// </summary>
+    void CarryRecentChanges(int oldRoot, int newRoot, Dictionary<ChildKey, int> newMap)
+    {
+        var recent = Index.RecentChanges();
+        if (recent.Length == 0) return;
+        var moved = new List<(int, long)>();
+        var parts = new List<string>();
+        foreach (var (id, time) in recent)
+        {
+            parts.Clear();
+            int cur = id;
+            while (cur != oldRoot && cur != FileIndex.NoParent && parts.Count < 4096)
+            {
+                parts.Add(Index.Name(cur));
+                cur = Index.Parent(cur);
+            }
+            if (cur != oldRoot) continue; // another root's
+            int now = newRoot;
+            for (int i = parts.Count - 1; i >= 0 && now >= 0; i--)
+                now = newMap.TryGetValue(new ChildKey(now, parts[i]), out int next) ? next : -1;
+            if (now >= 0) moved.Add((now, time));
+        }
+        Index.SetRecentChanges(moved);
     }
 
     void ScanFinished()
@@ -221,15 +257,16 @@ internal sealed class FolderIndexer : RootIndexer
     /// </summary>
     void ScanProgressively(CancellationToken ct, long generation)
     {
-        Native.TryGetMetadata(RootPath, out _, out _, out long rootMod, out long rootCreated);
+        Native.TryGetMetadata(RootPath, out _, out _, out long rootMod, out long rootCreated, out long rootAccessed);
         var map = new Dictionary<ChildKey, int>(ChildKeyComparer.Instance);
         int rootId;
         lock (Sync)
         {
             ct.ThrowIfCancellationRequested();
-            rootId = Index.Add(RootName, FileIndex.NoParent, FileAttributes.Directory, -1, rootMod, rootCreated);
+            rootId = Index.Add(RootName, FileIndex.NoParent, FileAttributes.Directory, -1, rootMod, rootCreated, rootAccessed);
             RootId = rootId;
             _children = map;
+            HasDateAccessed = Index.HasDateAccessed;
         }
         try
         {
@@ -244,7 +281,7 @@ internal sealed class FolderIndexer : RootIndexer
                         if (ct.IsCancellationRequested || Index.Generation != generation) return;
                         foreach (var e in dir.Entries)
                         {
-                            int id = b.Add(e.Name, dir.IndexId, e.Attributes, e.Size, e.Modified, e.Created);
+                            int id = b.Add(e.Name, dir.IndexId, e.Attributes, e.Size, e.Modified, e.Created, e.Accessed);
                             map[new ChildKey(dir.IndexId, e.Name)] = id;
                             if (e.Directory != null) e.Directory.IndexId = id;
                         }
@@ -516,7 +553,7 @@ internal sealed class FolderIndexer : RootIndexer
         if (name.Length == 0) return false;
         int parentId = Resolve(parentPath);
         if (parentId < 0) return false; // parent unknown or excluded
-        if (!Native.TryGetMetadata(path, out var attrs, out long size, out long mod, out long created)) return false;
+        if (!Native.TryGetMetadata(path, out var attrs, out long size, out long mod, out long created, out long accessed)) return false;
         // That read can stall (a share reconnecting, a disk spinning up) past the stop: then the ids looked up above may
         // belong to another index by now.
         _batch.ThrowIfCancellationRequested();
@@ -540,10 +577,12 @@ internal sealed class FolderIndexer : RootIndexer
             }
             else
             {
-                Index.Update(existing, attrs, size, mod, created);
+                Index.Update(existing, attrs, size, mod, created, accessed);
+                Index.SetRecentChange(existing, Now);
                 return true;
             }
         }
+        int added = -1;
         if (isDir && (attrs & FileAttributes.ReparsePoint) == 0)
         {
             // A folder that appears (created or moved in) may already have content.
@@ -551,15 +590,19 @@ internal sealed class FolderIndexer : RootIndexer
             try { tree = FolderScanner.Scan(path, Filter, _batch); }
             catch (RootUnavailableException) { tree = new ScannedDirectory(path); }
             var map = _children;
-            Index.BulkAdd(b => FolderScanner.AddTree(b, tree, name, parentId, attrs, mod, created, (p, n, id) => map[new ChildKey(p, n)] = id));
+            Index.BulkAdd(b => added = FolderScanner.AddTree(b, tree, name, parentId, attrs, mod, created, (p, n, id) => map[new ChildKey(p, n)] = id, accessed));
         }
         else
         {
-            int id = Index.Add(name, parentId, attrs, isDir ? -1 : size, mod, created);
-            _children[key] = id;
+            added = Index.Add(name, parentId, attrs, isDir ? -1 : size, mod, created, accessed);
+            _children[key] = added;
         }
+        if (added >= 0) Index.SetRecentChange(added, Now);
         return true;
     }
+
+    /// <summary>When a change was seen (a watcher event has no time of its own).</summary>
+    static long Now => DateTime.UtcNow.ToFileTimeUtc();
 
     bool RemovePath(string path)
     {
@@ -588,6 +631,7 @@ internal sealed class FolderIndexer : RootIndexer
         _children.Remove(oldKey);
         Index.Rename(id, newName, newParent);
         _children[newKey] = id;
+        Index.SetRecentChange(id, Now);
         return true;
     }
 }

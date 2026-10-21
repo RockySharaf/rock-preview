@@ -81,6 +81,10 @@ internal static class ResultSorter
                 case SortKey.DateModified: it.K1 = index.Modified(id); break;
                 case SortKey.DateCreated: it.K1 = index.Created(id); break;
                 case SortKey.Attributes: it.K1 = (long)index.Attributes(id); break;
+                case SortKey.DateAccessed: it.K1 = ctx.Accessed(id); break;
+                case SortKey.DateRecentlyChanged: it.K1 = index.RecentChange(id); break;
+                case SortKey.RunCount: it.K1 = ctx.Runs?.Get(id).Count ?? 0; break;
+                case SortKey.DateRun: it.K1 = ctx.Runs?.Get(id).LastRun ?? 0; break;
             }
         }
 

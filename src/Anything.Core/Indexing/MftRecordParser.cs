@@ -63,6 +63,7 @@ public sealed class MftRecord
     public bool HasStandardInformation;
     public long CreationTime;
     public long ModificationTime;
+    public long AccessTime;
     public FileAttributes Attributes;
 
     /// <summary>True when the unnamed $DATA attribute (its first extent) was seen.</summary>
@@ -81,7 +82,7 @@ public sealed class MftRecord
     public void Reset()
     {
         RecordNumber = 0; BaseRecord = 0; SequenceNumber = 0; Flags = 0;
-        HasStandardInformation = false; CreationTime = 0; ModificationTime = 0; Attributes = 0;
+        HasStandardInformation = false; CreationTime = 0; ModificationTime = 0; AccessTime = 0; Attributes = 0;
         HasData = false; DataNonResident = false; DataSize = 0; DataAllocatedSize = 0; DataInitializedSize = 0;
         HasAttributeList = false;
         FileNames.Clear(); DataRuns.Clear(); AttributeList.Clear();
@@ -160,6 +161,7 @@ public static class MftRecordParser
                         result.HasStandardInformation = true;
                         result.CreationTime = BinaryPrimitives.ReadInt64LittleEndian(si);
                         result.ModificationTime = BinaryPrimitives.ReadInt64LittleEndian(si[0x08..]);
+                        result.AccessTime = BinaryPrimitives.ReadInt64LittleEndian(si[0x18..]);
                         result.Attributes = (FileAttributes)(BinaryPrimitives.ReadUInt32LittleEndian(si[0x20..]) & 0x0007FFFF);
                     }
                     break;

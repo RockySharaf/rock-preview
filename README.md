@@ -55,8 +55,26 @@ like PSD, AI or CorelDRAW that take ages to launch. Ultimate File Explorer fixes
   says where it looks ("Search images").
 - Powerful query language: wildcards, regular expressions, AND / OR / NOT, and functions for size, dates, type,
   extension, attributes, parent folder and more ([syntax below](#search-syntax)).
+- As much about each file as Everything shows: besides size, dates modified and created and attributes, the
+  **Date Accessed**, **Date Recently Changed**, **Run Count** and **Date Run** columns (right-click a column header to
+  show them), and folder sizes if you want them ([more below](#information-about-each-file)).
 - Sort by any column, highlight matches, bookmarks for saved searches, export results to CSV / TXT.
 - `rockpreview-cli` for scripting searches from the command line.
+
+### Information about each file
+Everything's extra columns, searches and sorts are all here, with the same options in **Settings › Indexing**:
+
+| Column | Search | What it is | Option (default) |
+|---|---|---|---|
+| Date Accessed | `da:yesterday` | When the file was last opened, from the drive's file table (or the folder listing) | Kept in the index: off, as in Everything. Off, it's read from the disk when shown or searched, which is slower |
+| Date Recently Changed | `rc:today` | When the app saw the file created, changed, moved or renamed (permissions and attributes count too, as in Everything) | On. *Reach back with the change journal* fills it from NTFS change journals at startup, so it goes back days, not just to when the app started |
+| Run Count, Date Run | `runcount:>2`, `dr:thisweek` | How often you opened the file from the results (Enter or double-click), and when last. Right-click › *Set Run Count...* changes it | On. Kept in `Run History.csv` in Everything's format; *Import* brings in Everything's own |
+| Size, for folders | `folder: size:>1gb` | The size of everything in the folder, kept up to date as files change | Off, as in Everything |
+
+What they cost, measured on a PC with 3.17 million files and folders: date accessed adds 27 MB of memory (8 bytes
+each); folder sizes add nothing (a folder's size takes the place it already has) and are worked out in 78 ms; recent
+changes take about 60 bytes for each file that changed (1.8 MB for 31,758 changes). Run history is a small file.
+Turning on date accessed reads the drives again once, in the background; everything stays searchable meanwhile.
 
 ### Windows 11 File Explorer, inside
 - Hosts the genuine Explorer file view (`ExplorerBrowser`) and navigation pane (`NamespaceTreeControl`) —
@@ -173,6 +191,7 @@ checks right away. Turn the daily check off in Setup or **Settings › General**
 | `Alt+Enter` | Properties |
 | `F5` | Refresh |
 | `Ctrl+I` `Ctrl+B` `Ctrl+U` `Ctrl+R` | Match case / whole word / path / regex |
+| `Ctrl+1` … `Ctrl+8`, `Ctrl+9` | Sort by Name, Path, Size, Extension, Type, Date Modified, Date Created, Attributes; Date Recently Changed |
 | `Ctrl+D` | Bookmark the current search |
 | `Ctrl+P` | Settings (also at the top of the **⋯** menu) |
 | `Ctrl+N` | New window |
@@ -191,6 +210,9 @@ checks right away. Turn the daily check off in Setup or **Settings › General**
 | `ext:psd;ai;cdr` | design files |
 | `size:>100mb` | files over 100 MB |
 | `dm:today` · `dm:lastweek` | modified today / last week |
+| `da:yesterday` · `dc:2024` | accessed yesterday / created in 2024 |
+| `rc:today` | created, changed, moved or renamed today |
+| `runcount:>2` · `dr:thisweek` | opened more than twice / opened this week (from the results) |
 | `parent:"D:\Photos"` | items directly inside a folder |
 | `path:projects logo` | match against the full path |
 | `regex:^IMG_\d{4}\.jpg$` | a regular expression |
@@ -207,7 +229,7 @@ RockPreview.exe -explorer [-path X]  a new tab in the window used last, like Fil
 RockPreview.exe -admin               restart elevated (instant NTFS index)
 RockPreview.exe -startup             start in the background
 RockPreview.exe -exit                close the running instance
-rockpreview-cli ext:pdf size:>10mb   search the saved index from a script (-h for options)
+rockpreview-cli ext:pdf size:>10mb   search the saved index from a script (-h for options; -da, -run-count add columns)
 ```
 
 ## Build from source
@@ -235,7 +257,8 @@ powershell -ExecutionPolicy Bypass -File build\Publish.ps1
 ## Privacy
 
 Ultimate File Explorer runs entirely on your PC. It has no telemetry and no account. Its index and settings stay in
-`%LOCALAPPDATA%\Rock Preview` and `%APPDATA%\Rock Preview`.
+`%LOCALAPPDATA%\Rock Preview` and `%APPDATA%\Rock Preview` (with `Run History.csv`, which files you opened from the
+results and when; **Settings › Indexing › Run history** turns it off or clears it).
 
 Its only network connection is the check for a new version: at most once a day (and when you choose **Help › Check
 for Updates**) it asks GitHub's API for the latest release of `RockySharaf/rock-preview`. The request carries

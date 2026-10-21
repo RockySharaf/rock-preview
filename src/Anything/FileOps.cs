@@ -18,12 +18,14 @@ internal static class FileOps
         return StrFormatByteSizeW(bytes, sb, sb.Capacity) != IntPtr.Zero ? sb.ToString() : bytes.ToString("N0") + " bytes";
     }
 
-    public static void Open(IWin32Window owner, IReadOnlyList<string> paths)
+    /// <summary>Opens each path with its default app. Returns the ones that opened (for the run history).</summary>
+    public static List<string> Open(IWin32Window owner, IReadOnlyList<string> paths)
     {
-        if (paths.Count == 0) return;
+        var opened = new List<string>();
+        if (paths.Count == 0) return opened;
         if (paths.Count > 16 && MessageBox.Show(owner, $"Are you sure you wish to open {paths.Count} files?", "Confirm open",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
-            return;
+            return opened;
         foreach (var p in paths)
         {
             try
@@ -32,6 +34,7 @@ internal static class FileOps
                 string? dir = Path.GetDirectoryName(p);
                 if (!string.IsNullOrEmpty(dir)) psi.WorkingDirectory = dir;
                 Process.Start(psi)?.Dispose();
+                opened.Add(p);
             }
             catch (Win32Exception ex) when (ex.NativeErrorCode == 1223) { /* cancelled */ }
             catch (Exception ex)
@@ -39,6 +42,7 @@ internal static class FileOps
                 MessageBox.Show(owner, $"Unable to open \"{p}\".\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
+        return opened;
     }
 
     public static void OpenPath(IWin32Window owner, IReadOnlyList<string> paths)

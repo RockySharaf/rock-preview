@@ -64,12 +64,10 @@ internal sealed partial class MainForm
         _miFiltersBar = Item("&Filters", () => { _app.Settings.FiltersVisible = !_app.Settings.FiltersVisible; ApplyBarsEverywhere(); });
         _miStatusBar = Item("Status &Bar", () => { _app.Settings.StatusBarVisible = !_app.Settings.StatusBarVisible; ApplyBarsEverywhere(); });
         var sortBy = new ToolStripMenuItem("S&ort by");
-        int n = 1;
         foreach (var key in Enum.GetValues<SortKey>())
         {
             var k = key;
-            var mi = Item("&" + Columns.SortTitle(k), () => SetSort(k, k == _sort ? _desc : false), n <= 9 ? Keys.Control | (Keys.D0 + n) : Keys.None);
-            n++;
+            var mi = Item("&" + Columns.SortTitle(k), () => SetSort(k, k == _sort ? _desc : false), Columns.SortShortcut(k));
             _miSortItems.Add((mi, k));
             sortBy.DropDownItems.Add(mi);
         }
@@ -481,6 +479,21 @@ internal sealed partial class MainForm
     }
 
     void OpenSelected() => OpenSelectedOrBrowse();
+
+    /// <summary>Everything's Set Run Count: how often the item counts as opened (0 forgets it).</summary>
+    void SetRunCount(string path)
+    {
+        var history = _app.IndexManager.Index.RunHistory;
+        string current = history.Get(path).Count.ToString(System.Globalization.CultureInfo.CurrentCulture);
+        string? text = InputDialog.Show(this, "Set Run Count", $"How many times {Path.GetFileName(path.TrimEnd('\\'))} has been opened (0 forgets it):", current, current.Length);
+        if (text is null) return;
+        if (!int.TryParse(text.Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.CurrentCulture, out int count) || count < 0)
+        {
+            MessageBox.Show(this, "Type a whole number, like 3.", "Set Run Count", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        history.Set(path, count, DateTime.UtcNow.ToFileTimeUtc());
+    }
     void OpenSelectedPath() => BrowseToSelectedItemFolder();
     void ShowInWindowsExplorer() => FileOps.OpenPath(this, SelectedPaths(64));
     void Properties() => FileOps.Properties(this, SelectedPaths(8));
@@ -615,6 +628,7 @@ internal sealed partial class MainForm
         };
         var folders = paths.Count <= 20 ? paths.Where(Directory.Exists).ToList() : [];
         if (folders.Count > 0) extras.Insert(1, new("Open in new &tab", () => { foreach (var f in folders) NewTab(f); }));
+        if (paths.Count == 1 && !_app.IsDemo && _app.Settings.RunHistoryEnabled) extras.Add(new("Set R&un Count...", () => SetRunCount(paths[0])));
         bool shown;
         try { shown = ShellContextMenu.Show(owner, paths, screen, extras, RenameFocused); }
         catch { shown = false; }

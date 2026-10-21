@@ -44,9 +44,13 @@ internal static class ResultExporter
                     var cells = columns.Select(c => c.Key switch
                     {
                         // Machine-friendly values for CSV: raw bytes and sortable local timestamps.
-                        "size" => row.IsDir || row.Size < 0 ? "" : row.Size.ToString(CultureInfo.InvariantCulture),
+                        "size" => row.Size < 0 ? "" : row.Size.ToString(CultureInfo.InvariantCulture),
                         "date_modified" => IsoDate(index.Modified(id)),
                         "date_created" => IsoDate(index.Created(id)),
+                        "date_accessed" => IsoDate(AccessedOf(index, id, row)),
+                        "date_recently_changed" => IsoDate(row.RecentChange),
+                        "run_count" => row.RunCount > 0 ? row.RunCount.ToString(CultureInfo.InvariantCulture) : "",
+                        "date_run" => IsoDate(row.LastRun),
                         _ => Quote(row.Text(c)),
                     });
                     w.WriteLine(string.Join(',', cells));
@@ -58,6 +62,14 @@ internal static class ResultExporter
                     if (index.IsAlive(id)) w.WriteLine(index.GetFullPath(id));
                 break;
         }
+    }
+
+    /// <summary>Date accessed from the index, or read from the disk now when it isn't indexed (an export waits for it).</summary>
+    static long AccessedOf(FileIndex index, int id, Row row)
+    {
+        if (index.Accessed(id) is not 0 and var indexed) return indexed;
+        try { return File.GetLastAccessTimeUtc(row.FullPath).ToFileTimeUtc(); } // 1601 (0) when it is gone
+        catch (Exception) { return 0; }
     }
 
     static string IsoDate(long ft)

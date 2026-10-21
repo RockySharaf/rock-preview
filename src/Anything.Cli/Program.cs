@@ -9,7 +9,7 @@ using SortKey = Anything.Core.SortKey;
 var opts = new SearchOptions();
 var query = new List<string>();
 SortKey sort = SortKey.Name;
-bool descending = false, showSize = false, showDate = false, countOnly = false;
+bool descending = false, showSize = false, showDate = false, showAccessed = false, showRuns = false, folderSizes = false, countOnly = false;
 int max = int.MaxValue, offset = 0;
 string? db = null;
 
@@ -32,6 +32,9 @@ for (int i = 0; i < args.Length; i++)
         case "-sort-descending" or "-desc": descending = true; break;
         case "-size": showSize = true; break;
         case "-dm" or "-date-modified": showDate = true; break;
+        case "-da" or "-date-accessed": showAccessed = true; break;
+        case "-run-count" or "-date-run": showRuns = true; break;
+        case "-folder-sizes": folderSizes = true; break;
         case "-get-result-count" or "-count": countOnly = true; break;
         case "-db": db = Next(); break;
         case "-path" or "-parent-path": query.Add($"\"{Next().TrimEnd('\\')}\\\""); break;
@@ -47,11 +50,17 @@ if (!File.Exists(db))
 }
 
 var index = new FileIndex();
-if (IndexDatabase.Load(db, index) is null)
+// Dates accessed are kept when the app saved them (Settings › Indexing › Date accessed); else they are read from the disk.
+index.Configure(dateAccessed: true, folderSizes: false, recentChanges: false);
+var loaded = IndexDatabase.Load(db, index);
+if (loaded is null)
 {
     Console.Error.WriteLine($"Could not read database {db}.");
     return 2;
 }
+index.Configure(dateAccessed: loaded.Any(r => r.HasDateAccessed), folderSizes: folderSizes, recentChanges: false);
+// The app's run history (runcount:, dr:), from beside its settings.
+index.RunHistory.Load(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Rock Preview", "Run History.csv"));
 
 var engine = Services.CreateSearchEngine();
 var results = engine.Search(index, string.Join(' ', query), opts, sort, descending, CancellationToken.None);
@@ -69,27 +78,33 @@ if (countOnly)
 var output = new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = false };
 foreach (int id in results.Ids.Skip(offset).Take(max))
 {
-    if (showSize) output.Write($"{(index.IsDirectory(id) ? "" : index.Size(id).ToString(CultureInfo.InvariantCulture)),15} ");
-    if (showDate)
+    if (showSize) output.Write($"{(index.Size(id) < 0 ? "" : index.Size(id).ToString(CultureInfo.InvariantCulture)),15} ");
+    if (showDate) output.Write(Date(index.Modified(id)) + " ");
+    if (showAccessed) output.Write(Date(index.HasDateAccessed ? index.Accessed(id) : File.GetLastAccessTimeUtc(index.GetFullPath(id)).ToFileTimeUtc()) + " ");
+    if (showRuns)
     {
-        long ft = index.Modified(id);
-        output.Write((ft > 0 ? DateTime.FromFileTimeUtc(ft).ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : "".PadRight(16)) + " ");
+        var run = index.RunHistory.Get(index.GetFullPath(id));
+        output.Write($"{(run.Count > 0 ? run.Count.ToString(CultureInfo.InvariantCulture) : ""),6} {Date(run.LastRun)} ");
     }
     output.WriteLine(index.GetFullPath(id));
 }
 output.Flush();
 return 0;
 
+static string Date(long ft) => ft > 0 ? DateTime.FromFileTimeUtc(ft).ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : "".PadRight(16);
+
 static void PrintHelp() => Console.WriteLine("""
     rockpreview-cli [options] [search text]
-    Searches the Rock Preview index using Everything's search syntax (ext:, size:, dm:, |, !, < >, wildcards ...).
+    Searches the Rock Preview index using Everything's search syntax (ext:, size:, dm:, da:, runcount:, |, !, < >, wildcards ...).
 
       -i, -case            match case            -w, -ww           match whole words
       -p, -match-path      match full path       -a, -diacritics   match diacritics
       -r, -regex <regex>   regex search          -path <folder>    limit to a folder
       -n, -max-results <n> limit results         -o, -offset <n>   skip results
-      -s, -sort-path       sort by path          -sort <key>       name|path|size|extension|type|datemodified|datecreated|attributes
-      -desc                descending            -size, -dm        also print size / date modified
+      -s, -sort-path       sort by path          -sort <key>       name|path|size|extension|type|date-modified|date-created|
+                                                                   attributes|run-count|date-recently-changed|date-accessed|date-run
+      -desc                descending            -size, -dm, -da   also print size / date modified / date accessed
+      -run-count           also print run count and date run      -folder-sizes   folders get the size of everything in them
       -count               print only the number of results
       -db <file>           database file (default %LOCALAPPDATA%\Rock Preview\RockPreview.db)
     """);

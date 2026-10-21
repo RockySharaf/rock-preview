@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 
 namespace Anything.Core;
@@ -9,6 +10,8 @@ namespace Anything.Core;
 /// name is the root path without a trailing separator (for example "C:" or "\\server\share").
 /// All public members are thread-safe: mutators take the write lock, accessors are lock-free
 /// reads of array slots (callers that need a consistent snapshot hold <see cref="Lock"/> for reading).
+/// Like Everything, some information is optional (Settings › Indexing): date accessed (8 bytes per entry, only while
+/// on), folder sizes (kept in the folders' own size slots, so free) and recent changes (only the entries changed).
 /// </summary>
 public sealed class FileIndex
 {
@@ -26,6 +29,13 @@ public sealed class FileIndex
     // Live children per entry, so removing an empty folder (what the change journal reports for every deleted folder,
     // children first) is instant instead of a pass over millions of entries.
     int[] _kids = new int[1024];
+    // Date accessed: allocated only while it is indexed.
+    long[]? _accessed;
+    // Date Recently Changed: when each entry was last seen created, changed, moved or renamed (null = not recorded).
+    // Only entries that changed are in it; read without the lock (the result list does), hence concurrent.
+    ConcurrentDictionary<int, long>? _recent;
+    // Folder sizes: a folder's size slot holds the total of the files below it, kept current on every change.
+    bool _folderSizes;
     // Name interning: about two thirds of all names on a typical disk are repeats ("index.js", "desktop.ini",
     // "#", "LICENSE"...), so every distinct name is stored once and shared.
     HashSet<string> _pool = new(StringComparer.Ordinal);
@@ -33,6 +43,7 @@ public sealed class FileIndex
     int _liveCount;
     long _version;
     long _generation;
+    long _pathVersion;
 
     /// <summary>Number of allocated slots (live and dead). Iterate 0..Count-1 and check <see cref="IsAlive"/>.</summary>
     public int Count => Volatile.Read(ref _count);
@@ -47,6 +58,12 @@ public sealed class FileIndex
     /// used to read entries; views re-query instead.
     /// </summary>
     public long Generation => Interlocked.Read(ref _generation);
+
+    /// <summary>
+    /// Incremented when a folder is renamed or moved, which changes the path of everything below it without touching
+    /// those entries. (A folder's size changing touches it too: that alone changes no path.)
+    /// </summary>
+    public long PathVersion => Interlocked.Read(ref _pathVersion);
 
     /// <summary>Slots allocated but not used by live entries (removed entries awaiting <see cref="Compact"/>).</summary>
     public int DeadCount => Count - LiveCount;
@@ -89,16 +106,96 @@ public sealed class FileIndex
     /// <summary>Raised after a mutation batch (outside the lock). Subscribers should debounce.</summary>
     public event Action? Changed;
 
-    public int AddRoot(string rootPath, FileAttributes attributes = FileAttributes.Directory)
-        => Add(rootPath.TrimEnd('\\', '/'), NoParent, attributes | FileAttributes.Directory, -1, 0, 0);
+    /// <summary>Run counts and dates of the files opened from the app (Run Count, Date Run, runcount:, dr:).</summary>
+    public RunHistory RunHistory { get; set; } = new();
 
-    /// <summary>Adds one entry. Sizes are bytes (-1 = unknown, used for folders); dates are FILETIME UTC (0 = unknown).</summary>
-    public int Add(string name, int parent, FileAttributes attributes, long size, long modifiedFileTimeUtc, long createdFileTimeUtc)
+    /// <summary>Whether date accessed is indexed (<see cref="Accessed"/> is 0 for every entry while it isn't).</summary>
+    public bool HasDateAccessed => _accessed != null;
+
+    /// <summary>Whether recent changes are recorded (Date Recently Changed, rc:).</summary>
+    public bool RecordsRecentChanges => _recent != null;
+
+    /// <summary>Whether folders carry the total size of the files below them (otherwise their size is -1).</summary>
+    public bool HasFolderSizes => _folderSizes;
+
+    /// <summary>Turns the optional information on or off, keeping the entries. Folder sizes are worked out at once.</summary>
+    public void Configure(bool dateAccessed, bool folderSizes, bool recentChanges)
     {
         Lock.EnterWriteLock();
         try
         {
-            int id = AddNoLock(name, parent, attributes, size, modifiedFileTimeUtc, createdFileTimeUtc);
+            bool changed = false;
+            if (dateAccessed != (_accessed != null))
+            {
+                // Turned on: unknown (0) until the entries are read again.
+                _accessed = dateAccessed ? new long[_names.Length] : null;
+                changed = true;
+            }
+            if (recentChanges != (_recent != null))
+            {
+                _recent = recentChanges ? new ConcurrentDictionary<int, long>() : null;
+                changed = true;
+            }
+            if (folderSizes != _folderSizes)
+            {
+                _folderSizes = folderSizes;
+                ComputeFolderSizes();
+                changed = true;
+            }
+            if (!changed) return;
+            // Values changed everywhere: consumers of the change log (presorted orders) start over.
+            ResetChangeLog();
+            Interlocked.Increment(ref _version);
+        }
+        finally { Lock.ExitWriteLock(); }
+        RaiseChanged();
+    }
+
+    void ResetChangeLog()
+    {
+        _logBase += _log.Count + 1;
+        _log.Clear();
+    }
+
+    /// <summary>Sets every folder's size from the files below it (or back to unknown when folder sizes are off).</summary>
+    void ComputeFolderSizes()
+    {
+        int n = _count;
+        for (int i = 0; i < n; i++)
+            if (_alive[i] && (_attrs[i] & FileAttributes.Directory) != 0) _size[i] = _folderSizes ? 0 : -1;
+        if (!_folderSizes) return;
+        for (int i = 0; i < n; i++)
+            if (_alive[i] && (_attrs[i] & FileAttributes.Directory) == 0 && _size[i] > 0) AddToAncestors(_parent[i], _size[i], touch: false);
+    }
+
+    /// <summary>What an entry adds to its folders' sizes: a file's size or a folder's total (unknown counts as 0).</summary>
+    long FolderSizeShare(int id) => Math.Max(0, _size[id]);
+
+    /// <summary>Adds <paramref name="delta"/> to the size of <paramref name="folder"/> and of every folder above it.</summary>
+    void AddToAncestors(int folder, long delta, bool touch = true)
+    {
+        if (delta == 0) return;
+        for (int cur = folder, guard = 0; (uint)cur < (uint)_count && guard < 4096; cur = _parent[cur], guard++)
+        {
+            _size[cur] += delta;
+            if (touch) Touch(cur);
+        }
+    }
+
+    public int AddRoot(string rootPath, FileAttributes attributes = FileAttributes.Directory)
+        => Add(rootPath.TrimEnd('\\', '/'), NoParent, attributes | FileAttributes.Directory, -1, 0, 0);
+
+    /// <summary>
+    /// Adds one entry. Sizes are bytes (-1 = unknown; a folder's size is worked out, whatever is passed); dates are
+    /// FILETIME UTC (0 = unknown). Date accessed is kept only while it is indexed.
+    /// </summary>
+    public int Add(string name, int parent, FileAttributes attributes, long size, long modifiedFileTimeUtc, long createdFileTimeUtc,
+        long accessedFileTimeUtc = 0)
+    {
+        Lock.EnterWriteLock();
+        try
+        {
+            int id = AddNoLock(name, parent, attributes, size, modifiedFileTimeUtc, createdFileTimeUtc, accessedFileTimeUtc);
             return id;
         }
         finally { Lock.ExitWriteLock(); }
@@ -118,18 +215,20 @@ public sealed class FileIndex
         readonly FileIndex _index;
         internal BulkAdder(FileIndex index) => _index = index;
 
-        public int Add(string name, int parent, FileAttributes attributes, long size, long modifiedFileTimeUtc, long createdFileTimeUtc)
-            => _index.AddNoLock(name, parent, attributes, size, modifiedFileTimeUtc, createdFileTimeUtc);
+        public int Add(string name, int parent, FileAttributes attributes, long size, long modifiedFileTimeUtc, long createdFileTimeUtc,
+            long accessedFileTimeUtc = 0)
+            => _index.AddNoLock(name, parent, attributes, size, modifiedFileTimeUtc, createdFileTimeUtc, accessedFileTimeUtc);
 
         /// <summary>Re-parents an entry inside a bulk operation (used when a child is seen before its parent).</summary>
         public void SetParent(int id, int parent)
         {
+            if ((_index._attrs[id] & FileAttributes.Directory) != 0) Interlocked.Increment(ref _index._pathVersion);
             _index.Reparent(id, parent);
             _index.Touch(id);
         }
     }
 
-    int AddNoLock(string name, int parent, FileAttributes attributes, long size, long modified, long created)
+    int AddNoLock(string name, int parent, FileAttributes attributes, long size, long modified, long created, long accessed)
     {
         if (_count == _names.Length) Grow();
         int id = _count;
@@ -138,11 +237,15 @@ public sealed class FileIndex
         _kids[id] = 0;
         if ((uint)parent < (uint)id) _kids[parent]++;
         _attrs[id] = attributes;
-        _size[id] = (attributes & FileAttributes.Directory) != 0 && size == 0 ? -1 : size;
+        bool dir = (attributes & FileAttributes.Directory) != 0;
+        // A folder's size is its files' total (none yet), or unknown without folder sizes.
+        _size[id] = dir ? (_folderSizes ? 0 : -1) : size;
         _modified[id] = modified;
         _created[id] = created;
+        if (_accessed != null) _accessed[id] = accessed;
         _alive[id] = true;
         Touch(id);
+        if (_folderSizes && !dir && size > 0 && (uint)parent < (uint)id) AddToAncestors(parent, size);
         Volatile.Write(ref _count, id + 1);
         _liveCount++;
         Interlocked.Increment(ref _version);
@@ -156,6 +259,13 @@ public sealed class FileIndex
         if (old == parent) return;
         if ((uint)old < (uint)_count && _kids[old] > 0) _kids[old]--;
         if ((uint)parent < (uint)_count) _kids[parent]++;
+        if (_folderSizes)
+        {
+            // Its size (all of a folder's total) moves from the old folders to the new ones.
+            long share = FolderSizeShare(id);
+            AddToAncestors(old, -share);
+            AddToAncestors(parent, share);
+        }
         _parent[id] = parent;
     }
 
@@ -171,6 +281,7 @@ public sealed class FileIndex
             if (!IsAliveNoCheck(id)) return;
             int parent = _parent[id];
             if ((uint)parent < (uint)_count && _kids[parent] > 0) _kids[parent]--;
+            if (_folderSizes) AddToAncestors(parent, -FolderSizeShare(id));
             if ((_attrs[id] & FileAttributes.Directory) == 0 || _kids[id] == 0)
             {
                 // A file, or a folder with nothing in it: just this entry.
@@ -178,6 +289,7 @@ public sealed class FileIndex
                 _names[id] = null!; // release the name now; the slot itself is reclaimed by Compact
                 _liveCount--;
                 Touch(id);
+                _recent?.TryRemove(id, out _);
             }
             else
             {
@@ -203,6 +315,9 @@ public sealed class FileIndex
                 }
                 for (int i = 0; i < _count; i++)
                     if (state[i] == 1 && _alive[i]) { _alive[i] = false; _names[i] = null!; _liveCount--; Touch(i); }
+                if (_recent is { IsEmpty: false } recent)
+                    foreach (int key in recent.Keys)
+                        if (!IsAliveNoCheck(key)) recent.TryRemove(key, out _);
             }
             Interlocked.Increment(ref _version);
         }
@@ -216,6 +331,7 @@ public sealed class FileIndex
         try
         {
             if (!IsAliveNoCheck(id)) return;
+            if ((_attrs[id] & FileAttributes.Directory) != 0) Interlocked.Increment(ref _pathVersion);
             _names[id] = Intern(newName);
             Reparent(id, newParent);
             Touch(id);
@@ -225,22 +341,57 @@ public sealed class FileIndex
         RaiseChanged();
     }
 
-    /// <summary>Updates metadata; null arguments leave the value unchanged.</summary>
-    public void Update(int id, FileAttributes? attributes = null, long? size = null, long? modifiedFileTimeUtc = null, long? createdFileTimeUtc = null)
+    /// <summary>Updates metadata; null arguments leave the value unchanged. A folder's size is worked out, not set.</summary>
+    public void Update(int id, FileAttributes? attributes = null, long? size = null, long? modifiedFileTimeUtc = null, long? createdFileTimeUtc = null,
+        long? accessedFileTimeUtc = null)
     {
         Lock.EnterWriteLock();
         try
         {
             if (!IsAliveNoCheck(id)) return;
             if (attributes is { } a) _attrs[id] = a;
-            if (size is { } s) _size[id] = s;
+            if (size is { } s && (_attrs[id] & FileAttributes.Directory) == 0)
+            {
+                if (_folderSizes) AddToAncestors(_parent[id], Math.Max(0, s) - FolderSizeShare(id));
+                _size[id] = s;
+            }
             if (modifiedFileTimeUtc is { } m) _modified[id] = m;
             if (createdFileTimeUtc is { } c) _created[id] = c;
+            if (accessedFileTimeUtc is { } ac && _accessed != null) _accessed[id] = ac;
             Touch(id);
             Interlocked.Increment(ref _version);
         }
         finally { Lock.ExitWriteLock(); }
         RaiseChanged();
+    }
+
+    /// <summary>
+    /// Records that the entry was created, changed, moved or renamed at <paramref name="fileTimeUtc"/> (FILETIME UTC),
+    /// keeping the latest time. Nothing happens while recent changes aren't recorded.
+    /// </summary>
+    public void SetRecentChange(int id, long fileTimeUtc) => SetRecentChanges([(id, fileTimeUtc)]);
+
+    /// <summary><see cref="SetRecentChange"/> for many entries under one lock.</summary>
+    public void SetRecentChanges(IReadOnlyList<(int Id, long FileTimeUtc)> changes)
+    {
+        if (_recent == null || changes.Count == 0) return;
+        Lock.EnterWriteLock();
+        try
+        {
+            var recent = _recent;
+            if (recent == null) return;
+            bool any = false;
+            foreach (var (id, time) in changes)
+            {
+                if (!IsAliveNoCheck(id) || time <= 0) continue;
+                if (recent.TryGetValue(id, out long had) && had >= time) continue;
+                recent[id] = time;
+                Touch(id);
+                any = true;
+            }
+            if (any) Interlocked.Increment(ref _version);
+        }
+        finally { Lock.ExitWriteLock(); }
     }
 
     public void Clear()
@@ -251,6 +402,7 @@ public sealed class FileIndex
             Array.Clear(_alive, 0, _count);
             Array.Clear(_names, 0, _count);
             Array.Clear(_kids, 0, _count);
+            _recent?.Clear();
             _count = 0;
             _liveCount = 0;
             _pool = new HashSet<string>(StringComparer.Ordinal);
@@ -336,6 +488,7 @@ public sealed class FileIndex
                 _size[j] = _size[i];
                 _modified[j] = _modified[i];
                 _created[j] = _created[i];
+                if (_accessed != null) _accessed[j] = _accessed[i];
                 _attrs[j] = _attrs[i];
                 _alive[j] = true;
             }
@@ -348,6 +501,13 @@ public sealed class FileIndex
             _count = k;
             _liveCount = k;
             _pool = pool;
+            if (_recent is { IsEmpty: false } recent)
+            {
+                var moved = new ConcurrentDictionary<int, long>();
+                foreach (var (id, time) in recent)
+                    if ((uint)id < (uint)n && remap[id] >= 0) moved[remap[id]] = time;
+                _recent = moved;
+            }
             _logBase += _log.Count;
             _log.Clear();
             Resize(Math.Max(1024, k + k / 32)); // ~3% headroom for live additions
@@ -366,6 +526,7 @@ public sealed class FileIndex
         Array.Resize(ref _size, n);
         Array.Resize(ref _modified, n);
         Array.Resize(ref _created, n);
+        if (_accessed != null) Array.Resize(ref _accessed, n);
         Array.Resize(ref _attrs, n);
         Array.Resize(ref _alive, n);
         Array.Resize(ref _kids, n);
@@ -384,6 +545,17 @@ public sealed class FileIndex
     public long Size(int id) => _size[id];
     public long Modified(int id) => _modified[id];
     public long Created(int id) => _created[id];
+    /// <summary>Date accessed (FILETIME UTC); 0 when unknown or not indexed (<see cref="HasDateAccessed"/>).</summary>
+    public long Accessed(int id)
+    {
+        var a = _accessed;
+        return a != null && (uint)id < (uint)a.Length ? a[id] : 0;
+    }
+    /// <summary>When the entry was last seen created, changed, moved or renamed (FILETIME UTC); 0 = not since recording began.</summary>
+    public long RecentChange(int id) => _recent is { } r && r.TryGetValue(id, out long t) ? t : 0;
+
+    /// <summary>Every entry with a recent change (a copy).</summary>
+    public KeyValuePair<int, long>[] RecentChanges() => _recent?.ToArray() ?? [];
     public FileAttributes Attributes(int id) => _attrs[id];
     public bool IsDirectory(int id) => (_attrs[id] & FileAttributes.Directory) != 0;
 

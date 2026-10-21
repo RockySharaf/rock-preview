@@ -130,6 +130,7 @@ public sealed class VolumeRecords
     long[] _sizes;
     long[] _created;
     long[] _modified;
+    long[] _accessed;
     uint[] _attrs;
     byte[] _flags;
     int _length;
@@ -152,12 +153,16 @@ public sealed class VolumeRecords
         _sizes = new long[capacity];
         _created = new long[capacity];
         _modified = new long[capacity];
+        _accessed = new long[capacity];
         _attrs = new uint[capacity];
         _flags = new byte[capacity];
     }
 
     /// <summary>One past the highest record number seen.</summary>
     public int Length => _length;
+
+    /// <summary>The records carry dates accessed (read from the file table; not from the USN enumeration or an older service).</summary>
+    public bool HasAccessTimes { get; private set; }
 
     public bool IsInUse(int rec) => rec < _length && (_flags[rec] & FlagInUse) != 0;
     public bool IsDirectory(int rec) => rec < _length && (_flags[rec] & FlagDirectory) != 0;
@@ -175,6 +180,7 @@ public sealed class VolumeRecords
             Array.Resize(ref _sizes, n);
             Array.Resize(ref _created, n);
             Array.Resize(ref _modified, n);
+            Array.Resize(ref _accessed, n);
             Array.Resize(ref _attrs, n);
             Array.Resize(ref _flags, n);
         }
@@ -209,6 +215,8 @@ public sealed class VolumeRecords
                 _attrs[t] = (uint)r.Attributes;
                 _created[t] = r.CreationTime;
                 _modified[t] = r.ModificationTime;
+                _accessed[t] = r.AccessTime;
+                HasAccessTimes = true;
             }
         }
         MergeData(t, r.HasData, r.DataSize, CollectionsMarshal.AsSpan(r.FileNames));
@@ -322,7 +330,7 @@ public sealed class VolumeRecords
         index.BulkAdd(b =>
         {
             if (abandoned?.Invoke() == true) return;
-            rootId = b.Add(rootName.TrimEnd('\\'), FileIndex.NoParent, FileAttributes.Directory, -1, _modified[RootRecord], _created[RootRecord]);
+            rootId = b.Add(rootName.TrimEnd('\\'), FileIndex.NoParent, FileAttributes.Directory, -1, _modified[RootRecord], _created[RootRecord], _accessed[RootRecord]);
             map.Set(RootRecord, rootId);
             var visited = new bool[n];
             visited[RootRecord] = true;
@@ -342,7 +350,7 @@ public sealed class VolumeRecords
                     string? childPath = isDir && needPaths && dirPath != null ? ExclusionFilter.Join(dirPath, name) : null;
                     if (!filter.IsEmpty && filter.Excludes(name, attrs, childPath)) continue;
                     if (isDir && visited[child]) continue; // directories cannot be hard-linked; guards against corrupt cycles
-                    int id = b.Add(name, dirId, attrs, isDir ? -1 : _sizes[child], _modified[child], _created[child]);
+                    int id = b.Add(name, dirId, attrs, isDir ? -1 : _sizes[child], _modified[child], _created[child], _accessed[child]);
                     map.Add(child, id);
                     if (++count % 65536 == 0) progress?.Invoke(count);
                     if (isDir)
@@ -359,8 +367,11 @@ public sealed class VolumeRecords
 
     // ---- transfer: the Rock Preview service sends the records it read to the app ---------------------
 
-    /// <summary>Writes the records (metadata only: names, parents, sizes, dates, attributes) for <see cref="ReadFrom"/>.</summary>
-    public void WriteTo(BinaryWriter w)
+    /// <summary>
+    /// Writes the records (metadata only: names, parents, sizes, dates, attributes) for <see cref="ReadFrom"/>. Dates
+    /// accessed go along only when the app asked for them (<paramref name="accessTimes"/>: service protocol 2).
+    /// </summary>
+    public void WriteTo(BinaryWriter w, bool accessTimes = true)
     {
         int n = _length;
         w.Write(n);
@@ -374,6 +385,11 @@ public sealed class VolumeRecords
         w.Write(MemoryMarshal.AsBytes(_sizes.AsSpan(0, n)));
         w.Write(MemoryMarshal.AsBytes(_created.AsSpan(0, n)));
         w.Write(MemoryMarshal.AsBytes(_modified.AsSpan(0, n)));
+        if (accessTimes)
+        {
+            w.Write(HasAccessTimes);
+            if (HasAccessTimes) w.Write(MemoryMarshal.AsBytes(_accessed.AsSpan(0, n)));
+        }
         w.Write(MemoryMarshal.AsBytes(_attrs.AsSpan(0, n)));
         w.Write(_flags.AsSpan(0, n));
         var links = _extraLinks ?? [];
@@ -384,8 +400,8 @@ public sealed class VolumeRecords
         foreach (var (rec, (parent, name)) in dos) { w.Write(rec); w.Write(parent); w.Write(name); }
     }
 
-    /// <summary>Reads records written by <see cref="WriteTo"/>.</summary>
-    public static VolumeRecords ReadFrom(BinaryReader r)
+    /// <summary>Reads records written by <see cref="WriteTo"/> (with the same <paramref name="accessTimes"/>).</summary>
+    public static VolumeRecords ReadFrom(BinaryReader r, bool accessTimes = true)
     {
         int n = r.ReadInt32();
         if (n < 0 || n > 1 << 30) throw new InvalidDataException("invalid record count");
@@ -395,6 +411,11 @@ public sealed class VolumeRecords
         ReadExactly(r, MemoryMarshal.AsBytes(v._sizes.AsSpan(0, n)));
         ReadExactly(r, MemoryMarshal.AsBytes(v._created.AsSpan(0, n)));
         ReadExactly(r, MemoryMarshal.AsBytes(v._modified.AsSpan(0, n)));
+        if (accessTimes && r.ReadBoolean())
+        {
+            ReadExactly(r, MemoryMarshal.AsBytes(v._accessed.AsSpan(0, n)));
+            v.HasAccessTimes = true;
+        }
         ReadExactly(r, MemoryMarshal.AsBytes(v._attrs.AsSpan(0, n)));
         ReadExactly(r, v._flags.AsSpan(0, n));
         v._length = n;
