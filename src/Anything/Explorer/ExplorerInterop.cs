@@ -233,14 +233,15 @@ internal static class ShellNative
     public const int S_OK = 0, S_FALSE = 1;
     public const int E_NOINTERFACE = unchecked((int)0x80004002);
     public const uint CDB2GVF_NOSELECTVERB = 0x8, CDB2GVF_NOINCLUDEITEM = 0x10;
+    public const uint CDBOSC_SETFOCUS = 0;
 
     public const uint SBSP_ABSOLUTE = 0x0;
     public const uint SBSP_PARENT = 0x2000;
 
     public const int FVM_AUTO = -1, FVM_ICON = 1, FVM_SMALLICON = 2, FVM_LIST = 3, FVM_DETAILS = 4, FVM_THUMBNAIL = 5, FVM_TILE = 6, FVM_CONTENT = 8;
-    public const uint FWF_NOWEBVIEW = 0x10000, FWF_SHOWSELALWAYS = 0x40;
+    public const uint FWF_NOWEBVIEW = 0x10000, FWF_SHOWSELALWAYS = 0x2000; // 0x40 is FWF_SINGLESEL
 
-    public const uint SVSI_DESELECT = 0x0, SVSI_SELECT = 0x1, SVSI_DESELECTOTHERS = 0x4, SVSI_ENSUREVISIBLE = 0x8, SVSI_FOCUSED = 0x10;
+    public const uint SVSI_DESELECT = 0x0, SVSI_SELECT = 0x1, SVSI_EDIT = 0x3, SVSI_DESELECTOTHERS = 0x4, SVSI_ENSUREVISIBLE = 0x8, SVSI_FOCUSED = 0x10;
 
     public const uint EPS_DEFAULT_ON = 0x1, EPS_DEFAULT_OFF = 0x2, EPS_FORCE = 0x20000;
 
