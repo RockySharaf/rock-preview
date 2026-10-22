@@ -13,7 +13,8 @@ namespace Anything;
 /// start-with-Windows entry and an entry in Settings &gt; Apps, whose Uninstall runs "RockPreview.exe -uninstall".
 /// Switches: -install, -uninstall, -quiet, -allusers, -dir &lt;folder&gt;, -desktop, -runasadmin, -startwithwindows,
 /// -replaceexplorer, -indexservice, -updatecheck / -noupdatecheck, -content names|documents|pictures (search inside
-/// files), -asuser &lt;SID&gt; (whose choice it is), -launch, -removedata (uninstall).
+/// files), -asuser &lt;SID&gt; (whose choice it is), -launch, -removedata and -confirmed (uninstall: already asked, in
+/// Settings › About).
 /// </summary>
 internal static partial class Setup
 {
@@ -26,6 +27,10 @@ internal static partial class Setup
     const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\RockPreview";
     const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     const string RunValue = "Rock Preview";
+    /// <summary>Task Manager's on/off state for each start-with-Windows entry.</summary>
+    const string StartupApprovedRunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    /// <summary>Start-with-Windows names: today's, and early versions' "RockPreview" (from Program Files, --minimized).</summary>
+    static readonly string[] RunValues = [RunValue, "RockPreview"];
 
     /// <summary>What to install and how.</summary>
     internal sealed class Options
@@ -43,6 +48,7 @@ internal static partial class Setup
         public bool Launch;
         public bool Quiet;
         public bool RemoveData;
+        public bool Confirmed; // uninstall: the user already said yes (Settings › About), so don't ask again
         public bool Auto;   // start installing at once (the elevated copy started for an install for everyone)
 
         public string TargetFolder => string.IsNullOrWhiteSpace(Folder) ? DefaultFolder(AllUsers) : Folder!;
@@ -118,6 +124,7 @@ internal static partial class Setup
                 case "launch": o.Launch = true; break;
                 case "quiet": o.Quiet = true; break;
                 case "removedata": o.RemoveData = true; break;
+                case "confirmed": o.Confirmed = true; break;
                 case "auto": o.Auto = true; break;
             }
         }
@@ -273,28 +280,17 @@ internal static partial class Setup
             var args = new List<string> { "-uninstall" };
             if (o.Quiet) args.Add("-quiet");
             if (o.RemoveData) args.Add("-removedata");
+            if (o.Confirmed) args.Add("-confirmed");
             // Whoever's password elevates, "delete my settings and search index" is about the user who ran it.
             if (CurrentUserSid() is { } sid) { args.Add("-asuser"); args.Add(sid); }
             return Program.RelaunchElevated(args) ? 0 : 5;
         }
 
         bool removeData = o.RemoveData;
-        if (!o.Quiet)
+        if (!o.Quiet && !o.Confirmed)
         {
-            var check = new TaskDialogVerificationCheckBox("Also delete my Ultimate File Explorer settings and search index");
-            var uninstall = new TaskDialogButton("Uninstall");
-            var page = new TaskDialogPage
-            {
-                Caption = AppName + " Setup",
-                Heading = "Uninstall Ultimate File Explorer?",
-                Text = $"Ultimate File Explorer will be removed from this PC ({folder}). Your files are not affected.",
-                Icon = TaskDialogIcon.Information,
-                Buttons = { uninstall, TaskDialogButton.Cancel },
-                Verification = check,
-                DefaultButton = TaskDialogButton.Cancel,
-            };
-            if (TaskDialog.ShowDialog(page) != uninstall) return 2;
-            removeData = check.Checked;
+            if (ConfirmUninstall(null, folder) is not bool delete) return 2;
+            removeData = delete;
         }
 
         try
@@ -312,6 +308,46 @@ internal static partial class Setup
         return 0;
     }
 
+    /// <summary>
+    /// "Uninstall Ultimate File Explorer?", with a box (unticked) to delete the user's settings and search index too:
+    /// whether the box was ticked, or null when cancelled. Settings › About asks it, and so does the uninstall itself
+    /// unless it was asked already (-confirmed).
+    /// </summary>
+    public static bool? ConfirmUninstall(IWin32Window? owner, string folder)
+    {
+        var check = new TaskDialogVerificationCheckBox("Also delete my Ultimate File Explorer settings and search index");
+        var uninstall = new TaskDialogButton("Uninstall");
+        var page = new TaskDialogPage
+        {
+            Caption = owner is null ? AppName + " Setup" : AppName,
+            Heading = "Uninstall Ultimate File Explorer?",
+            Text = $"Ultimate File Explorer will be removed from this PC ({folder}). Your files are not affected.",
+            Icon = TaskDialogIcon.Information,
+            Buttons = { uninstall, TaskDialogButton.Cancel },
+            Verification = check,
+            DefaultButton = TaskDialogButton.Cancel,
+        };
+        var answer = owner is null ? TaskDialog.ShowDialog(page) : TaskDialog.ShowDialog(owner, page);
+        return answer == uninstall ? check.Checked : null;
+    }
+
+    /// <summary>
+    /// Settings › About's Uninstall, once <see cref="ConfirmUninstall"/> said yes: runs this program's uninstall without
+    /// asking again. It closes this copy, removes everything and says when it's done; Windows asks for permission only
+    /// to remove the instant-indexing service or an install for everyone. False if it couldn't be started.
+    /// </summary>
+    public static bool StartUninstall(bool removeData)
+    {
+        if (Environment.ProcessPath is not { } exe) return false;
+        // Not from inside the program's folder, which the uninstall removes.
+        var psi = new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = Path.GetTempPath() };
+        psi.ArgumentList.Add("-uninstall");
+        psi.ArgumentList.Add("-confirmed");
+        if (removeData) psi.ArgumentList.Add("-removedata");
+        try { Process.Start(psi)?.Dispose(); return true; }
+        catch (Win32Exception ex) { Log(ex); return false; }
+    }
+
     static void Uninstall(string folder, bool allUsers, bool removeData, bool quiet, string? asUser = null)
     {
         string exe = Path.Combine(folder, ExeName);
@@ -327,12 +363,7 @@ internal static partial class Setup
                 if (File.Exists(lnk) && ShortcutTarget(lnk) is { } target && SamePath(target, exe)) TryDelete(lnk);
             }
         }
-        try
-        {
-            using var run = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
-            if (run?.GetValue(RunValue) is string cmd && PointsInto(cmd, folder)) run.DeleteValue(RunValue, false);
-        }
-        catch (Exception) { }
+        RemoveStartupEntries(folder);
         // Remove the instant-indexing service (Windows asks for permission unless this already runs as administrator).
         try
         {
@@ -376,6 +407,39 @@ internal static partial class Setup
             try { Directory.Delete(folder); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
         SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    /// <summary>
+    /// Start with Windows: this copy's entry, and one an earlier copy left behind whose program is gone (an early
+    /// version's "RockPreview" in Program Files), with Task Manager's on/off state for it. An entry that starts another
+    /// copy that is still there is left alone.
+    /// </summary>
+    static void RemoveStartupEntries(string folder)
+    {
+        try
+        {
+            using var run = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
+            if (run == null) return;
+            using var approved = Registry.CurrentUser.OpenSubKey(StartupApprovedRunKeyPath, writable: true);
+            foreach (string name in RunValues)
+            {
+                if (run.GetValue(name) is not string cmd) continue;
+                bool gone = ProgramOf(cmd) is { } program && Path.GetFileName(program).Equals(ExeName, StringComparison.OrdinalIgnoreCase) && !File.Exists(program);
+                if (!gone && !PointsInto(cmd, folder)) continue;
+                run.DeleteValue(name, false);
+                approved?.DeleteValue(name, false);
+            }
+        }
+        catch (Exception ex) { Log(ex); }
+    }
+
+    /// <summary>The program a start-up command runs: its quoted first part, or the text up to ".exe".</summary>
+    static string? ProgramOf(string command)
+    {
+        command = command.Trim();
+        if (command.StartsWith('"')) return command.IndexOf('"', 1) is int end and > 1 ? command[1..end] : null;
+        int exe = command.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+        return exe > 0 ? command[..(exe + 4)] : null;
     }
 
     // ---- helpers --------------------------------------------------------------------------------
