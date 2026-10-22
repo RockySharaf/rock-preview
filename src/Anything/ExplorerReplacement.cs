@@ -67,6 +67,123 @@ internal static class ExplorerReplacement
 
     public static bool IsEnabled() => RegisteredExe() is not null;
 
+    /// <summary>
+    /// Whether this user's folders, drives, This PC or Win+E still run a program in <paramref name="folder"/> (as the
+    /// default action or not). The uninstall must not delete that program while they do: every folder would then fail
+    /// with "Application not found".
+    /// </summary>
+    public static bool References(string folder)
+    {
+        using var classes = Registry.CurrentUser.OpenSubKey(Classes.TrimEnd('\\'));
+        return classes is not null && References(classes, folder);
+    }
+
+    /// <summary>Why another account stops an uninstall for everyone.</summary>
+    public enum AccountUse { UsesIt, CouldNotCheck }
+
+    /// <summary>
+    /// The other Windows accounts whose folders, drives, This PC or Win+E run the program in <paramref name="folder"/>, or
+    /// whose settings couldn't be checked (counted too, so the program isn't deleted under them), with their names (null
+    /// when Windows can't name the account: an old profile of a removed account). A signed-in account's registry classes
+    /// are loaded under HKEY_USERS; a signed-out one's are read from its UsrClass.dat. Both need administrator rights.
+    /// Accounts in <paramref name="except"/> (SIDs) are skipped.
+    /// </summary>
+    public static List<(string Sid, string? Name, AccountUse Use)> OtherAccountsUsing(string folder, IEnumerable<string?> except)
+    {
+        var skip = new HashSet<string>(except.OfType<string>(), StringComparer.OrdinalIgnoreCase);
+        var found = new List<(string, string?, AccountUse)>();
+        var loaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string hive in Registry.Users.GetSubKeyNames())
+        {
+            if (!hive.EndsWith("_Classes", StringComparison.OrdinalIgnoreCase)) continue;
+            string sid = hive[..^"_Classes".Length];
+            loaded.Add(sid);
+            if (skip.Contains(sid)) continue;
+            try
+            {
+                using var classes = Registry.Users.OpenSubKey(hive);
+                if (classes is not null && References(classes, folder)) found.Add((sid, AccountName(sid), AccountUse.UsesIt));
+            }
+            catch (Exception) { found.Add((sid, AccountName(sid), AccountUse.CouldNotCheck)); }
+        }
+        // Accounts that aren't signed in: their classes hive is a file in their profile, read privately and let go again.
+        using var profiles = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList");
+        foreach (string key in profiles?.GetSubKeyNames() ?? [])
+        {
+            // Only people's accounts (local, domain, Microsoft or work accounts), not the system's service accounts, and
+            // only keys that are an account (not a profile repair's "<SID>.bak").
+            if (!(key.StartsWith("S-1-5-21-", StringComparison.OrdinalIgnoreCase) || key.StartsWith("S-1-12-1-", StringComparison.OrdinalIgnoreCase))
+                || !IsSid(key) || skip.Contains(key) || loaded.Contains(key)) continue;
+            using var profile = profiles!.OpenSubKey(key);
+            if (profile?.GetValue("ProfileImagePath") is not string { Length: > 0 } raw) continue;
+            string file = Path.Combine(Environment.ExpandEnvironmentVariables(raw), @"AppData\Local\Microsoft\Windows\UsrClass.dat");
+            if (!File.Exists(file)) continue; // never signed in, or no classes of its own: nothing can point here
+            int rc = RegLoadAppKey(file, out var handle, KEY_READ, 0, 0);
+            if (rc != 0) { handle.Dispose(); found.Add((key, AccountName(key), AccountUse.CouldNotCheck)); continue; }
+            try
+            {
+                using var classes = RegistryKey.FromHandle(handle);
+                if (References(classes, folder)) found.Add((key, AccountName(key), AccountUse.UsesIt));
+            }
+            catch (Exception) { found.Add((key, AccountName(key), AccountUse.CouldNotCheck)); }
+        }
+        return found;
+    }
+
+    static bool IsSid(string text)
+    {
+        try { return string.Equals(new System.Security.Principal.SecurityIdentifier(text).Value, text, StringComparison.OrdinalIgnoreCase); }
+        catch (Exception) { return false; }
+    }
+
+    /// <summary>
+    /// Whether this user's registry still has this app's folder verbs or Win+E commands although folders don't open
+    /// with it (another file manager took the default action after it): turning the option off cleans them.
+    /// </summary>
+    public static bool HasLeftovers()
+    {
+        try
+        {
+            foreach (var cls in FolderClasses)
+            {
+                using var verb = Registry.CurrentUser.OpenSubKey(Classes + cls.Key + $@"\shell\{Verb}");
+                if (verb is not null) return true;
+            }
+            foreach (var c in Commands)
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(c.CommandKey);
+                if (IsOurCommand(key?.GetValue(null) as string)) return true;
+            }
+        }
+        catch (Exception) { }
+        return false;
+    }
+
+    const int KEY_READ = 0x20019;
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+    static extern int RegLoadAppKey(string file, out Microsoft.Win32.SafeHandles.SafeRegistryHandle key, int access, int options, int reserved);
+
+    static bool References(RegistryKey classes, string folder)
+    {
+        foreach (var cls in FolderClasses)
+            if (CommandAt(classes, cls.Key + $@"\shell\{Verb}\command") is { } command && Setup.RunsProgramIn(command, folder)) return true;
+        foreach (var c in Commands)
+            if (CommandAt(classes, $@"CLSID\{c.Clsid}\shell\{c.VerbName}\command") is { } command && IsOurCommand(command) && Setup.RunsProgramIn(command, folder)) return true;
+        return false;
+    }
+
+    static string? CommandAt(RegistryKey classes, string path)
+    {
+        using var key = classes.OpenSubKey(path);
+        return key?.GetValue(null) as string;
+    }
+
+    static string? AccountName(string sid)
+    {
+        try { return new System.Security.Principal.SecurityIdentifier(sid).Translate(typeof(System.Security.Principal.NTAccount)).Value; }
+        catch (Exception) { return null; }
+    }
+
     /// <summary>Makes <paramref name="exe"/> replace File Explorer. Safe to call again to move it to another exe.</summary>
     public static void Enable(string exe)
     {

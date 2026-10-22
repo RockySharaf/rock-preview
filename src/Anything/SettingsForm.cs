@@ -625,7 +625,8 @@ internal sealed partial class SettingsForm : Form
     /// <summary>Uninstall in one click and one question, when there is an installed copy (not for a portable one).</summary>
     SettingCard UninstallCard()
     {
-        var installed = Setup.FindInstalled();
+        // The installed copy this one is first (the one in use when both a just-me and an everyone install exist).
+        var installed = Setup.FindInstalled(Path.GetDirectoryName(Environment.ProcessPath)) ?? Setup.FindInstalled();
         var button = CardButton("Uninstall", () => Uninstall(installed!.Folder));
         button.Enabled = installed != null;
         return Card("Uninstall", installed != null
@@ -642,7 +643,7 @@ internal sealed partial class SettingsForm : Form
             TaskDialog.ShowDialog(this, new TaskDialogPage { Caption = Text, Heading = "Nothing was uninstalled", Text = "This is the demo: Uninstall works in the real app.", Icon = TaskDialogIcon.Information });
             return;
         }
-        if (!Setup.StartUninstall(removeData))
+        if (!Setup.StartUninstall(folder, removeData))
         {
             TaskDialog.ShowDialog(this, new TaskDialogPage { Caption = Text, Heading = "The uninstall couldn't be started", Text = "Uninstall Ultimate File Explorer from Settings › Apps instead.", Icon = TaskDialogIcon.Error });
             return;

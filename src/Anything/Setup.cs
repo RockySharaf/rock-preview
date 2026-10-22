@@ -13,8 +13,9 @@ namespace Anything;
 /// start-with-Windows entry and an entry in Settings &gt; Apps, whose Uninstall runs "RockPreview.exe -uninstall".
 /// Switches: -install, -uninstall, -quiet, -allusers, -dir &lt;folder&gt;, -desktop, -runasadmin, -startwithwindows,
 /// -replaceexplorer, -indexservice, -updatecheck / -noupdatecheck, -content names|documents|pictures (search inside
-/// files), -asuser &lt;SID&gt; (whose choice it is), -launch, -removedata and -confirmed (uninstall: already asked, in
-/// Settings › About).
+/// files), -asuser &lt;SID&gt; (whose choice it is), -launch, and for -uninstall: -removedata, -confirmed with -dir (already
+/// asked about that copy, in Settings › About) and -ownpartdone with -parent &lt;pid&gt; (the user's own part is done: the
+/// elevated half of an uninstall for everyone, which that process waits for).
 /// </summary>
 internal static partial class Setup
 {
@@ -49,6 +50,8 @@ internal static partial class Setup
         public bool Quiet;
         public bool RemoveData;
         public bool Confirmed; // uninstall: the user already said yes (Settings › About), so don't ask again
+        public bool OwnPartDone; // uninstall for everyone: the user's own registry part was done before elevating
+        public int ParentPid;    // with OwnPartDone: the copy without rights that waits for this one
         public bool Auto;   // start installing at once (the elevated copy started for an install for everyone)
 
         public string TargetFolder => string.IsNullOrWhiteSpace(Folder) ? DefaultFolder(AllUsers) : Folder!;
@@ -125,6 +128,8 @@ internal static partial class Setup
                 case "quiet": o.Quiet = true; break;
                 case "removedata": o.RemoveData = true; break;
                 case "confirmed": o.Confirmed = true; break;
+                case "ownpartdone": o.OwnPartDone = true; break;
+                case "parent" when i + 1 < args.Count: _ = int.TryParse(args[++i], out o.ParentPid); break;
                 case "auto": o.Auto = true; break;
             }
         }
@@ -252,15 +257,17 @@ internal static partial class Setup
         catch (Win32Exception) { /* UAC cancelled */ }
     }
 
-    public static Installed? FindInstalled()
+    /// <summary>The installed copy (just me first, then everyone); with <paramref name="folder"/>, only the one installed there.</summary>
+    public static Installed? FindInstalled(string? folder = null)
     {
         foreach (var (root, allUsers) in new[] { (Registry.CurrentUser, false), (Registry.LocalMachine, true) })
         {
             try
             {
                 using var key = root.OpenSubKey(UninstallKeyPath);
-                if (key?.GetValue("InstallLocation") is string folder && File.Exists(Path.Combine(folder, ExeName)))
-                    return new Installed(allUsers, folder, key.GetValue("DisplayVersion") as string ?? "");
+                if (key?.GetValue("InstallLocation") is string location && File.Exists(Path.Combine(location, ExeName))
+                    && (folder is null || SamePath(location, folder)))
+                    return new Installed(allUsers, location, key.GetValue("DisplayVersion") as string ?? "");
             }
             catch (Exception) { }
         }
@@ -271,21 +278,20 @@ internal static partial class Setup
 
     static int RunUninstall(Options o)
     {
-        var inst = FindInstalled();
+        // Settings › About names the copy it asked about (-dir): that one, or none (never the copy that happens to run).
+        // Otherwise (Settings › Apps runs the entry's own exe) the installed copy this uninstaller is, before any other.
+        bool named = o.Confirmed && !string.IsNullOrWhiteSpace(o.Folder);
+        var inst = named ? FindInstalled(o.Folder) : FindInstalled(Path.GetDirectoryName(Environment.ProcessPath)) ?? FindInstalled();
+        if (named && inst is null)
+            return Report(o, "Ultimate File Explorer was not uninstalled", $"It isn't installed in {o.Folder} any more.", 3);
         string folder = inst?.Folder ?? Path.GetDirectoryName(Environment.ProcessPath)!;
         bool allUsers = inst?.AllUsers ?? false;
-        if (allUsers && !Program.IsElevated())
-        {
-            // Program Files and the machine-wide entry need administrator rights.
-            var args = new List<string> { "-uninstall" };
-            if (o.Quiet) args.Add("-quiet");
-            if (o.RemoveData) args.Add("-removedata");
-            if (o.Confirmed) args.Add("-confirmed");
-            // Whoever's password elevates, "delete my settings and search index" is about the user who ran it.
-            if (CurrentUserSid() is { } sid) { args.Add("-asuser"); args.Add(sid); }
-            return Program.RelaunchElevated(args) ? 0 : 5;
-        }
+        // The elevated half must have the rights it was started for (with UAC turned off, "runas" doesn't give them).
+        if (o.OwnPartDone && allUsers && !Program.IsElevated())
+            return Report(o, "Ultimate File Explorer was not uninstalled", "Windows didn't give administrator rights to remove it for everyone on this PC.", 5);
 
+        // Asked here, in the user's own process, before anything changes; the elevated half of an uninstall for everyone
+        // doesn't ask again.
         bool removeData = o.RemoveData;
         if (!o.Quiet && !o.Confirmed)
         {
@@ -293,20 +299,71 @@ internal static partial class Setup
             removeData = delete;
         }
 
-        try
-        {
-            Uninstall(folder, allUsers, removeData, o.Quiet, o.AsUser);
-        }
-        catch (Exception ex)
-        {
-            Log(ex);
-            if (!o.Quiet) TaskDialog.ShowDialog(new TaskDialogPage { Caption = AppName + " Setup", Heading = "Ultimate File Explorer could not be completely removed", Text = ex.Message, Icon = TaskDialogIcon.Error });
-            return 1;
-        }
+        // Program Files and the machine-wide entry need administrator rights.
+        if (allUsers && !Program.IsElevated()) return UninstallForEveryone(o, folder, removeData);
+
+        Uninstalled done;
+        try { done = Uninstall(o, folder, allUsers, removeData); }
+        catch (UninstallStopped stop) { Log(stop); return Report(o, "Ultimate File Explorer was not uninstalled", stop.Message, 4); }
+        catch (Exception ex) { Log(ex); return Report(o, "Ultimate File Explorer could not be completely removed", ex.Message, 1); }
         if (!o.Quiet)
-            TaskDialog.ShowDialog(new TaskDialogPage { Caption = AppName + " Setup", Heading = "Ultimate File Explorer was uninstalled.", Icon = TaskDialogIcon.ShieldSuccessGreenBar });
+            TaskDialog.ShowDialog(new TaskDialogPage
+            {
+                Caption = AppName + " Setup",
+                Heading = "Ultimate File Explorer was uninstalled.",
+                Text = done.Warning,
+                Icon = done.Warning is null ? TaskDialogIcon.ShieldSuccessGreenBar : TaskDialogIcon.Warning,
+            });
+        // Only now: this process holds the program file until "was uninstalled" is closed.
+        if (done.DeleteLater) StartDeleteHelper(Path.Combine(folder, ExeName), folder);
         return 0;
     }
+
+    /// <summary>
+    /// An install for everyone, from a copy without administrator rights. This user's own part is done here, in their own
+    /// registry: folders, drives, This PC and Win+E back to File Explorer, start with Windows, their shortcuts. The rest is
+    /// done by a copy Windows elevates, which may run as another account (an administrator's password) and would clean
+    /// that account's registry instead. If Windows doesn't give permission, or that copy stops before removing the
+    /// program, this user's part is put back, so nothing points at a program that's gone and nothing half-changes.
+    /// </summary>
+    static int UninstallForEveryone(Options o, string folder, bool removeData)
+    {
+        string exe = Path.Combine(folder, ExeName);
+        OwnPart own;
+        try
+        {
+            CloseRunning(exe, o.Quiet, anyFolder: o.Confirmed || removeData);
+            own = RemoveOwnPart(folder);
+        }
+        catch (UninstallStopped stop) { Log(stop); return Report(o, "Ultimate File Explorer was not uninstalled", stop.Message, 4); }
+        catch (Exception ex) { Log(ex); return Report(o, "Ultimate File Explorer was not uninstalled", ex.Message, 1); }
+
+        var args = new List<string> { "-uninstall", "-confirmed", "-ownpartdone", "-parent", Environment.ProcessId.ToString(), "-dir", folder };
+        if (o.Quiet) args.Add("-quiet");
+        if (removeData) args.Add("-removedata");
+        // Whoever's password elevates, "delete my settings and search index" is about the user who ran it.
+        if (CurrentUserSid() is { } sid) { args.Add("-asuser"); args.Add(sid); }
+        int code = Program.RunElevatedAndWait(args);
+        if (code == 0) return 0;
+        if (File.Exists(exe)) own.PutBack(exe);
+        // The elevated copy told the user why it stopped; a refused or cancelled permission prompt is said here.
+        return code == -1
+            ? Report(o, "Ultimate File Explorer was not uninstalled", "Windows didn't give permission to remove it for everyone on this PC.", 5)
+            : code;
+    }
+
+    /// <summary>Tells the user why the uninstall stopped (not with -quiet) and returns <paramref name="code"/>.</summary>
+    static int Report(Options o, string heading, string text, int code)
+    {
+        if (!o.Quiet) TaskDialog.ShowDialog(new TaskDialogPage { Caption = AppName + " Setup", Heading = heading, Text = text, Icon = TaskDialogIcon.Error });
+        return code;
+    }
+
+    /// <summary>The uninstall stopped before removing anything, for a reason the user can act on.</summary>
+    sealed class UninstallStopped(string message) : Exception(message);
+
+    /// <summary>Done: whether the running uninstaller's own program file is still to be deleted, and what the user should know.</summary>
+    sealed record Uninstalled(bool DeleteLater, string? Warning);
 
     /// <summary>
     /// "Uninstall Ultimate File Explorer?", with a box (unticked) to delete the user's settings and search index too:
@@ -332,69 +389,175 @@ internal static partial class Setup
     }
 
     /// <summary>
-    /// Settings › About's Uninstall, once <see cref="ConfirmUninstall"/> said yes: runs this program's uninstall without
-    /// asking again. It closes this copy, removes everything and says when it's done; Windows asks for permission only
-    /// to remove the instant-indexing service or an install for everyone. False if it couldn't be started.
+    /// Settings › About's Uninstall, once <see cref="ConfirmUninstall"/> said yes to the copy in <paramref name="folder"/>:
+    /// runs this program's uninstall of exactly that copy without asking again. It closes this copy (wherever it runs
+    /// from), removes everything and says when it's done; Windows asks for permission only to remove the
+    /// instant-indexing service or an install for everyone. False if it couldn't be started.
     /// </summary>
-    public static bool StartUninstall(bool removeData)
+    public static bool StartUninstall(string folder, bool removeData)
     {
         if (Environment.ProcessPath is not { } exe) return false;
         // Not from inside the program's folder, which the uninstall removes.
         var psi = new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = Path.GetTempPath() };
-        psi.ArgumentList.Add("-uninstall");
-        psi.ArgumentList.Add("-confirmed");
+        foreach (string a in new[] { "-uninstall", "-confirmed", "-dir", folder }) psi.ArgumentList.Add(a);
         if (removeData) psi.ArgumentList.Add("-removedata");
         try { Process.Start(psi)?.Dispose(); return true; }
         catch (Win32Exception ex) { Log(ex); return false; }
     }
 
-    static void Uninstall(string folder, bool allUsers, bool removeData, bool quiet, string? asUser = null)
+    static Uninstalled Uninstall(Options o, string folder, bool allUsers, bool removeData)
     {
         string exe = Path.Combine(folder, ExeName);
-        CloseRunning(exe, quiet, anyFolder: false);
+        string? me = CurrentUserSid();
+        // Other accounts first, since it only reads: when it says no, nothing has been closed or removed. Their folders
+        // opening with this copy (signed in or not) would be left with none.
+        if (allUsers && ExplorerReplacement.OtherAccountsUsing(folder, [o.AsUser, me]) is { Count: > 0 } others)
+            throw new UninstallStopped(OtherAccountsMessage(others));
 
-        foreach (var special in allUsers
-                     ? new[] { Environment.SpecialFolder.CommonPrograms, Environment.SpecialFolder.CommonDesktopDirectory, Environment.SpecialFolder.Programs, Environment.SpecialFolder.DesktopDirectory }
-                     : new[] { Environment.SpecialFolder.Programs, Environment.SpecialFolder.DesktopDirectory })
-        {
-            foreach (string name in new[] { AppName, OldShortcutName })
-            {
-                string lnk = Path.Combine(Environment.GetFolderPath(special), name + ".lnk");
-                if (File.Exists(lnk) && ShortcutTarget(lnk) is { } target && SamePath(target, exe)) TryDelete(lnk);
-            }
-        }
-        RemoveStartupEntries(folder);
+        // With -confirmed, or when the user's data goes, the copy that asked closes too, wherever it runs from (a portable
+        // copy would otherwise go on running, could turn folders back on for itself, and would save into the data just
+        // deleted). The elevated half of an uninstall for everyone closes every copy but the one waiting for it.
+        try { CloseRunning(exe, o.Quiet, anyFolder: o.Confirmed || removeData, exceptPid: o.ParentPid); }
+        catch (InvalidOperationException ex) { throw new UninstallStopped(ex.Message); }
+        // The copy without rights did its own account's part; this copy does its own account's, unless it is that same
+        // account (another account when an administrator's password elevated it).
+        if (!(o.OwnPartDone && string.Equals(o.AsUser, me, StringComparison.OrdinalIgnoreCase))) RemoveOwnPart(folder);
+
+        if (allUsers)
+            foreach (var special in new[] { Environment.SpecialFolder.CommonPrograms, Environment.SpecialFolder.CommonDesktopDirectory })
+                DeleteShortcutsTo(exe, special);
         // Remove the instant-indexing service (Windows asks for permission unless this already runs as administrator).
+        var warnings = new List<string>();
         try
         {
             if (global::Anything.IndexService.IsInstalled())
             {
                 if (Program.IsElevated()) global::Anything.IndexService.Uninstall();
-                else Program.RunElevatedAndWait(["-uninstallservice"]);
+                else if (Program.RunElevatedAndWait(["-uninstallservice", "-quiet"]) == -1)
+                    warnings.Add("Windows didn't give permission to remove the instant-indexing service (Ultimate File Explorer Service), so it is still installed.");
+                if (warnings.Count == 0 && global::Anything.IndexService.IsInstalled())
+                    warnings.Add("The instant-indexing service (Ultimate File Explorer Service) couldn't be removed, so it is still installed " +
+                                 $"(the reason is in {Path.Combine(Path.GetTempPath(), "Rock Preview Setup", "setup.log")}).");
             }
         }
-        catch (Exception) { }
-        // Hand folders and Win+E back to File Explorer if this copy had them.
-        try
-        {
-            if (ExplorerReplacement.RegisteredExe() is { } registered && PointsInto(registered, folder)) ExplorerReplacement.Disable();
-        }
-        catch (Exception) { }
+        catch (Exception ex) { Log(ex); warnings.Add($"The instant-indexing service couldn't be removed: {ex.Message}"); }
+        if (warnings.Count > 0) warnings.Add("To remove it, run \"sc delete RockPreviewService\" in a command prompt opened as administrator.");
         (allUsers ? Registry.LocalMachine : Registry.CurrentUser).DeleteSubKeyTree(UninstallKeyPath, throwOnMissingSubKey: false);
 
         // Only its own data folders ("Rock Preview", with the space, the name before the rename): settings, index, logs; of
         // the user who asked, not of the administrator whose password elevated it.
-        if (removeData) DeleteUserData(asUser);
+        if (removeData) DeleteUserData(o.AsUser);
 
-        // The program file: delete it now, or (when it is the uninstaller that is running) once this process has ended:
-        // a helper tries every second for half a minute, since "was uninstalled" stays on screen until it is closed.
-        // The folder is removed only if that leaves it empty.
-        string? self = Environment.ProcessPath;
-        if (File.Exists(exe) && !SamePath(self ?? "", exe)) TryDelete(exe);
-        if (File.Exists(exe))
+        // The program file: deleted now, or (when it is the uninstaller that is running) by a helper started once
+        // "was uninstalled" is closed. The folder is removed only if that leaves it empty.
+        bool self = SamePath(Environment.ProcessPath ?? "", exe);
+        if (File.Exists(exe) && !self) TryDelete(exe);
+        if (File.Exists(exe) && !self) warnings.Add($"{exe} is in use, so it couldn't be deleted. Close it, then delete that folder.");
+        bool deleteLater = self && File.Exists(exe);
+        if (!File.Exists(exe))
         {
-            string script = $"/d /c for /l %i in (1,1,30) do @(ping -n 2 127.0.0.1 >nul & del /f /q \"{exe}\" >nul 2>&1 & " +
-                            $"if not exist \"{exe}\" (rmdir \"{folder}\" >nul 2>&1 & exit /b))";
+            try { Directory.Delete(folder); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+        SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero);
+        return new Uninstalled(deleteLater, warnings.Count > 0 ? string.Join(" ", warnings) : null);
+    }
+
+    /// <summary>What to tell the user when other accounts stop an uninstall for everyone, with what each can do.</summary>
+    static string OtherAccountsMessage(List<(string Sid, string? Name, ExplorerReplacement.AccountUse Use)> others)
+    {
+        var lines = new List<string> { "Nothing was removed, because other accounts on this PC still need it:" };
+        foreach (var (sid, name, use) in others)
+            lines.Add(name is null
+                ? $"• An old profile of a removed account ({sid}). Delete that profile in System Properties › Advanced › User Profiles."
+                : use == ExplorerReplacement.AccountUse.UsesIt
+                    ? $"• {name} uses it in place of File Explorer. Sign in as {name} and turn off Settings › General › Use instead of " +
+                      "Windows File Explorer (if it's already off, change any other setting once: that clears what's left)."
+                    : $"• {name}'s settings couldn't be checked. Sign in as {name} once, sign out, and try again.");
+        lines.Add("Then uninstall again.");
+        return string.Join("\n", lines);
+    }
+
+    /// <summary>
+    /// What a user's own part of an uninstall changed, to put back exactly if the rest doesn't happen: whether this copy
+    /// was the one folders opened with, the start-up entries with Task Manager's on/off state, and the shortcut files.
+    /// </summary>
+    sealed record OwnPart(bool Takeover, List<StartupEntry> Startup, List<(string Path, byte[] Bytes)> Shortcuts)
+    {
+        public void PutBack(string exe)
+        {
+            try { if (Takeover) ExplorerReplacement.Enable(exe); } catch (Exception ex) { Log(ex); }
+            try
+            {
+                using var run = Registry.CurrentUser.CreateSubKey(RunKeyPath);
+                using var approved = Registry.CurrentUser.CreateSubKey(StartupApprovedRunKeyPath);
+                foreach (var e in Startup)
+                {
+                    run.SetValue(e.Name, e.Command);
+                    if (e.Approved is { } state) approved.SetValue(e.Name, state, RegistryValueKind.Binary);
+                }
+            }
+            catch (Exception ex) { Log(ex); }
+            foreach (var (path, bytes) in Shortcuts)
+            {
+                try { if (!File.Exists(path)) File.WriteAllBytes(path, bytes); } catch (Exception ex) { Log(ex); }
+            }
+        }
+    }
+
+    /// <summary>A start-with-Windows entry that was removed: its name, its command and Task Manager's on/off state (if any).</summary>
+    internal sealed record StartupEntry(string Name, string Command, byte[]? Approved);
+
+    /// <summary>
+    /// The current account's own part of an uninstall, in its own registry. Folders, drives, This PC and Win+E go back to
+    /// File Explorer first, right after the copy closed: while they still run this copy, opening a folder would start it
+    /// again. If they still run it afterwards, the uninstall stops before removing anything else, so they never point
+    /// at a program that's gone. Then start with Windows and this account's shortcuts.
+    /// </summary>
+    static OwnPart RemoveOwnPart(string folder)
+    {
+        string exe = Path.Combine(folder, ExeName);
+        // Folders open with this copy (to put back if the rest doesn't happen), not just a leftover of its keys behind
+        // another file manager, which put back would take folders from.
+        bool takeover = ExplorerReplacement.RegisteredExe() is { } registered && SamePath(registered, exe);
+        if (ExplorerReplacement.References(folder))
+        {
+            try { ExplorerReplacement.Disable(); } catch (Exception ex) { Log(ex); }
+            if (ExplorerReplacement.References(folder))
+                throw new UninstallStopped("Folders, drives or Win+E still open with Ultimate File Explorer, and Windows' settings for " +
+                    "them couldn't be changed, so nothing was removed. Turn off Settings › General › Use instead of Windows File " +
+                    "Explorer, then uninstall again.");
+        }
+        var startup = RemoveStartupEntries(folder);
+        var shortcuts = new List<(string, byte[])>();
+        foreach (var special in new[] { Environment.SpecialFolder.Programs, Environment.SpecialFolder.DesktopDirectory })
+            shortcuts.AddRange(DeleteShortcutsTo(exe, special));
+        return new OwnPart(takeover, startup, shortcuts);
+    }
+
+    /// <summary>Deletes this program's shortcuts (either name) in that folder; returns the deleted files' contents.</summary>
+    static List<(string Path, byte[] Bytes)> DeleteShortcutsTo(string exe, Environment.SpecialFolder special)
+    {
+        var deleted = new List<(string, byte[])>();
+        foreach (string name in new[] { AppName, OldShortcutName })
+        {
+            string lnk = Path.Combine(Environment.GetFolderPath(special), name + ".lnk");
+            if (!File.Exists(lnk) || ShortcutTarget(lnk) is not { } target || !SamePath(target, exe)) continue;
+            try { var bytes = File.ReadAllBytes(lnk); File.Delete(lnk); deleted.Add((lnk, bytes)); }
+            catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+        return deleted;
+    }
+
+    /// <summary>
+    /// Deletes the running uninstaller's own program file once this process has ended: a helper tries every second for
+    /// half a minute. Started after the last message is closed, so the time isn't used up while it's still on screen.
+    /// </summary>
+    static void StartDeleteHelper(string exe, string folder)
+    {
+        string script = $"/d /c for /l %i in (1,1,30) do @(ping -n 2 127.0.0.1 >nul & del /f /q \"{exe}\" >nul 2>&1 & " +
+                        $"if not exist \"{exe}\" (rmdir \"{folder}\" >nul 2>&1 & exit /b))";
+        try
+        {
             Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"), script)
             {
                 UseShellExecute = false,
@@ -402,36 +565,45 @@ internal static partial class Setup
                 WorkingDirectory = Path.GetTempPath(),
             })?.Dispose();
         }
-        else
-        {
-            try { Directory.Delete(folder); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-        }
-        SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero);
+        catch (Win32Exception ex) { Log(ex); }
     }
 
     /// <summary>
     /// Start with Windows: this copy's entry, and one an earlier copy left behind whose program is gone (an early
     /// version's "RockPreview" in Program Files), with Task Manager's on/off state for it. An entry that starts another
-    /// copy that is still there is left alone.
+    /// copy that is still there is left alone, and so is one on a drive that isn't there now (a USB stick, a network
+    /// drive). Returns what it removed.
     /// </summary>
-    static void RemoveStartupEntries(string folder)
+    static List<StartupEntry> RemoveStartupEntries(string folder)
     {
+        var removed = new List<StartupEntry>();
         try
         {
             using var run = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
-            if (run == null) return;
+            if (run == null) return removed;
             using var approved = Registry.CurrentUser.OpenSubKey(StartupApprovedRunKeyPath, writable: true);
             foreach (string name in RunValues)
             {
                 if (run.GetValue(name) is not string cmd) continue;
-                bool gone = ProgramOf(cmd) is { } program && Path.GetFileName(program).Equals(ExeName, StringComparison.OrdinalIgnoreCase) && !File.Exists(program);
-                if (!gone && !PointsInto(cmd, folder)) continue;
+                bool gone = ProgramOf(cmd) is { } program && Path.GetFileName(program).Equals(ExeName, StringComparison.OrdinalIgnoreCase)
+                            && !File.Exists(program) && Path.GetPathRoot(program) is { Length: > 0 } root && Directory.Exists(root);
+                if (!gone && !RunsProgramIn(cmd, folder)) continue;
+                var state = approved?.GetValue(name) as byte[];
                 run.DeleteValue(name, false);
                 approved?.DeleteValue(name, false);
+                removed.Add(new StartupEntry(name, cmd, state));
             }
         }
         catch (Exception ex) { Log(ex); }
+        return removed;
     }
+
+    /// <summary>
+    /// Whether a command runs this program's file in <paramref name="folder"/>: the program it names, compared as a full
+    /// path (not as text, so another spelling of the same folder matches and a copy in a subfolder doesn't).
+    /// </summary>
+    internal static bool RunsProgramIn(string command, string folder)
+        => ProgramOf(command) is { } program && SamePath(program, Path.Combine(folder, ExeName));
 
     /// <summary>The program a start-up command runs: its quoted first part, or the text up to ".exe".</summary>
     static string? ProgramOf(string command)
@@ -451,15 +623,16 @@ internal static partial class Setup
     /// false) closes only a copy started from <paramref name="exe"/>. A copy counts as closed when its process has ended,
     /// not when its window goes (it still saves the index then, and holds the single-instance mutex).
     /// </summary>
-    static void CloseRunning(string exe, bool force, bool anyFolder)
+    static void CloseRunning(string exe, bool force, bool anyFolder, int exceptPid = 0)
     {
         int self = Environment.ProcessId;
         var seen = new Dictionary<int, Process>();
         List<Process> Running()
         {
+            // exceptPid: the copy without rights that started this elevated half and waits for it.
             foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(ExeName)))
-                if (p.Id != self && SamePath(ImagePath(p) ?? "", exe)) seen.TryAdd(p.Id, p);
-            if (anyFolder && Program.RunningInstanceId() is int pid && pid != self && !seen.ContainsKey(pid))
+                if (p.Id != self && p.Id != exceptPid && SamePath(ImagePath(p) ?? "", exe)) seen.TryAdd(p.Id, p);
+            if (anyFolder && Program.RunningInstanceId() is int pid && pid != self && pid != exceptPid && !seen.ContainsKey(pid))
             {
                 try { seen.Add(pid, Process.GetProcessById(pid)); } catch (ArgumentException) { /* just exited */ }
             }
@@ -467,6 +640,16 @@ internal static partial class Setup
         }
         var running = Running();
         if (running.Count == 0) return;
+        // A copy in another signed-in account's session can't be asked to close from here, and isn't killed: its
+        // user would lose what it hadn't saved.
+        int session = Process.GetCurrentProcess().SessionId;
+        void StopForOtherSessions(List<Process> list)
+        {
+            if (list.Any(p => SessionOf(p) is int s && s != session))
+                throw new InvalidOperationException("Ultimate File Explorer is running in another account that is signed in on this PC. " +
+                    "Close it there, or sign that account out, then uninstall again.");
+        }
+        StopForOtherSessions(running);
         Program.ForwardToRunning(["-exit"]);
         var sw = Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < 60_000)
@@ -475,8 +658,15 @@ internal static partial class Setup
             running = Running();
             if (running.Count == 0) return;
         }
+        StopForOtherSessions(running);
         if (!force) throw new InvalidOperationException("Ultimate File Explorer is still running. Close it and try again.");
         foreach (var p in running) { try { p.Kill(); p.WaitForExit(5000); } catch (Exception) { } }
+    }
+
+    static int? SessionOf(Process p)
+    {
+        try { return p.SessionId; }
+        catch (Exception) { return null; }
     }
 
     static bool IsAlive(Process p)
@@ -537,7 +727,7 @@ internal static partial class Setup
         try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
-    static void Log(Exception ex)
+    internal static void Log(Exception ex)
     {
         try
         {

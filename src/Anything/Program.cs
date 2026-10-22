@@ -23,7 +23,8 @@ static class Program
         // The Rock Preview service and its one-time install (IndexService): no windows.
         if (args.Length > 0 && args[0].TrimStart('-', '/').Equals("service", StringComparison.OrdinalIgnoreCase)) return IndexService.RunAsService();
         if (args.Any(a => a.TrimStart('-', '/').Equals("installservice", StringComparison.OrdinalIgnoreCase))) return InstallServiceCommand(args);
-        if (args.Any(a => a.TrimStart('-', '/').Equals("uninstallservice", StringComparison.OrdinalIgnoreCase))) return UninstallServiceCommand();
+        if (args.Any(a => a.TrimStart('-', '/').Equals("uninstallservice", StringComparison.OrdinalIgnoreCase)))
+            return UninstallServiceCommand(quiet: args.Any(a => a.TrimStart('-', '/').Equals("quiet", StringComparison.OrdinalIgnoreCase)));
 
         // The single-file build is also the installer: "RockPreview-Setup.exe", -install, -uninstall.
         if (Setup.IsSetupLaunch(args)) return Setup.Run(args);
@@ -62,9 +63,8 @@ static class Program
             ApplicationConfiguration.Initialize();
             AppSettings.MigrateFromAnything(cmd.Demo); // the app used to be called "Anything"
             // Theme must be chosen before any window exists; the full settings load happens in AnythingApp.Create.
-            string theme = AppSettings.Load(AppSettings.DefaultPath(cmd.Demo)).Theme;
-            Application.SetColorMode(AppSettings.ColorModeFor(theme));
-            SetShellColorMode(theme);
+            Application.SetColorMode(AppSettings.ColorModeFor(AppSettings.Load(AppSettings.DefaultPath(cmd.Demo)).Theme));
+            SetShellColorMode();
             ToolStripManager.Renderer = new ExplorerRenderer(); // command bar, status bar and every menu look like File Explorer's
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += (_, e) => ReportError(e.Exception, fatal: false);
@@ -155,13 +155,15 @@ static class Program
         }
     }
 
-    static int UninstallServiceCommand()
+    /// <summary>-uninstallservice [-quiet]: with -quiet (the uninstall, which says it itself) no message on failure.</summary>
+    static int UninstallServiceCommand(bool quiet)
     {
         if (!IsElevated()) return 5;
         try { IndexService.Uninstall(); return 0; }
         catch (Exception ex)
         {
-            MessageBox.Show($"Ultimate File Explorer couldn't remove its service.\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            if (quiet) Setup.Log(ex); // the uninstall says it couldn't, and the reason is in the setup log
+            else MessageBox.Show($"Ultimate File Explorer couldn't remove its service.\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
     }
@@ -242,10 +244,16 @@ static class Program
             Marshal.Copy(bytes, 0, mem, bytes.Length);
             Marshal.WriteInt16(mem, bytes.Length, 0);
             var cds = new Native.COPYDATASTRUCT { dwData = CopyDataMagic, cbData = bytes.Length, lpData = mem };
-            Native.SendMessage(hwnd, Native.WM_COPYDATA, IntPtr.Zero, ref cds);
+            // Not forever: a copy whose window has stopped responding mustn't hang this one (an uninstall then goes on to
+            // its own wait and, if it must, ends that copy).
+            SendMessageTimeout(hwnd, Native.WM_COPYDATA, IntPtr.Zero, ref cds, SMTO_ABORTIFHUNG, 10_000, out _);
         }
         finally { Marshal.FreeHGlobal(mem); }
     }
+
+    const uint SMTO_ABORTIFHUNG = 0x0002;
+    [DllImport("user32.dll")]
+    static extern IntPtr SendMessageTimeout(IntPtr hWnd, int msg, IntPtr wParam, ref Native.COPYDATASTRUCT lParam, uint flags, uint timeout, out IntPtr result);
 
     const uint SEM_FAILCRITICALERRORS = 0x0001, SEM_NOOPENFILEERRORBOX = 0x8000;
 
@@ -255,17 +263,26 @@ static class Program
     static extern uint GetErrorMode();
 
     /// <summary>
-    /// Windows' own parts of the app (the folder view, its context menus and scroll bars) follow the app's theme, as
-    /// File Explorer's do. Without it the folder view stayed white with the app and Windows both dark. A theme change
-    /// restarts the app, so once at start is enough. SetPreferredAppMode is uxtheme's undocumented ordinal 135
-    /// (Windows 10 1903 and later); without it nothing changes.
+    /// Windows' own parts of the app (the folder view, its context menus and scroll bars) follow the theme the app draws
+    /// in, as File Explorer's do. Without it the folder view stayed white with the app and Windows both dark. That is the
+    /// theme WinForms chose, not the setting: "Follow Windows" draws light on Windows 10, where WinForms has no dark mode.
+    /// A theme change restarts the app, so once at start is enough. Uxtheme's undocumented ordinal 135 is
+    /// SetPreferredAppMode from Windows 10 1903 (build 18362) and AllowDarkModeForApp(bool) on 1809 (build 17763), so it
+    /// is called by the signature that build has; earlier builds don't have it, and nothing changes there.
     /// </summary>
-    static void SetShellColorMode(string theme)
+    static void SetShellColorMode()
     {
-        try { SetPreferredAppMode(theme switch { "dark" => 2 /* ForceDark */, "system" => 1 /* AllowDark */, _ => 3 /* ForceLight */ }); }
+        int build = Environment.OSVersion.Version.Build;
+        try
+        {
+            if (build >= 18362) SetPreferredAppMode(Application.IsDarkModeEnabled ? 2 /* ForceDark */ : 3 /* ForceLight */);
+            else if (build >= 17763) AllowDarkModeForApp(Application.IsDarkModeEnabled);
+        }
         catch (EntryPointNotFoundException) { }
     }
 
     [DllImport("uxtheme.dll", EntryPoint = "#135")]
     static extern int SetPreferredAppMode(int mode);
+    [DllImport("uxtheme.dll", EntryPoint = "#135")]
+    static extern bool AllowDarkModeForApp([MarshalAs(UnmanagedType.Bool)] bool allow);
 }
