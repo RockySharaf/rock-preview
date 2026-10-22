@@ -70,25 +70,25 @@ internal static class ExplorerReplacement
     public static bool IsEnabled() => RegisteredExe() is not null;
 
     /// <summary>
-    /// Whether this user's folders, drives, This PC or Win+E still run a program in <paramref name="folder"/> (as the
+    /// Whether this user's folders, drives, This PC or Win+E still run the program file <paramref name="exe"/> (as the
     /// default action or not). The uninstall must not delete that program while they do: every folder would then fail
     /// with "Application not found".
     /// </summary>
-    public static bool References(string folder)
+    public static bool References(string exe)
     {
         using var classes = Registry.CurrentUser.OpenSubKey(Classes.TrimEnd('\\'));
-        return classes is not null && References(classes, folder);
+        return classes is not null && References(classes, exe);
     }
 
     /// <summary>
-    /// The other Windows accounts whose folders, drives, This PC or Win+E run the program in <paramref name="folder"/>, or
+    /// The other Windows accounts whose folders, drives, This PC or Win+E run the program file <paramref name="exe"/>, or
     /// whose settings couldn't be checked (counted too, so the program isn't deleted under them), with their names (null
     /// when Windows can't name the account now: a work account away from its network, say) and profile folders. A
     /// signed-in account's registry classes are loaded under HKEY_USERS; a signed-out one's are read from its UsrClass.dat.
     /// Both need administrator rights. Accounts in <paramref name="except"/> (SIDs) are skipped, and so is a signed-out
     /// local account that was deleted from this PC (UninstallRules.IsRemovedLocalAccount): it never signs in again.
     /// </summary>
-    public static List<OtherAccount> OtherAccountsUsing(string folder, IEnumerable<string?> except)
+    public static List<OtherAccount> OtherAccountsUsing(string exe, IEnumerable<string?> except)
     {
         var skip = new HashSet<string>(except.OfType<string>(), StringComparer.OrdinalIgnoreCase);
         var found = new List<OtherAccount>();
@@ -103,7 +103,7 @@ internal static class ExplorerReplacement
             try
             {
                 using var classes = Registry.Users.OpenSubKey(hive);
-                if (classes is not null && References(classes, folder)) found.Add(new(sid, Identify(sid).Name, ProfileOf(profiles, sid), AccountUse.UsesIt));
+                if (classes is not null && References(classes, exe)) found.Add(new(sid, Identify(sid).Name, ProfileOf(profiles, sid), AccountUse.UsesIt));
             }
             catch (Exception) { found.Add(new(sid, Identify(sid).Name, ProfileOf(profiles, sid), AccountUse.CouldNotCheck)); }
         }
@@ -126,7 +126,7 @@ internal static class ExplorerReplacement
                 try
                 {
                     using var classes = RegistryKey.FromHandle(handle);
-                    if (References(classes, folder)) use = AccountUse.UsesIt;
+                    if (References(classes, exe)) use = AccountUse.UsesIt;
                 }
                 catch (Exception) { use = AccountUse.CouldNotCheck; }
             }
@@ -183,12 +183,12 @@ internal static class ExplorerReplacement
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
     static extern int RegLoadAppKey(string file, out Microsoft.Win32.SafeHandles.SafeRegistryHandle key, int access, int options, int reserved);
 
-    static bool References(RegistryKey classes, string folder)
+    static bool References(RegistryKey classes, string exe)
     {
         foreach (var cls in FolderClasses)
-            if (CommandAt(classes, cls.Key + $@"\shell\{Verb}\command") is { } command && Setup.RunsProgramIn(command, folder)) return true;
+            if (CommandAt(classes, cls.Key + $@"\shell\{Verb}\command") is { } command && UninstallRules.RunsProgram(command, exe)) return true;
         foreach (var c in Commands)
-            if (CommandAt(classes, $@"CLSID\{c.Clsid}\shell\{c.VerbName}\command") is { } command && IsOurCommand(command) && Setup.RunsProgramIn(command, folder)) return true;
+            if (CommandAt(classes, $@"CLSID\{c.Clsid}\shell\{c.VerbName}\command") is { } command && IsOurCommand(command) && UninstallRules.RunsProgram(command, exe)) return true;
         return false;
     }
 

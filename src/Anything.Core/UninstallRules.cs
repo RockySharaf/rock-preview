@@ -12,12 +12,21 @@ public enum AccountUse { UsesIt, CouldNotCheck }
 public sealed record OtherAccount(string Sid, string? Name, string? Profile, AccountUse Use);
 
 /// <summary>
+/// Whom the instant-indexing service (one for the whole PC) answers, seen from this user: not them (or it isn't installed,
+/// or its list couldn't be read), only them, or them and other accounts.
+/// </summary>
+public enum ServiceFor { NotThisUser, OnlyThisUser, ThisUserAndOthers }
+
+/// <summary>
 /// The uninstall's decisions and words that need nothing from Windows, so they are tested: which running copies stop it,
-/// which accounts can't, what it tells the user about those accounts, and what Settings › About says about a copy that
-/// isn't installed.
+/// which accounts can't, what it tells the user about those accounts, whose the instant-indexing service is, and what
+/// Settings › About says about a copy that isn't installed.
 /// </summary>
 public static class UninstallRules
 {
+    /// <summary>Said when Remove from this PC leaves the instant-indexing service because other accounts use it too.</summary>
+    public const string ServiceStays = "The instant-indexing service stays: other accounts on this PC use it too.";
+
     /// <summary>
     /// Whether a copy running in session <paramref name="copySession"/> stops a caller in <paramref name="callerSession"/>:
     /// only a copy in another signed-in user's session, which can't be asked to close from here and isn't ended (its user
@@ -69,22 +78,66 @@ public static class UninstallRules
     }
 
     /// <summary>
+    /// Whether a start-up or folder command runs the program file <paramref name="exe"/>: the program it names, compared as
+    /// a full path (not as text, so another spelling of the same file matches, and a copy in a subfolder or another file in
+    /// the same folder doesn't). Settings point at the running copy's own file, whatever it is called (a second download's
+    /// "RockPreview (1).exe", a copy renamed UFE.exe), so that file is what is looked for.
+    /// </summary>
+    public static bool RunsProgram(string command, string exe)
+    {
+        if (ProgramOf(command) is not { } program) return false;
+        try { return string.Equals(Path.GetFullPath(program).TrimEnd('\\'), Path.GetFullPath(exe).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase); }
+        catch (Exception) { return false; }
+    }
+
+    /// <summary>The program a start-up or folder command runs: its quoted first part, or the text up to ".exe".</summary>
+    public static string? ProgramOf(string command)
+    {
+        command = command.Trim();
+        if (command.StartsWith('"')) return command.IndexOf('"', 1) is int end and > 1 ? command[1..end] : null;
+        int exe = command.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+        return exe > 0 ? command[..(exe + 4)] : null;
+    }
+
+    /// <summary>
+    /// Whom the instant-indexing service answers, from its list of allowed users (SIDs) and this user's SID (<paramref
+    /// name="me"/>, null when unknown). Remove from this PC removes the service only when it is this user's alone: another
+    /// account's copy (an install of its own, which this user can't see) may depend on it.
+    /// </summary>
+    public static ServiceFor ServiceIsFor(IEnumerable<string> allowedUsers, string? me)
+    {
+        if (string.IsNullOrEmpty(me)) return ServiceFor.NotThisUser;
+        bool mine = false, others = false;
+        foreach (string sid in allowedUsers)
+        {
+            if (string.Equals(sid, me, StringComparison.OrdinalIgnoreCase)) mine = true;
+            else others = true;
+        }
+        return !mine ? ServiceFor.NotThisUser : others ? ServiceFor.ThisUserAndOthers : ServiceFor.OnlyThisUser;
+    }
+
+    /// <summary>
     /// Settings › About's Uninstall card for a copy that isn't installed (running from <paramref name="folder"/>): what it
     /// set up in Windows for this user, which Remove from this PC turns off while the program stays; or, when it set up
-    /// nothing, that deleting it is all there is to do.
+    /// nothing, that deleting it is all there is to do. The instant-indexing service counts only when it is this user's
+    /// alone; when other accounts use it too, it is said to stay.
     /// </summary>
-    public static string NotInstalledCardText(bool takeover, bool startsWithWindows, bool service, string folder)
+    public static string NotInstalledCardText(bool takeover, bool startsWithWindows, ServiceFor service, string folder)
     {
         var parts = new List<string>();
         if (takeover) parts.Add("folders and Win+E open with it");
         if (startsWithWindows) parts.Add("it starts with Windows");
-        if (service) parts.Add("the instant-indexing service is installed");
+        if (service == ServiceFor.OnlyThisUser) parts.Add("the instant-indexing service is installed");
+        string stays = service == ServiceFor.ThisUserAndOthers ? " " + ServiceStays : "";
         if (parts.Count == 0)
-            return "Ultimate File Explorer isn't installed on this PC: this copy runs on its own and hasn't set anything up in " +
-                   "Windows, so deleting it removes it (your settings and search index stay in the Rock Preview folders in AppData).";
+            return service == ServiceFor.ThisUserAndOthers
+                ? "Ultimate File Explorer isn't installed on this PC: this copy runs on its own, so deleting it removes it (your " +
+                  $"settings and search index stay in the Rock Preview folders in AppData).{stays}"
+                : "Ultimate File Explorer isn't installed on this PC: this copy runs on its own and hasn't set anything up in " +
+                  "Windows, so deleting it removes it (your settings and search index stay in the Rock Preview folders in AppData).";
         string list = parts.Count == 1 ? parts[0] : string.Join(", ", parts.Take(parts.Count - 1)) + " and " + parts[^1];
         return $"Ultimate File Explorer isn't installed on this PC, but this copy set Windows up for it: {list}. Remove from this PC " +
-               $"turns that off and keeps the program in {folder}, so deleting it afterwards leaves nothing pointing at it. " +
+               $"turns that off and keeps the program in {folder}, so deleting it afterwards leaves nothing pointing at it.{stays} " +
                "Your files are not affected.";
     }
 }

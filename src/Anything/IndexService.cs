@@ -154,6 +154,12 @@ internal static class IndexService
         key.SetValue(AllowedUsersValue, users.ToArray(), RegistryValueKind.MultiString);
     }
 
+    /// <summary>
+    /// The SIDs of the users the service answers: one service for the whole PC, which other accounts' copies may use too.
+    /// Anyone can read the list; empty when it can't be read.
+    /// </summary>
+    public static List<string> AllowedUserSids() => AllowedUsers().ConvertAll(user => user.Value);
+
     static List<SecurityIdentifier> AllowedUsers()
     {
         var list = new List<SecurityIdentifier>();

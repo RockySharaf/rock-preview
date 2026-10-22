@@ -647,13 +647,15 @@ internal sealed partial class SettingsForm : Form
     /// </summary>
     async void RefreshUninstallCard()
     {
-        if (_uninstallCard is null || _uninstallButton is null || Path.GetDirectoryName(Environment.ProcessPath) is not { Length: > 0 } own) return;
+        if (_uninstallCard is null || _uninstallButton is null || Environment.ProcessPath is not { } exe
+            || Path.GetDirectoryName(exe) is not { Length: > 0 } own) return;
         int look = ++_uninstallLook;
-        // The installed copy this one is first (the one in use when both a just-me and an everyone install exist).
+        // The installed copy this one is first (the one in use when both a just-me and an everyone install exist). A copy
+        // that isn't installed is looked for by its own file, whatever it is called: its settings point at that file.
         var (installed, footprint) = await Task.Run(() =>
         {
             var inst = Setup.FindInstalled(own) ?? Setup.FindInstalled();
-            return (inst, inst is null ? Setup.FootprintOf(own) : null);
+            return (inst, inst is null ? Setup.FootprintOf(exe) : null);
         });
         if (IsDisposed || look != _uninstallLook) return;
         bool portable = installed is null && footprint is { Any: true };
@@ -665,7 +667,8 @@ internal sealed partial class SettingsForm : Form
         _uninstallCard.SetDescription(installed is not null
             ? "Removes Ultimate File Explorer from this PC: the program, its shortcuts, start with Windows and the instant-indexing " +
               "service, and gives folders and Win+E back to File Explorer. Your files are not affected."
-            : UninstallRules.NotInstalledCardText(footprint?.Takeover == true, footprint?.StartsWithWindows == true, footprint?.Service == true, own));
+            : UninstallRules.NotInstalledCardText(footprint?.Takeover == true, footprint?.StartsWithWindows == true,
+                footprint?.Service ?? ServiceFor.NotThisUser, own));
     }
 
     void Uninstall(string folder, bool portable)
@@ -684,7 +687,7 @@ internal sealed partial class SettingsForm : Form
                 Caption = Text,
                 Heading = $"{what} couldn't be started",
                 Text = portable
-                    ? $"Before deleting {Setup.ExeName}, turn off Use instead of Windows File Explorer and Start when Windows starts in Settings › General."
+                    ? $"Before deleting {Path.GetFileName(Environment.ProcessPath) ?? Setup.ExeName}, turn off Use instead of Windows File Explorer and Start when Windows starts in Settings › General."
                     : "Uninstall Ultimate File Explorer from Settings › Apps instead.",
                 Icon = TaskDialogIcon.Error,
             });
