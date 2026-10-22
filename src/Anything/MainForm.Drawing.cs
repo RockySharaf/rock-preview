@@ -36,7 +36,7 @@ internal sealed partial class MainForm
                     | (e.Header?.TextAlign == HorizontalAlignment.Right ? TextFormatFlags.Right : TextFormatFlags.Left);
         var textRect = Rectangle.FromLTRB(r.Left + pad, r.Top, r.Right - pad, r.Bottom);
         TextRenderer.DrawText(g, e.Header?.Text ?? "", _list.Font, textRect, Color.FromArgb(0xDE, 0xDE, 0xDE), flags);
-        if (e.Header?.Tag is ColumnDef def && def.Sort == _sort)
+        if (e.Header?.Tag is ColumnDef def && def.Sortable && def.Sort == _sort)
         {
             // Explorer-style chevron centred at the top of the sorted column.
             int cx = r.Left + r.Width / 2, h = LogicalToDeviceUnits(3), w = LogicalToDeviceUnits(4), top = r.Top + LogicalToDeviceUnits(1);
@@ -70,6 +70,12 @@ internal sealed partial class MainForm
         Color back = _list.BackColor, fore = _list.ForeColor;
         if (selected) (back, fore) = SelectionColors(_list.Focused);
         using (var brush = new SolidBrush(back)) g.FillRectangle(brush, cell);
+        if (StartsContentMatches(e.ItemIndex))
+        {
+            // Above the first result matched only inside files: those matched by name come first.
+            using var line = new Pen(ExplorerTheme.Accent, Math.Max(1, LogicalToDeviceUnits(1)));
+            g.DrawLine(line, cell.Left, cell.Top, cell.Right, cell.Top);
+        }
         if (row is null || def is null) return;
 
         int pad = LogicalToDeviceUnits(4);
@@ -90,6 +96,11 @@ internal sealed partial class MainForm
 
         var rect = Rectangle.FromLTRB(textLeft, cell.Top, cell.Right - pad, cell.Bottom);
         if (rect.Width <= 0) return;
+        if (def.Key == "content")
+        {
+            DrawContentCell(g, row, rect, fore, selected);
+            return;
+        }
         string text = row.Text(def);
         if (text.Length == 0) return;
         var font = _list.Font;

@@ -2,7 +2,10 @@ using Anything.Core;
 
 namespace Anything;
 
-internal sealed record ColumnDef(string Key, string Title, SortKey Sort, int DefaultWidth, bool DefaultVisible, int DefaultPosition, HorizontalAlignment Align);
+/// <param name="Sortable">Clicking its header sorts by <paramref name="Sort"/>; false for the Matching text column.</param>
+/// <param name="MenuTitle">How the header menu names it, when that says more than the header (null: the title).</param>
+internal sealed record ColumnDef(string Key, string Title, SortKey Sort, int DefaultWidth, bool DefaultVisible, int DefaultPosition, HorizontalAlignment Align,
+    bool Sortable = true, string? MenuTitle = null);
 
 internal static class Columns
 {
@@ -22,10 +25,15 @@ internal static class Columns
         new("date_recently_changed", "Date Recently Changed", SortKey.DateRecentlyChanged, 140, false, 9, HorizontalAlignment.Left),
         new("run_count", "Run Count", SortKey.RunCount, 80, false, 10, HorizontalAlignment.Right),
         new("date_run", "Date Run", SortKey.DateRun, 140, false, 11, HorizontalAlignment.Left),
+        // The line each result matched inside the file. Shown while search inside files is on and the window's Search ›
+        // Match inside files is (the header menu's tick means "allowed"); position 0 puts it right of Name. Not sortable:
+        // results matched by name come first, then those matched only inside files.
+        new("content", "Matching text", SortKey.Name, 360, true, 0, HorizontalAlignment.Left, Sortable: false,
+            MenuTitle: "Matching text (when words match inside files)"),
     ];
 
     public const int Name = 0, Path = 1, Size = 2, Extension = 3, Type = 4, DateModified = 5, DateCreated = 6, Attributes = 7,
-        DateAccessed = 8, DateRecentlyChanged = 9, RunCount = 10, DateRun = 11;
+        DateAccessed = 8, DateRecentlyChanged = 9, RunCount = 10, DateRun = 11, Content = 12;
 
     public static string SortTitle(SortKey k) => k switch
     {

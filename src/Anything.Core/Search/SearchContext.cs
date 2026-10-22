@@ -75,6 +75,16 @@ internal sealed class SearchContext
     /// <summary>Run history by id, once <see cref="Prepare"/> has run with <see cref="NeedRuns"/>.</summary>
     public RunLookup? Runs { get; private set; }
     public bool Dupe { get; set; }
+    /// <summary>The query's content terms, resolved before the lock (null = it never looks inside files).</summary>
+    internal Content.Search.ContentPrefetch? Content { get; set; }
+    /// <summary>Ids of the prefetch view's documents in this index (null = none, or stale).</summary>
+    internal Content.DocIdMap? ContentMap { get; set; }
+    /// <summary>Some plain word also matches inside files (results are split: name matches first).</summary>
+    internal bool ContentExpanded { get; set; }
+    /// <summary>The id map doesn't cover every matching document (a cleared index, segments newer than the map).</summary>
+    internal bool ContentStale { get; set; }
+    /// <summary>While set, plain words test names only (the name-first partition re-tests the same matcher).</summary>
+    internal bool NameOnlyPass;
     public int[]? ChildFiles { get; private set; }
     public int[]? ChildFolders { get; private set; }
 

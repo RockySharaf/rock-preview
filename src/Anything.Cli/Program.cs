@@ -24,6 +24,7 @@ for (int i = 0; i < args.Length; i++)
         case "-w" or "-ww" or "-whole-word": opts = opts with { MatchWholeWord = true }; break;
         case "-p" or "-match-path": opts = opts with { MatchPath = true }; break;
         case "-a" or "-diacritics": opts = opts with { MatchDiacritics = true }; break;
+        case "-c" or "-match-content": opts = opts with { MatchContent = true }; break;
         case "-r" or "-regex": opts = opts with { Regex = true }; query.Add(Next()); break;
         case "-n" or "-max-results": max = int.Parse(Next(), CultureInfo.InvariantCulture); break;
         case "-o" or "-offset": offset = int.Parse(Next(), CultureInfo.InvariantCulture); break;
@@ -61,14 +62,18 @@ if (loaded is null)
 index.Configure(dateAccessed: loaded.Any(r => r.HasDateAccessed), folderSizes: folderSizes, recentChanges: false);
 // The app's run history (runcount:, dr:), from beside its settings.
 index.RunHistory.Load(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Rock Preview", "Run History.csv"));
+// The text index beside the database (search inside files), read only: content:, picture details, -match-content.
+Anything.Core.Content.ContentServices.AttachForSearch(index, Anything.Core.Content.ContentServices.FolderFor(db));
 
-var engine = Services.CreateSearchEngine();
+// One search and done: plain words wait for their lookups inside files (a window would search again when they finish).
+var engine = Services.CreateSearchEngine(contentBudget: TimeSpan.MaxValue);
 var results = engine.Search(index, string.Join(' ', query), opts, sort, descending, CancellationToken.None);
 if (results.Error is { } err)
 {
     Console.Error.WriteLine(err);
     return 1;
 }
+if (results.ContentPending) Console.Error.WriteLine("Some matches inside files may be missing: the text index wasn't ready for part of this search.");
 if (countOnly)
 {
     Console.WriteLine(results.Ids.Length);
@@ -99,6 +104,7 @@ static void PrintHelp() => Console.WriteLine("""
 
       -i, -case            match case            -w, -ww           match whole words
       -p, -match-path      match full path       -a, -diacritics   match diacritics
+      -c, -match-content   plain words also match words inside files (when the app's search inside files is on)
       -r, -regex <regex>   regex search          -path <folder>    limit to a folder
       -n, -max-results <n> limit results         -o, -offset <n>   skip results
       -s, -sort-path       sort by path          -sort <key>       name|path|size|extension|type|date-modified|date-created|
@@ -107,4 +113,8 @@ static void PrintHelp() => Console.WriteLine("""
       -run-count           also print run count and date run      -folder-sizes   folders get the size of everything in them
       -count               print only the number of results
       -db <file>           database file (default %LOCALAPPDATA%\Rock Preview\RockPreview.db)
+
+    Search inside files (Settings > Indexing in the app): content:invoice, content:"annual report", title:, keywords:,
+    dpi:<300, cmyk:, width:>2000, datetaken:2024, camera:canon, contentstatus:failed ... read the text index in the
+    Content folder beside the database, as the app last committed it.
     """);

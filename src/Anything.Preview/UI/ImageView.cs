@@ -30,6 +30,7 @@ internal sealed class ImageView : Control
     private Bitmap? _scaled;               // owned: HQ downscaled copy of the current frame
     private Size _scaledFor;
     private Bitmap? _scaledSource;
+    private IReadOnlyList<RectangleF>? _overlay; // match boxes in 0..1 of the image
 
     public event EventHandler? ZoomChanged;
 
@@ -48,10 +49,12 @@ internal sealed class ImageView : Control
     public bool IsFit => _fit;
     public float CurrentZoom => _image == null ? 1 : Effective(out _);
 
+    /// <summary>Shows an image; match boxes of the previous one are cleared.</summary>
     public void SetImage(Bitmap? image, IReadOnlyList<Bitmap>? frames = null, IReadOnlyList<int>? delays = null, bool alpha = false, bool keepZoom = false)
     {
         _anim.Stop();
         _image = image;
+        _overlay = null;
         _frames = frames is { Count: > 1 } ? frames : null;
         _delays = delays;
         _frame = 0;
@@ -69,6 +72,50 @@ internal sealed class ImageView : Control
     }
 
     public void Clear() => SetImage(null);
+
+    /// <summary>
+    /// Draws boxes over the image (where a search matched on a PDF page), as rectangles in 0..1 of the shown image with the
+    /// origin top-left, in translucent accent; they follow zoom and pan. Null or empty removes them. The boxes come from a
+    /// walk of an untrusted file, so only boxes with finite numbers and a size are kept, cut to the image (plus a sliver).
+    /// </summary>
+    public void SetOverlay(IReadOnlyList<RectangleF>? boxes)
+    {
+        List<RectangleF>? kept = null;
+        if (boxes != null)
+        {
+            foreach (var b in boxes)
+            {
+                if (OnImage(b) is not { } box) continue;
+                (kept ??= new()).Add(box);
+                if (kept.Count >= MaxOverlayBoxes) break;
+            }
+        }
+        _overlay = kept;
+        Invalidate();
+    }
+
+    // Boxes may stick out of the image this much (in 0..1 of it); more is cut off.
+    private const float OverlayMargin = 0.01f;
+    private const int MaxOverlayBoxes = 2000;
+
+    /// <summary>The part of a box on the image (plus the margin); null when it has none, or isn't made of finite numbers.</summary>
+    internal static RectangleF? OnImage(RectangleF b)
+    {
+        double x0 = b.X, y0 = b.Y, x1 = x0 + b.Width, y1 = y0 + b.Height;
+        if (!double.IsFinite(x0) || !double.IsFinite(y0) || !double.IsFinite(x1) || !double.IsFinite(y1) || !(b.Width > 0) || !(b.Height > 0)) return null;
+        x0 = Math.Max(x0, -OverlayMargin);
+        y0 = Math.Max(y0, -OverlayMargin);
+        x1 = Math.Min(x1, 1 + OverlayMargin);
+        y1 = Math.Min(y1, 1 + OverlayMargin);
+        if (!(x1 > x0 && y1 > y0)) return null;
+        return new RectangleF((float)x0, (float)y0, (float)(x1 - x0), (float)(y1 - y0));
+    }
+
+    /// <summary>Match boxes are shown.</summary>
+    public bool HasOverlay => _overlay != null;
+
+    /// <summary>Match boxes kept for drawing (diagnostics).</summary>
+    internal int OverlayCount => _overlay?.Count ?? 0;
 
     public void ZoomToFit()
     {
@@ -168,6 +215,7 @@ internal sealed class ImageView : Control
             g.CompositingMode = CompositingMode.SourceOver;
             g.InterpolationMode = InterpolationMode.NearestNeighbor;
             g.DrawImageUnscaled(_scaled, destI.Location);
+            DrawOverlay(g, dest);
             return;
         }
         g.InterpolationMode = z >= 3f ? InterpolationMode.NearestNeighbor : z > 1.001f ? InterpolationMode.HighQualityBicubic : InterpolationMode.Bilinear;
@@ -183,6 +231,45 @@ internal sealed class ImageView : Control
             if (vis.Width <= 0 || vis.Height <= 0) return;
             var src = new RectangleF((vis.X - dest.X) / z, (vis.Y - dest.Y) / z, vis.Width / z, vis.Height / z);
             g.DrawImage(bmp, vis, src, GraphicsUnit.Pixel);
+        }
+        DrawOverlay(g, dest);
+    }
+
+    /// <summary>
+    /// The match boxes through the same mapping as the image (DestRect), at least a few pixels so a small word shows, and
+    /// cut to the view: GDI+ throws for coordinates far outside it, and a paint that throws leaves the shared view a red X.
+    /// </summary>
+    private void DrawOverlay(Graphics g, RectangleF dest)
+    {
+        if (_overlay == null) return;
+        var mode = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.None;
+        g.PixelOffsetMode = PixelOffsetMode.Default;
+        // A little larger than the view, so the edge of a box cut here is drawn outside it.
+        var view = RectangleF.Inflate(ClientRectangle, 4, 4);
+        try
+        {
+            using var fill = new SolidBrush(Color.FromArgb(90, 255, 190, 0));
+            using var edge = new Pen(Color.FromArgb(220, 235, 130, 0));
+            foreach (var b in _overlay)
+            {
+                var r = new RectangleF(dest.X + b.X * dest.Width, dest.Y + b.Y * dest.Height, b.Width * dest.Width, b.Height * dest.Height);
+                if (r.Width < 4) r.Inflate((4 - r.Width) / 2, 0);
+                if (r.Height < 4) r.Inflate(0, (4 - r.Height) / 2);
+                r.Inflate(1, 1);
+                r.Intersect(view);
+                if (!(r.Width > 0 && r.Height > 0)) continue;
+                g.FillRectangle(fill, r);
+                g.DrawRectangle(edge, r.X, r.Y, r.Width, r.Height);
+            }
+        }
+        catch (Exception e) when (e is OverflowException or System.Runtime.InteropServices.ExternalException or ArgumentException)
+        {
+            // A box GDI+ can't draw: the page is still shown, without it.
+        }
+        finally
+        {
+            g.SmoothingMode = mode;
         }
     }
 

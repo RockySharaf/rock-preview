@@ -11,7 +11,7 @@ namespace Anything;
 /// indexed (drives, folders, what to leave out) go to the index once, when the window closes; it adds or drops only
 /// what changed, so searches keep working meanwhile.
 /// </summary>
-internal sealed class SettingsForm : Form
+internal sealed partial class SettingsForm : Form
 {
     readonly AnythingApp _app;
     readonly ListBox _nav = new() { Dock = DockStyle.Left, BorderStyle = BorderStyle.None, DrawMode = DrawMode.OwnerDrawFixed, IntegralHeight = false };
@@ -108,6 +108,7 @@ internal sealed class SettingsForm : Form
             _rootsTimer.Stop();
             ApplyHotkey();
             if (_indexChanged) _app.ApplySettings(indexChanged: true);
+            if (_contentChanged) _app.ApplyContentSettings();
             _app.RegisterHotkey();
         };
     }
@@ -275,7 +276,8 @@ internal sealed class SettingsForm : Form
         Card("Match whole words", "\"port\" finds port, not report.", _wholeWord),
         Card("Match the full path", "Search words can match folder names on the way to a file.", _matchPath),
         Card("Match accents", "\"resume\" finds resume, not résumé.", _diacritics),
-        Card("Regular expressions", "Search with patterns like ^IMG_\\d+\\.jpg$.", _regex));
+        Card("Regular expressions", "Search with patterns like ^IMG_\\d+\\.jpg$.", _regex),
+        ContentSearchDefaultCard());
 
     PageStack IndexingPage()
     {
@@ -312,7 +314,7 @@ internal sealed class SettingsForm : Form
         runRows.Controls.Add(new SubRow("Bring in what Everything counted", import, detail: "Everything's Run History.csv, if it's on this PC."));
         runRows.Controls.Add(new SubRow("Forget every count", clear, detail: ""));
 
-        return Page("Indexing",
+        return Page("Indexing", [
             Card("Instant indexing", status, turnOn),
             Card("Index whole drives", "Search every drive. NTFS drives are read in seconds and kept up to date as files change; others are scanned.", _ntfs, _driveRows),
             Card("USB drives and memory cards",
@@ -328,7 +330,8 @@ internal sealed class SettingsForm : Form
                 "Remember files created, changed, moved or renamed: the Date Recently Changed column and rc:today.", _recentChanges, journalRow),
             Card("Run history",
                 "Count the files you open from the results: the Run Count and Date Run columns, runcount: and dr:.", _runHistory, runRows),
-            Card("Rebuild the index", "Scans everything again from the start.", CardButton("Rebuild now", () => { _indexChanged = false; _app.ApplySettings(indexChanged: true, rebuildIndex: true); })));
+            Card("Rebuild the index", "Scans everything again from the start.", CardButton("Rebuild now", () => { _indexChanged = false; _app.ApplySettings(indexChanged: true, rebuildIndex: true); })),
+            .. ContentCards()]);
     }
 
     void ImportRunHistory()
@@ -527,6 +530,7 @@ internal sealed class SettingsForm : Form
     /// </summary>
     void RefreshRoots()
     {
+        RefreshContent();
         if (_rootsTask is { IsCompleted: false } || IsDisposed || !IsHandleCreated) return;
         var index = _app.IndexManager;
         uint mask = Drives.LetterMask();
@@ -708,13 +712,17 @@ internal sealed class SettingsForm : Form
         _app.ApplySettings(indexChanged: false);
     }
 
-    /// <summary>What is indexed changed: saved now, handed to the index once when the window closes.</summary>
+    /// <summary>
+    /// What is indexed changed: saved now, handed to the index once when the window closes. Search inside files' cards
+    /// follow: what the name index holds is all that is ever read inside.
+    /// </summary>
     void IndexChanged()
     {
         if (_loading) return;
         _indexChanged = true;
         _app.Settings.Save();
         UpdateDriveRows();
+        UpdateContentCards();
     }
 
     /// <summary>
@@ -1086,7 +1094,7 @@ internal sealed class SettingsForm : Form
         protected override void OnLayout(LayoutEventArgs e)
         {
             foreach (Control c in Controls)
-                if (c is SubRow or NoteLabel) c.Size = new Size(ClientSize.Width, c.GetPreferredSize(new Size(ClientSize.Width, 0)).Height);
+                if (c is SubRow or NoteLabel or ActionNote) c.Size = new Size(ClientSize.Width, c.GetPreferredSize(new Size(ClientSize.Width, 0)).Height);
             base.OnLayout(e);
         }
 
@@ -1295,7 +1303,10 @@ internal sealed class SettingCard : Panel
         var desc = _description.Length == 0 ? Size.Empty : TextRenderer.MeasureText(_description, Small, new Size(textWidth, int.MaxValue), Wrap);
         int textHeight = title.Height + (desc.Height > 0 ? S(2) + desc.Height : 0);
         int header = Math.Max(Math.Max(textHeight, action.Height), S(40));
-        int top = padY + (header - textHeight) / 2;
+        // The text is centred on the action beside it. Without one, a title without a description stays where the other
+        // cards have theirs (as if a line of description were under it), not lower in the empty header.
+        int centred = _action is null ? Math.Max(textHeight, title.Height + S(2) + Small.Height) : textHeight;
+        int top = padY + Math.Max(0, (header - centred) / 2);
         return (new Rectangle(padX, top, textWidth, title.Height),
                 new Rectangle(padX, top + title.Height + S(2), textWidth, desc.Height), header);
     }

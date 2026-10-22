@@ -132,13 +132,24 @@ public static class PreviewRenderer
         void Add(string name, Func<Task<PreviewResult?>> f) => steps.Add(new Step(name, f));
         void AddSync(string name, Func<PreviewResult?> f) => steps.Add(new Step(name, () => Task.FromResult(f())));
 
+        // A search match is shown: the file's own text first, so the words can be highlighted (PreviewOptions.PreferBuiltInText).
+        bool text = opt.PreferBuiltInText;
         Step Wic = new("WIC", () => WicImage.RenderAsync(path, ext, target, ct));
         Step ShellThumb = new("ShellThumbnail", () => ShellThumbnailAsync(path, target, ct));
         Step Handler = new("PreviewHandler", () => Task.FromResult(opt.AllowHostedHandler ? HandlerResult(path, ext) : null));
-        Step Text = new("Text", () => Task.FromResult(TextPreview.Render(path, ext, opt.MaxTextBytes, force: false)));
+        Step Text = new("Text", () => Task.FromResult(TextPreview.Render(path, ext, opt.MaxTextBytes, force: false, keepLayout: text)));
         Step Xmp = new("XMP thumbnail", () => Task.FromResult(XmpThumb(path, target)));
         Step OfficeThumb = new("Embedded thumbnail", () => Task.FromResult(OfficeThumbnail(path, target)));
-        Step Pdf = new("PDF", () => PdfPreview.RenderAsync(path, target, ct));
+        Step Pdf = new("PDF", () => PdfPreview.RenderAsync(path, target, ct, keepSinglePage: text));
+
+        // A built-in text step moved ahead of the file's own preview: say so on its result when that preview exists
+        // (a preview handler that would have been hosted, or a saved thumbnail that came first), so the pane offers it.
+        Step BuiltIn(string name, Func<PreviewResult?> render, bool thumbnailFirst) => new(name, () =>
+        {
+            var r = render();
+            if (r != null && HasOriginal(path, ext, opt, thumbnailFirst)) r.InsteadOfOriginal = r.ShapedByMatch = true;
+            return Task.FromResult(r);
+        });
 
         bool isPdf = Bytes.StartsWithAscii(head, "%PDF") || Bytes.IndexOf(head.AsSpan(0, Math.Min(head.Length, 1024)), "%PDF"u8) >= 0;
         bool isZip = ArchivePreview.IsZip(head);
@@ -172,7 +183,7 @@ public static class PreviewRenderer
                 break;
             case ".ai":
             case ".ait":
-                if (isPdf) steps.Add(new Step("PDF", () => PdfPreview.RenderAsync(path, target, ct, "Illustrator (PDF)")));
+                if (isPdf) steps.Add(new Step("PDF", () => PdfPreview.RenderAsync(path, target, ct, "Illustrator (PDF)", keepSinglePage: text)));
                 AddSync("EPS preview", () => EpsResult(path, target));
                 steps.Add(Xmp);
                 steps.Add(Handler);
@@ -232,6 +243,13 @@ public static class PreviewRenderer
                 steps.Add(Text);
                 break;
             case ".rtf":
+                if (text)
+                {
+                    steps.Add(BuiltIn("RTF", () => RtfResult(path), thumbnailFirst: false));
+                    steps.Add(Text);
+                    steps.Add(Handler);
+                    break;
+                }
                 steps.Add(Handler);
                 AddSync("RTF", () => RtfResult(path));
                 steps.Add(Text);
@@ -244,30 +262,46 @@ public static class PreviewRenderer
                 }
                 else if (OfficePreview.WordExt.Contains(ext))
                 {
+                    if (text) steps.Add(BuiltIn("Word", () => OfficePreview.RenderDocx(path, ct), thumbnailFirst: false));
                     steps.Add(Handler);
-                    AddSync("Word", () => OfficePreview.RenderDocx(path, ct));
+                    if (!text) AddSync("Word", () => OfficePreview.RenderDocx(path, ct));
                     steps.Add(OfficeThumb);
                     steps.Add(ShellThumb);
                 }
                 else if (OfficePreview.ExcelExt.Contains(ext))
                 {
+                    if (text) steps.Add(BuiltIn("Excel", () => OfficePreview.RenderXlsx(path, ct, opt.Sheet), thumbnailFirst: false));
                     steps.Add(Handler);
-                    AddSync("Excel", () => OfficePreview.RenderXlsx(path, ct));
+                    if (!text) AddSync("Excel", () => OfficePreview.RenderXlsx(path, ct, opt.Sheet));
                     steps.Add(OfficeThumb);
                     steps.Add(ShellThumb);
                 }
                 else if (OfficePreview.PowerPointExt.Contains(ext))
                 {
-                    steps.Add(Handler);
-                    steps.Add(OfficeThumb);
-                    AddSync("PowerPoint", () => OfficePreview.RenderPptxText(path, ct));
+                    if (text)
+                    {
+                        steps.Add(BuiltIn("PowerPoint", () => OfficePreview.RenderPptxText(path, ct, presentationOrder: true), thumbnailFirst: true));
+                        steps.Add(Handler);
+                        steps.Add(OfficeThumb);
+                    }
+                    else
+                    {
+                        steps.Add(Handler);
+                        steps.Add(OfficeThumb);
+                        AddSync("PowerPoint", () => OfficePreview.RenderPptxText(path, ct));
+                    }
                     steps.Add(ShellThumb);
                 }
                 else if (OfficePreview.OdfExt.Contains(ext))
                 {
+                    bool thumbFirst = ext is ".odp" or ".otp" or ".odg";
+                    if (text) steps.Add(BuiltIn("OpenDocument", () => OfficePreview.RenderOdf(path, ext, ct, opt.Sheet), thumbFirst));
                     steps.Add(Handler);
-                    if (ext is ".odp" or ".otp" or ".odg") steps.Add(OfficeThumb);
-                    AddSync("OpenDocument", () => OfficePreview.RenderOdf(path, ext, ct));
+                    if (!text)
+                    {
+                        if (thumbFirst) steps.Add(OfficeThumb);
+                        AddSync("OpenDocument", () => OfficePreview.RenderOdf(path, ext, ct, opt.Sheet));
+                    }
                     steps.Add(OfficeThumb);
                     steps.Add(ShellThumb);
                 }
@@ -345,6 +379,22 @@ public static class PreviewRenderer
             h[0] == 'M' && h[1] == 'M' && h[2] == 0 && h[3] == 42 ||
             Bytes.StartsWithAscii(h, "RIFF") && h[8] == 'W' && h[9] == 'E' && h[10] == 'B' && h[11] == 'P' ||
             h[4] == 'f' && h[5] == 't' && h[6] == 'y' && h[7] == 'p' && (h[8] == 'h' || h[8] == 'a' || h[8] == 'm'));
+
+    /// <summary>
+    /// Without a match, the file's own preview would have been shown ahead of the built-in text: a preview handler that is
+    /// registered, allowed and not refused for a downloaded file, or (decks) a saved thumbnail.
+    /// </summary>
+    private static bool HasOriginal(string path, string ext, PreviewOptions opt, bool thumbnailFirst) =>
+        opt.AllowHostedHandler && PreviewHandlerRegistry.TryFind(ext, out _, out _) && !InternetZone(path)
+        || thumbnailFirst && OfficePreview.HasEmbeddedThumbnail(path);
+
+    /// <summary>Files whose preview changes when a match is shown (<see cref="PreviewOptions.PreferBuiltInText"/>).</summary>
+    internal static bool PrefersTextForMatch(string path)
+    {
+        string ext = GetExtension(path);
+        return OfficePreview.WordExt.Contains(ext) || OfficePreview.ExcelExt.Contains(ext) || OfficePreview.PowerPointExt.Contains(ext)
+            || OfficePreview.OdfExt.Contains(ext) || ext is ".rtf" or ".json";
+    }
 
     // ------------------------------------------------------------------ individual steps
 

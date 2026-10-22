@@ -17,6 +17,8 @@ namespace PreviewHarness;
 /// <summary>
 /// Headless + UI smoke harness for Anything.Preview.
 ///   PreviewHarness [--out DIR] [--real LISTFILE] [--pane] [--save] [--no-thumbs]
+///   PreviewHarness --match [--out DIR]   (the preview at a search match: samples, steps, screenshots)
+///   PreviewHarness --match --real LISTFILE [--word WORD]   (headless, real files read-only: counts and times only)
 /// LISTFILE lines: "ext&lt;TAB&gt;path" (or just a path). Real files are only read.
 /// </summary>
 internal static class Program
@@ -36,6 +38,20 @@ internal static class Program
         Directory.CreateDirectory(renderDir);
 
         Log($"# Anything.Preview harness  {DateTime.Now:yyyy-MM-dd HH:mm}");
+        if (args.Contains("--match"))
+        {
+            if (realList != null && !File.Exists(realList))
+            {
+                Log($"- **the list {realList} doesn't exist**");
+                return 1;
+            }
+            int matchErrors = realList != null
+                ? MatchReal.Run(realList, Arg(args, "--word") ?? "the", Log)
+                : MatchPass.Run(outDir, Log);
+            File.WriteAllText(Path.Combine(outDir, "report-match.md"), Report.ToString());
+            Log($"\nReport: {Path.Combine(outDir, "report-match.md")}");
+            return matchErrors == 0 ? 0 : 1;
+        }
         var generated = SampleGenerator.Generate(sampleDir);
         var real = new List<string>();
         if (realList != null && File.Exists(realList))

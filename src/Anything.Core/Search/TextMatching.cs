@@ -4,6 +4,9 @@ using System.Runtime.CompilerServices;
 using System.Text;
 
 [assembly: InternalsVisibleTo("Anything.Tests")]
+// The preview (Anything.Preview) splits text into lines with Content.TextLines and decodes text with TextDecoding, so the
+// line numbers and the code page it shows are the ones the index uses.
+[assembly: InternalsVisibleTo("Anything.Preview")]
 
 namespace Anything.Core.Search;
 

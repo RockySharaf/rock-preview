@@ -12,9 +12,10 @@ namespace Anything;
 /// %LOCALAPPDATA%\Programs (just me), adds Start menu / desktop shortcuts (optionally "Run as administrator"), the
 /// start-with-Windows entry and an entry in Settings &gt; Apps, whose Uninstall runs "RockPreview.exe -uninstall".
 /// Switches: -install, -uninstall, -quiet, -allusers, -dir &lt;folder&gt;, -desktop, -runasadmin, -startwithwindows,
-/// -replaceexplorer, -indexservice, -updatecheck / -noupdatecheck, -launch, -removedata (uninstall).
+/// -replaceexplorer, -indexservice, -updatecheck / -noupdatecheck, -content names|documents|pictures (search inside
+/// files), -asuser &lt;SID&gt; (whose choice it is), -launch, -removedata (uninstall).
 /// </summary>
-internal static class Setup
+internal static partial class Setup
 {
     public const string AppName = "Ultimate File Explorer";
     /// <summary>The settings and index folders keep the earlier name, so updating keeps them.</summary>
@@ -37,6 +38,8 @@ internal static class Setup
         public bool ReplaceExplorer;  // Rock Preview instead of File Explorer (off unless chosen)
         public bool IndexService;     // instant indexing through the Rock Preview service (Windows asks once)
         public bool? CheckForUpdates; // tell the user about new versions; null = leave their choice as it is
+        public Anything.Core.Content.ContentMode? Content; // search inside files; null = leave the user's choice as it is
+        public string? AsUser; // the SID of the user who chose in the setup window: an elevated copy writes their choices only for them
         public bool Launch;
         public bool Quiet;
         public bool RemoveData;
@@ -56,6 +59,8 @@ internal static class Setup
             if (ReplaceExplorer) l.Add("-replaceexplorer");
             if (IndexService) l.Add("-indexservice");
             if (CheckForUpdates is bool check) l.Add(check ? "-updatecheck" : "-noupdatecheck");
+            if (Content is { } content) { l.Add("-content"); l.Add(Anything.Core.Content.ContentSettings.ModeName(content)); }
+            if (!string.IsNullOrEmpty(AsUser)) { l.Add("-asuser"); l.Add(AsUser!); }
             if (Launch) l.Add("-launch");
             if (Quiet) l.Add("-quiet");
             if (Auto) l.Add("-auto");
@@ -108,6 +113,8 @@ internal static class Setup
                 case "indexservice": o.IndexService = true; break;
                 case "updatecheck": o.CheckForUpdates = true; break;
                 case "noupdatecheck": o.CheckForUpdates = false; break;
+                case "content" when i + 1 < args.Count: o.Content = ParseContentMode(args[++i]); break;
+                case "asuser" when i + 1 < args.Count: o.AsUser = args[++i]; break;
                 case "launch": o.Launch = true; break;
                 case "quiet": o.Quiet = true; break;
                 case "removedata": o.RemoveData = true; break;
@@ -127,7 +134,12 @@ internal static class Setup
             if (HasSwitch(args, "uninstall")) return RunUninstall(o);
             if (o.Quiet)
             {
-                if (o.AllUsers && !Program.IsElevated()) return Program.RelaunchElevated(o.ToArgs()) ? 0 : 5;
+                if (o.AllUsers && !Program.IsElevated())
+                {
+                    // Whoever's password elevates, the choices (search inside files) belong to the user who ran it.
+                    o.AsUser ??= CurrentUserSid();
+                    return Program.RelaunchElevated(o.ToArgs()) ? 0 : 5;
+                }
                 Install(o, _ => { });
                 if (o.Launch) LaunchInstalled(o);
                 return 0;
@@ -191,6 +203,7 @@ internal static class Setup
         }
         // New-version notices: the choice made in the setup window (a quiet install without the switch leaves it alone).
         if (o.CheckForUpdates is bool check) SetCheckForUpdates(check);
+        if (o.Content is { } m) SetContentMode(m, o.AsUser);
         // Rock Preview instead of File Explorer: on when chosen (now pointing at this copy); unticked in the setup
         // window turns it off. A quiet install without the switch leaves the user's choice alone.
         try
@@ -260,6 +273,8 @@ internal static class Setup
             var args = new List<string> { "-uninstall" };
             if (o.Quiet) args.Add("-quiet");
             if (o.RemoveData) args.Add("-removedata");
+            // Whoever's password elevates, "delete my settings and search index" is about the user who ran it.
+            if (CurrentUserSid() is { } sid) { args.Add("-asuser"); args.Add(sid); }
             return Program.RelaunchElevated(args) ? 0 : 5;
         }
 
@@ -284,7 +299,7 @@ internal static class Setup
 
         try
         {
-            Uninstall(folder, allUsers, removeData, o.Quiet);
+            Uninstall(folder, allUsers, removeData, o.Quiet, o.AsUser);
         }
         catch (Exception ex)
         {
@@ -297,7 +312,7 @@ internal static class Setup
         return 0;
     }
 
-    static void Uninstall(string folder, bool allUsers, bool removeData, bool quiet)
+    static void Uninstall(string folder, bool allUsers, bool removeData, bool quiet, string? asUser = null)
     {
         string exe = Path.Combine(folder, ExeName);
         CloseRunning(exe, quiet, anyFolder: false);
@@ -336,12 +351,9 @@ internal static class Setup
         catch (Exception) { }
         (allUsers ? Registry.LocalMachine : Registry.CurrentUser).DeleteSubKeyTree(UninstallKeyPath, throwOnMissingSubKey: false);
 
-        if (removeData)
-        {
-            // Only its own data folders ("Rock Preview", with the space, the name before the rename): settings, index, logs.
-            TryDeleteTree(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), DataFolderName));
-            TryDeleteTree(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), DataFolderName));
-        }
+        // Only its own data folders ("Rock Preview", with the space, the name before the rename): settings, index, logs; of
+        // the user who asked, not of the administrator whose password elevated it.
+        if (removeData) DeleteUserData(asUser);
 
         // The program file: delete it now, or (when it is the uninstaller that is running) once this process has ended:
         // a helper tries every second for half a minute, since "was uninstalled" stays on screen until it is closed.

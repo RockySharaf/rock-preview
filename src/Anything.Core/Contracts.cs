@@ -6,6 +6,8 @@ public enum SortKey { Name, Path, Size, Extension, Type, DateModified, DateCreat
 /// <summary>Global match toggles from the Search menu. Query modifiers (case:, regex:, ...) override them per term.</summary>
 public sealed record SearchOptions
 {
+    /// <summary>Plain search words also find words inside files (Search › Match inside files), while the text index is on.</summary>
+    public bool MatchContent { get; init; }
     public bool MatchCase { get; init; }
     public bool MatchWholeWord { get; init; }
     public bool MatchPath { get; init; }
@@ -21,6 +23,10 @@ public sealed class SearchResults
     public TimeSpan Elapsed { get; init; }
     /// <summary>Non-null when the query is invalid (e.g. bad regex); Ids is then empty.</summary>
     public string? Error { get; init; }
+    /// <summary>How many of the first Ids matched by name (then come those matched only inside files); -1 when no plain word looked inside files.</summary>
+    public int NameMatches { get; init; } = -1;
+    /// <summary>Matches inside files may be missing (a lookup still runs, or the text index is catching up): search again on ContentChanged.</summary>
+    public bool ContentPending { get; init; }
     public static SearchResults Empty { get; } = new() { Ids = [] };
 }
 

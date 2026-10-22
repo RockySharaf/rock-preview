@@ -58,6 +58,10 @@ like PSD, AI or CorelDRAW that take ages to launch. Ultimate File Explorer fixes
 - As much about each file as Everything shows: besides size, dates modified and created and attributes, the
   **Date Accessed**, **Date Recently Changed**, **Run Count** and **Date Run** columns (right-click a column header to
   show them), and folder sizes if you want them ([more below](#information-about-each-file)).
+- **Search inside files**, if you want it: the words in PDFs, Word, Excel and PowerPoint, text files, saved emails
+  and design files, and optionally pictures' details (size, DPI, RGB or CMYK, date taken, camera, keywords). A
+  **Matching text** column shows the line each file matched, and the preview opens at the match with the words
+  highlighted ([more below](#search-inside-files)).
 - Sort by any column, highlight matches, bookmarks for saved searches, export results to CSV / TXT.
 - `rockpreview-cli` for scripting searches from the command line.
 
@@ -75,6 +79,40 @@ What they cost, measured on a PC with 3.17 million files and folders: date acces
 each); folder sizes add nothing (a folder's size takes the place it already has) and are worked out in 78 ms; recent
 changes take about 60 bytes for each file that changed (1.8 MB for 31,758 changes). Run history is a small file.
 Turning on date accessed reads the drives again once, in the background; everything stays searchable meanwhile.
+
+### Search inside files
+Off unless you choose it, in Setup or **Settings › Indexing › Search inside files**, which offer three choices and show
+what each costs on your PC, worked out from the number and size of your files (for example "About 30 MB for 4,000
+documents; the first pass takes about 2 minutes in the background"):
+
+| Choice | What is read |
+|---|---|
+| Search files by name | Nothing: names only, as before |
+| Also search inside documents | The words in PDF, Word, Excel and PowerPoint (2007 and later), OpenDocument, text, RTF, HTML, saved emails (EML, MSG: subject, sender, recipients, text and attachment names) and design files (PSD's text layers; the text of AI and IDML files; InDesign and EPS files' title, description, keywords, fonts and plates, not their layout's text). Only the text: never the pictures in a PDF, a document's layout or a design's pixels; at most the first 1 MB of text per file |
+| Also search inside documents and pictures' details | Also pictures' size in pixels, resolution (DPI), colour mode (RGB or CMYK), date taken, camera, place, title and keywords, read from their headers only |
+
+- It reads your own folders (Desktop, Documents, Downloads, Pictures and OneDrive) unless you add drives, folders or
+  network shares, or leave some out. Keys, certificates, password stores, password exports, recovery codes and app data
+  are never read (they are known by their names).
+- The first pass runs in the background at low priority, newest and most-opened files first, and slows down while you
+  use the PC; it waits while on battery (unless you allow it) and while the app runs as administrator. After that only
+  files that change are read again, as the name index sees them change. Settings shows how far it is and which files
+  couldn't be read, and why (password-protected, too big, …); pause it there for an hour or until you resume.
+- On a print shop's 10 TB NAS (about 850,000 print PDFs) the text index comes to about 0.7 GB; the first pass is most
+  of a day of reading (about 15–22 hours at full speed, at most 8 MB/s), reading about 200–700 GB over the network
+  depending on how many pages the PDFs have.
+- Text in scans and screenshots isn't read yet: reading it (OCR) is planned, and **Settings › Indexing** lists it as
+  coming later.
+- With **Search › Match inside files** on (the default, set in **Settings › Search**), a plain search word of three or
+  more letters also finds files with that word inside (in Chinese, Japanese or Korean, two characters; a longer run
+  of those matches names only, so use `content:` for it); files matched by name come first, then those matched only
+  inside files; **Match Case** and **Match Diacritics** apply inside files too, while with **Match Path** or **Regex** on
+  search words match names only (the status bar says NAMES ONLY). `content:` searches only inside files. The
+  **Matching text** column (hide it from the column header's
+  menu) shows the matching line, with the page, slide, sheet or line it is on; the tooltip shows all of it.
+- The preview opens at the match: text files scroll to the line with the words highlighted, Word and PowerPoint files
+  show their text highlighted (**Show original** brings back their own preview), workbooks open the sheet, PDFs open
+  the page, and pictures say which field matched.
 
 ### Windows 11 File Explorer, inside
 - Hosts the genuine Explorer file view (`ExplorerBrowser`) and navigation pane (`NamespaceTreeControl`) —
@@ -151,6 +189,9 @@ Ultimate File Explorer doesn't patch File Explorer to change that.
    window in the corner gives a short tour, ticking off each step as you try it: `Alt+X` to hide Ultimate File Explorer
    and bring it back, Thumbnails, subfolders, Sort, and choosing which folders to search. **Help › Get Started** shows
    it again.
+   Setup also asks whether to **search inside files**: names only (the default), also inside documents, or also
+   pictures' details, each with its size and first-pass time worked out from your folders. Change it, or add drives
+   and network folders, any time in **Settings › Indexing**; the app offers it once if you install without choosing.
    To update, run the new Setup: it closes the running copy (wherever it runs from), replaces it and keeps your settings
    and earlier choices.
 2. Prefer no install? Download **`RockPreview.exe`** — the portable version runs from any folder or USB stick.
@@ -217,6 +258,15 @@ checks right away. Turn the daily check off in Setup or **Settings › General**
 | `path:projects logo` | match against the full path |
 | `regex:^IMG_\d{4}\.jpg$` | a regular expression |
 | `audio:` `video:` `pic:` `doc:` `zip:` `exe:` | built-in type filters |
+| `content:invoice` | files with a word starting with "invoice" inside (with [search inside files](#search-inside-files) on) |
+| `content:"annual report"` · `ww:content:report` | words next to each other / exactly that word |
+| `content:INV-2024` · `content:inv*24` | a code, whatever its separators / a wildcard within one word |
+| `title:` `subject:` `author:` `keywords:` (`tags:`) `comment:` (`description:`) | a word in that field (documents' properties, pictures; an email's subject is `subject:`, its sender `author:`) |
+| `from:` · `to:` | an email's sender / recipients (To and Cc) |
+| `dpi:<300` · `cmyk:` · `rgb:` · `colormode:gray` | pictures' resolution and colour mode (`cmyk: logo` = CMYK pictures named or tagged "logo") |
+| `width:>=3000` · `dimensions:2480x3508` · `orientation:portrait` | pictures' size in pixels |
+| `datetaken:2023` · `camera:canon` · `gps:` | date taken, camera, with a place |
+| `pagecount:>20` · `contentstatus:failed` | pages, slides or sheets / files that couldn't be read |
 
 Press `F1` in the app for the complete reference.
 
@@ -230,6 +280,7 @@ RockPreview.exe -admin               restart elevated (instant NTFS index)
 RockPreview.exe -startup             start in the background
 RockPreview.exe -exit                close the running instance
 rockpreview-cli ext:pdf size:>10mb   search the saved index from a script (-h for options; -da, -run-count add columns)
+rockpreview-cli content:invoice      search inside files too, from the text index (-match-content: plain words too)
 ```
 
 ## Build from source
@@ -259,6 +310,17 @@ powershell -ExecutionPolicy Bypass -File build\Publish.ps1
 Ultimate File Explorer runs entirely on your PC. It has no telemetry and no account. Its index and settings stay in
 `%LOCALAPPDATA%\Rock Preview` and `%APPDATA%\Rock Preview` (with `Run History.csv`, which files you opened from the
 results and when; **Settings › Indexing › Run history** turns it off or clears it).
+
+Search inside files is off unless you choose it. When it's on: a copy of each document's text (up to 1 MB) is kept on
+this PC, in your own profile; never pictures or layout, and nothing leaves this PC. It is kept in
+`%LOCALAPPDATA%\Rock Preview\Content`, beside the name index, never in a roaming profile. Files are read by the app itself, as you (so only what
+you may open), never by the Ultimate File Explorer Service; while it runs as administrator it reads nothing.
+Keys, certificates, password stores, password-manager and browser exports, recovery and backup codes, `.env` files and
+app data folders are never read (they are known by their names), files Windows marks "don't index contents" are left
+out (their words leave the index as soon as the mark is set), and files encrypted by Windows only if you allow it. Choosing **Search files by name**
+again deletes the text index at once; *Also delete my settings and search index* when uninstalling deletes it too.
+`rockpreview-cli` can read the text index (as it reads the name index), and a CSV exported with the **Matching text**
+column contains document text.
 
 Its only network connection is the check for a new version: at most once a day (and when you choose **Help › Check
 for Updates**) it asks GitHub's API for the latest release of `RockySharaf/rock-preview`. The request carries

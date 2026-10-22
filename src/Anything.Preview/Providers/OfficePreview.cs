@@ -17,6 +17,8 @@ namespace Anything.Preview;
 internal static class OfficePreview
 {
     public const int MaxRows = 2000, MaxCols = 200, MaxParagraphs = 5000;
+    /// <summary>Most spaces one OpenDocument text:s element gives.</summary>
+    private const int MaxSpaces = 256;
 
     public static readonly HashSet<string> WordExt = new(StringComparer.OrdinalIgnoreCase) { ".docx", ".docm", ".dotx", ".dotm" };
     public static readonly HashSet<string> ExcelExt = new(StringComparer.OrdinalIgnoreCase) { ".xlsx", ".xlsm", ".xltx", ".xltm" };
@@ -51,15 +53,31 @@ internal static class OfficePreview
         return ms.ToArray();
     }
 
+    private static bool IsThumbnailEntry(ZipArchiveEntry x) =>
+        x.FullName.StartsWith("docProps/thumbnail", StringComparison.OrdinalIgnoreCase) ||
+        x.FullName.Equals("Thumbnails/thumbnail.png", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The document carries a saved thumbnail (what its preview shows when no preview handler is registered).</summary>
+    public static bool HasEmbeddedThumbnail(string path)
+    {
+        try
+        {
+            using var z = OpenZip(path, out var fs);
+            using (fs) return z.Entries.Any(IsThumbnailEntry);
+        }
+        catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>docProps/thumbnail.* (OOXML) or Thumbnails/thumbnail.png (ODF), if the author saved one.</summary>
     public static Bitmap? EmbeddedThumbnail(string path, Size box)
     {
         using var z = OpenZip(path, out var fs);
         using (fs)
         {
-            var e = z.Entries.FirstOrDefault(x =>
-                x.FullName.StartsWith("docProps/thumbnail", StringComparison.OrdinalIgnoreCase) ||
-                x.FullName.Equals("Thumbnails/thumbnail.png", StringComparison.OrdinalIgnoreCase));
+            var e = z.Entries.FirstOrDefault(IsThumbnailEntry);
             if (e == null) return null;
             var bytes = ReadEntry(z, e.FullName);
             if (bytes == null) return null;
@@ -168,7 +186,8 @@ internal static class OfficePreview
         return list;
     }
 
-    public static PreviewResult? RenderXlsx(string path, CancellationToken ct)
+    /// <param name="sheet">The sheet to show, by name (a search matched there); null or unknown = the first visible one.</param>
+    public static PreviewResult? RenderXlsx(string path, CancellationToken ct, string? sheet = null)
     {
         using var z = OpenZip(path, out var fs);
         using (fs)
@@ -177,7 +196,9 @@ internal static class OfficePreview
             if (wb?.Root == null) return null;
             var sheets = wb.Root.Element(S + "sheets")?.Elements(S + "sheet").ToList() ?? new();
             if (sheets.Count == 0) return null;
-            var first = sheets.FirstOrDefault(sh => (string?)sh.Attribute("state") is null or "visible") ?? sheets[0];
+            var visible = sheets.FirstOrDefault(sh => (string?)sh.Attribute("state") is null or "visible") ?? sheets[0];
+            var named = ByName(sheets, sheet, sh => (string?)sh.Attribute("name"));
+            var first = named ?? visible;
             string sheetName = (string?)first.Attribute("name") ?? "Sheet1";
             string? rid = (string?)first.Attribute(R + "id");
             string target = "xl/worksheets/sheet1.xml";
@@ -268,14 +289,26 @@ internal static class OfficePreview
                 Table = new TableData
                 {
                     Columns = columns, Rows = outRows, ShowRowNumbers = true, Truncated = truncated,
-                    Caption = sheets.Count > 1 ? $"{sheetName}  (sheet 1 of {sheets.Count})" : sheetName,
+                    Caption = sheets.Count <= 1 ? sheetName
+                        : named != null ? $"{sheetName}  (sheet {sheets.IndexOf(first) + 1} of {sheets.Count})"
+                        : $"{sheetName}  (sheet 1 of {sheets.Count})",
                 },
+                Sheet = sheetName,
+                SheetFromOptions = named != null && !ReferenceEquals(named, visible),
             };
             res.AddMeta("Sheets", string.Join(", ", sheets.Select(sh => (string?)sh.Attribute("name")).Take(12)) + (sheets.Count > 12 ? ", …" : ""));
             res.AddMeta("Shown", $"{outRows.Count} rows × {columns.Count} columns" + (truncated ? " (truncated)" : ""));
             AddCoreProps(z, res);
             return res;
         }
+    }
+
+    /// <summary>The item whose name is <paramref name="name"/> (exactly, else ignoring case, as Excel compares sheet names); null when none.</summary>
+    private static T? ByName<T>(IReadOnlyList<T> items, string? name, Func<T, string?> nameOf) where T : class
+    {
+        if (string.IsNullOrEmpty(name)) return null;
+        return items.FirstOrDefault(i => string.Equals(nameOf(i), name, StringComparison.Ordinal))
+            ?? items.FirstOrDefault(i => string.Equals(nameOf(i), name, StringComparison.OrdinalIgnoreCase));
     }
 
     private static HashSet<int> ReadDateStyles(ZipArchive z)
@@ -341,8 +374,13 @@ internal static class OfficePreview
     // ------------------------------------------------------------------ PowerPoint (text outline)
 
     private static readonly XNamespace A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+    private static readonly XNamespace P = "http://schemas.openxmlformats.org/presentationml/2006/main";
 
-    public static PreviewResult? RenderPptxText(string path, CancellationToken ct)
+    /// <param name="presentationOrder">
+    /// As the index reads the deck (a search match points at a slide): slides in the presentation's own order
+    /// (sldIdLst), numbered by position, each followed by its speaker notes. Otherwise slides by part number, no notes.
+    /// </param>
+    public static PreviewResult? RenderPptxText(string path, CancellationToken ct, bool presentationOrder = false)
     {
         using var z = OpenZip(path, out var fs);
         using (fs)
@@ -352,25 +390,100 @@ internal static class OfficePreview
                 .Select(e => (Entry: e, Num: int.TryParse(Path.GetFileNameWithoutExtension(e.Name).AsSpan(5), out int n) ? n : 0))
                 .OrderBy(x => x.Num).ToList();
             if (slides.Count == 0) return null;
+            if (presentationOrder && PresentationOrder(z) is { Count: > 0 } ordered)
+                slides = ordered.Select((e, i) => (e, i + 1)).ToList();
             var blocks = new List<DocBlock>();
             foreach (var (e, num) in slides)
             {
                 ct.ThrowIfCancellationRequested();
                 blocks.Add(new DocBlock($"Slide {num}", DocBlockStyle.Heading2));
-                using var s = e.Open();
-                var x = XDocument.Load(s);
-                foreach (var p in x.Descendants(A + "p"))
+                using (var s = e.Open())
                 {
-                    string t = string.Concat(p.Descendants(A + "t").Select(t => t.Value));
-                    if (t.Length > 0) blocks.Add(new DocBlock(t, DocBlockStyle.ListItem));
+                    var x = XDocument.Load(s);
+                    foreach (var p in x.Descendants(A + "p"))
+                    {
+                        string t = string.Concat(p.Descendants(A + "t").Select(t => t.Value));
+                        if (t.Length > 0) blocks.Add(new DocBlock(t, DocBlockStyle.ListItem));
+                    }
                 }
+                if (presentationOrder)
+                    foreach (var note in SlideNotes(z, e)) blocks.Add(new DocBlock(note, DocBlockStyle.Caption));
                 if (blocks.Count > MaxParagraphs) break;
             }
-            var res = new PreviewResult(path, PreviewKind.Document, "OOXML") { FormatName = "PowerPoint presentation", Document = blocks };
+            var res = new PreviewResult(path, PreviewKind.Document, "OOXML") { FormatName = "PowerPoint presentation", Document = blocks, ShapedByMatch = presentationOrder };
             res.AddMeta("Slides", slides.Count.ToString(CultureInfo.InvariantCulture));
             AddCoreProps(z, res);
             return res;
         }
+    }
+
+    /// <summary>The slide parts in presentation order (ppt/presentation.xml sldIdLst through its rels); null when that can't be read.</summary>
+    private static List<ZipArchiveEntry>? PresentationOrder(ZipArchive z)
+    {
+        try
+        {
+            var pres = LoadXml(z, "ppt/presentation.xml");
+            var rels = LoadXml(z, "ppt/_rels/presentation.xml.rels");
+            if (pres?.Root == null || rels?.Root == null) return null;
+            var targets = rels.Root.Elements(PR + "Relationship")
+                .Where(r => (string?)r.Attribute("Id") != null)
+                .GroupBy(r => (string)r.Attribute("Id")!)
+                .ToDictionary(g => g.Key, g => (string?)g.First().Attribute("Target") ?? "");
+            var list = new List<ZipArchiveEntry>();
+            foreach (var id in pres.Root.Element(P + "sldIdLst")?.Elements(P + "sldId") ?? Enumerable.Empty<XElement>())
+            {
+                if ((string?)id.Attribute(R + "id") is not { } rid || !targets.TryGetValue(rid, out var target)) return null;
+                if (Entry(z, PartPath("ppt/", target)) is not { } e) return null;
+                list.Add(e);
+            }
+            return list;
+        }
+        catch (Exception e) when (e is XmlException or IOException or InvalidDataException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The speaker notes of a slide (its notesSlide's body placeholder), one string per paragraph.</summary>
+    private static List<string> SlideNotes(ZipArchive z, ZipArchiveEntry slide)
+    {
+        var notes = new List<string>();
+        try
+        {
+            string dir = slide.FullName[..(slide.FullName.LastIndexOf('/') + 1)];
+            var rels = LoadXml(z, dir + "_rels/" + slide.Name + ".rels");
+            string? target = rels?.Root?.Elements(PR + "Relationship")
+                .FirstOrDefault(r => ((string?)r.Attribute("Type"))?.EndsWith("/notesSlide", StringComparison.Ordinal) == true)
+                ?.Attribute("Target")?.Value;
+            if (target == null) return notes;
+            var doc = LoadXml(z, PartPath(dir, target));
+            if (doc?.Root == null) return notes;
+            foreach (var sp in doc.Root.Descendants(P + "sp"))
+            {
+                var ph = sp.Element(P + "nvSpPr")?.Element(P + "nvPr")?.Element(P + "ph");
+                if ((string?)ph?.Attribute("type") != "body") continue;
+                foreach (var p in sp.Descendants(A + "p"))
+                {
+                    string t = string.Concat(p.Descendants(A + "t").Select(t => t.Value));
+                    if (t.Length > 0) notes.Add(t);
+                }
+            }
+        }
+        catch (Exception e) when (e is XmlException or IOException or InvalidDataException) { }
+        return notes;
+    }
+
+    /// <summary>A relationship target resolved against the folder of its source part ("../notesSlides/n.xml", "/ppt/x.xml").</summary>
+    private static string PartPath(string folder, string target)
+    {
+        if (target.StartsWith('/')) return target.TrimStart('/');
+        var parts = new List<string>(folder.Split('/', StringSplitOptions.RemoveEmptyEntries));
+        foreach (var seg in target.Split('/'))
+        {
+            if (seg == "..") { if (parts.Count > 0) parts.RemoveAt(parts.Count - 1); }
+            else if (seg is not ("" or ".")) parts.Add(seg);
+        }
+        return string.Join('/', parts);
     }
 
     // ------------------------------------------------------------------ OpenDocument
@@ -378,7 +491,8 @@ internal static class OfficePreview
     private static readonly XNamespace OText = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
     private static readonly XNamespace OTable = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
 
-    public static PreviewResult? RenderOdf(string path, string ext, CancellationToken ct)
+    /// <param name="sheet">For spreadsheets: the table to show, by name (a search matched there); null or unknown = the first.</param>
+    public static PreviewResult? RenderOdf(string path, string ext, CancellationToken ct, string? sheet = null)
     {
         using var z = OpenZip(path, out var fs);
         using (fs)
@@ -388,7 +502,9 @@ internal static class OfficePreview
             bool isSheet = ext is ".ods" or ".ots";
             if (isSheet)
             {
-                var table = content.Descendants(OTable + "table").FirstOrDefault();
+                var tables = content.Descendants(OTable + "table").ToList();
+                var named = ByName(tables, sheet, t => (string?)t.Attribute(OTable + "name"));
+                var table = named ?? tables.FirstOrDefault();
                 if (table == null) return null;
                 var rows = new List<string[]>();
                 int maxCols = 0;
@@ -418,6 +534,8 @@ internal static class OfficePreview
                         Columns = Enumerable.Range(1, Math.Max(1, maxCols)).Select(ColumnName).ToList(), Rows = norm, ShowRowNumbers = true,
                         Caption = (string?)table.Attribute(OTable + "name"),
                     },
+                    Sheet = (string?)table.Attribute(OTable + "name") ?? "",
+                    SheetFromOptions = named != null && !ReferenceEquals(named, tables[0]),
                 };
             }
             var blocks = new List<DocBlock>();
@@ -446,7 +564,8 @@ internal static class OfficePreview
             if (n is XText t) sb.Append(t.Value);
             else if (n is XElement e)
             {
-                if (e.Name == OText + "s") sb.Append(' ', int.TryParse((string?)e.Attribute(OText + "c"), out int c) ? c : 1);
+                // text:c counts the spaces; a hostile file can claim two billion of them.
+                if (e.Name == OText + "s") sb.Append(' ', int.TryParse((string?)e.Attribute(OText + "c"), out int c) ? Math.Clamp(c, 1, MaxSpaces) : 1);
                 else if (e.Name == OText + "tab") sb.Append('\t');
                 else if (e.Name == OText + "line-break") sb.Append('\n');
                 else sb.Append(OdfText(e));

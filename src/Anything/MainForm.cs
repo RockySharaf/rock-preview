@@ -435,7 +435,7 @@ internal sealed partial class MainForm : Form
             SetPreviewWidth();
             UpdatePreviewNow();
         }
-        else _preview.Clear();
+        else ClearPreview();
     }
 
     void SetPreviewWidth()
@@ -465,8 +465,8 @@ internal sealed partial class MainForm : Form
             var sel = _list.GetSelectedIndices(1);
             if (sel.Length > 0 && sel[0] < _ids.Length) path = PathOf(_ids[sel[0]]);
         }
-        if (path is null) { _preview.Clear(); return; }
-        if (!string.Equals(path, _preview.CurrentPath, StringComparison.OrdinalIgnoreCase)) _ = _preview.ShowAsync(path);
+        if (path is null) { ClearPreview(); return; }
+        ShowPreview(path);
     }
 
     /// <summary>Explorer's status bar: item count on the left, the Details / Large icons view buttons on the right.</summary>
@@ -569,7 +569,7 @@ internal sealed partial class MainForm : Form
         _changeTimer.Dispose();
         _iconTimer.Dispose();
         _previewTimer.Dispose();
-        _preview.Clear();
+        ClearPreview();
         base.OnFormClosed(e);
     }
 
@@ -741,6 +741,7 @@ internal sealed partial class MainForm : Form
             foreach (var c in Columns.All)
             {
                 var cs = _cols[c.Key];
+                if (c.Key == "content" && !ContentColumnShown()) continue;
                 if (c.Key != "name" && !cs.Visible) continue;
                 _list.Columns.Add(new ColumnHeader
                 {
@@ -786,13 +787,14 @@ internal sealed partial class MainForm : Form
     {
         int idx = -1;
         for (int i = 0; i < _list.Columns.Count; i++)
-            if (_list.Columns[i].Tag is ColumnDef d && d.Sort == _sort) { idx = i; break; }
+            if (_list.Columns[i].Tag is ColumnDef d && d.Sortable && d.Sort == _sort) { idx = i; break; }
         _list.SetSortIndicator(idx, _desc);
     }
 
     void SortByColumn(int column)
     {
         if (column < 0 || column >= _list.Columns.Count || _list.Columns[column].Tag is not ColumnDef def) return;
+        if (!def.Sortable) return;
         if (def.Sort == _sort) SetSort(_sort, !_desc);
         else SetSort(def.Sort, false);
     }
@@ -811,6 +813,7 @@ internal sealed partial class MainForm : Form
 
     SearchOptions CurrentOptions() => new()
     {
+        MatchContent = ContentMatchOn(),
         MatchCase = _matchCase,
         MatchWholeWord = _wholeWord,
         MatchPath = _matchPath,
@@ -886,6 +889,7 @@ internal sealed partial class MainForm : Form
         _resultQuery = query;
         _resultOptions = options;
         _searchError = results.Error;
+        OnContentResults(results);
 
         _suppress = true;
         _list.BeginUpdate();
@@ -949,6 +953,7 @@ internal sealed partial class MainForm : Form
                 item.SubItems.Add(_list.Columns[c].Tag is ColumnDef d ? row.Text(d) : "");
             row.Item = item;
         }
+        SetContentToolTip(row.Item, row);
         e.Item = row.Item;
     }
 
@@ -1044,8 +1049,10 @@ internal sealed partial class MainForm : Form
             if (_regex) parts.Add("REGEX");
             if (_filterIndex > 0) parts.Add(Filters.All[_filterIndex].Name);
             if (_app.HotkeyError is { } he) parts.Add(he);
+            ContentStatusParts(parts);
             right = string.Join("   ", parts);
         }
+        right = ContentStatusRight(right);
         _statusRight.Text = right;
         _statusRight.ToolTipText = right;
     }

@@ -3,11 +3,19 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.Unicode;
+using Anything.Core.Content;
+using Anything.Core.Content.Extract;
 using Anything.Preview.Util;
 
 namespace Anything.Preview;
 
-/// <summary>Text detection (BOM, UTF-16 heuristics, UTF-8 validity, control-byte ratio) and decoding.</summary>
+/// <summary>
+/// Text detection (BOM, UTF-16 heuristics, UTF-8 validity, control-byte ratio) and decoding. A plain preview checks UTF-8
+/// on the first 64 KB, as it always did, and 8-bit text falls back to the PC's ANSI code page (GetACP). Showing a search
+/// match, the encoding is decided as the text reader in Core decides it (<see cref="TextDecoding.Detect"/> over the
+/// same first 4 MB), so the preview shows the words the index found and numbers its lines the same way.
+/// </summary>
 internal static class TextPreview
 {
     public static readonly HashSet<string> KnownTextExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -58,25 +66,25 @@ internal static class TextPreview
         }
         if (control > n / 100 + 1) return false;
         if (IsValidUtf8(head.AsSpan(0, n))) { encoding = new UTF8Encoding(false); return true; }
-        // Legacy 8-bit text: high bytes but almost no control characters.
-        encoding = Encoding.GetEncoding(1252);
+        // Legacy 8-bit text: high bytes but almost no control characters, in the PC's ANSI code page.
+        encoding = TextDecoding.Ansi();
         return true;
     }
 
+    /// <summary>Valid UTF-8, allowing one character cut off at the end of the sample.</summary>
     private static bool IsValidUtf8(ReadOnlySpan<byte> s)
     {
-        int i = 0;
-        while (i < s.Length)
+        // Leave out a trailing sequence that the sample cut short (at most 3 bytes).
+        int end = s.Length;
+        for (int back = 1; back <= 3 && back <= s.Length; back++)
         {
-            byte b = s[i];
-            if (b < 0x80) { i++; continue; }
-            int len = b >= 0xF0 && b <= 0xF4 ? 4 : b >= 0xE0 ? 3 : b >= 0xC2 && b < 0xE0 ? 2 : 0;
-            if (len == 0) return false;
-            if (i + len > s.Length) return true; // truncated at the end of the sample
-            for (int k = 1; k < len; k++) if ((s[i + k] & 0xC0) != 0x80) return false;
-            i += len;
+            byte b = s[^back];
+            if ((b & 0xC0) == 0x80) continue;
+            int need = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
+            if (need > back) end = s.Length - back;
+            break;
         }
-        return true;
+        return Utf8.IsValid(s[..end]);
     }
 
     static TextPreview()
@@ -84,15 +92,36 @@ internal static class TextPreview
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
     }
 
-    public static (string? Text, string? EncodingName) Decode(byte[] bytes)
+    public static (string? Text, string? EncodingName) Decode(byte[] bytes) => Decode(bytes, null);
+
+    /// <param name="known">The encoding already decided (as the index decides it); null = detect it from the bytes.</param>
+    private static (string? Text, string? EncodingName) Decode(byte[] bytes, Encoding? known)
     {
-        if (!LooksLikeText(bytes, out var enc) || enc == null) return (null, null);
+        var enc = known;
+        if (enc == null && (!LooksLikeText(bytes, out enc) || enc == null)) return (null, null);
         int skip = enc.GetPreamble().Length;
         if (skip > 0 && !bytes.AsSpan().StartsWith(enc.GetPreamble())) skip = 0;
         // Trim a possibly split trailing multibyte char.
         string text = enc.GetString(bytes, skip, bytes.Length - skip);
         if (text.Length > 0 && text[^1] == '�') text = text[..^1];
         return (text, DescribeEncoding(enc, skip > 0));
+    }
+
+    private static readonly HashSet<string> HtmlExtensions = new(StringComparer.OrdinalIgnoreCase) { ".htm", ".html", ".xhtml", ".shtml" };
+
+    /// <summary>
+    /// HTML: a byte order mark decides first, then the charset the page declares in its first 1,024 bytes
+    /// (&lt;meta charset&gt;), then the usual detection, as the HTML text reader in Core does.
+    /// </summary>
+    private static (string? Text, string? EncodingName) DecodeHtml(byte[] bytes, Encoding? known)
+    {
+        var enc = known;
+        if (enc == null && (!LooksLikeText(bytes, out enc) || enc == null)) return (null, null);
+        bool bom = enc.GetPreamble() is { Length: > 0 } pre && bytes.AsSpan().StartsWith(pre);
+        if (bom || TextDecoding.HtmlCharset(bytes) is not { } declared || declared.CodePage == enc.CodePage) return Decode(bytes, enc);
+        string text = declared.GetString(bytes);
+        if (text.Length > 0 && text[^1] == '\uFFFD') text = text[..^1];
+        return (text, declared.WebName + " (declared)");
     }
 
     private static string DescribeEncoding(Encoding e, bool bom) => e switch
@@ -103,12 +132,31 @@ internal static class TextPreview
         _ => e.WebName,
     };
 
-    public static PreviewResult? Render(string path, string ext, int maxBytes, bool force)
+    /// <param name="keepLayout">
+    /// Show the file's own lines as the index numbers them (a search match points at one): minified JSON isn't
+    /// reformatted, and the encoding is the one the text reader decides over its first 4 MB.
+    /// </param>
+    public static PreviewResult? Render(string path, string ext, int maxBytes, bool force, bool keepLayout = false)
     {
         long len = new FileInfo(path).Length;
-        var bytes = FileUtil.ReadHead(path, maxBytes);
+        byte[] bytes;
+        Encoding? asIndexed = null;
+        if (keepLayout && maxBytes < TextWindow.DetectBytes && len > maxBytes)
+        {
+            // Only read further to decide the encoding (a file can be valid UTF-8 for its first megabyte only).
+            var window = FileUtil.ReadHead(path, TextWindow.DetectBytes);
+            asIndexed = TextDecoding.Detect(window);
+            bytes = window.Length > maxBytes ? window[..maxBytes] : window;
+        }
+        else
+        {
+            bytes = FileUtil.ReadHead(path, maxBytes);
+            if (keepLayout) asIndexed = TextDecoding.Detect(bytes.AsSpan(0, Math.Min(bytes.Length, TextWindow.DetectBytes)));
+        }
         if (!force && !LooksLikeText(bytes.Length > 65536 ? bytes[..65536] : bytes, out _)) return null;
-        var (text, encName) = Decode(bytes);
+        // asIndexed is null without a match, or when the index's rule finds the file binary (a NUL past the first
+        // 64 KB, so the index has no words of it): then the preview decides as it always did.
+        var (text, encName) = HtmlExtensions.Contains(ext) ? DecodeHtml(bytes, asIndexed) : Decode(bytes, asIndexed);
         if (text == null)
         {
             if (!force) return null;
@@ -117,28 +165,40 @@ internal static class TextPreview
         }
         bool truncated = len > bytes.Length;
         string format = ext.TrimStart('.').ToUpperInvariant() + " text";
-        if (ext.Equals(".json", StringComparison.OrdinalIgnoreCase) && !truncated) text = TryPrettyJson(text, ref format);
+        bool layoutKept = false;
+        if (ext.Equals(".json", StringComparison.OrdinalIgnoreCase) && !truncated)
+        {
+            if (!keepLayout) text = TryPrettyJson(text, ref format);
+            else layoutKept = IsMinified(text);
+        }
         var res = new PreviewResult(path, PreviewKind.Text, "Text")
         {
             FormatName = format,
             Text = text,
             TextTruncated = truncated,
             TextEncoding = encName,
+            ShapedByMatch = layoutKept,
         };
-        int lines = 1;
-        foreach (char c in text) if (c == '\n') lines++;
+        // Lines end where the text view and the index say they do ("\r\n", "\n", a lone "\r" ...).
+        int lines = TextLines.Count(text);
         res.AddMeta("Lines", lines.ToString("N0") + (truncated ? "+" : ""));
         res.AddMeta("Encoding", encName);
         if (truncated) res.AddMeta("Shown", $"first {FileUtil.FormatShortSize(bytes.Length)} of {FileUtil.FormatShortSize(len)}");
         return res;
     }
 
+    /// <summary>"Minified" JSON: few line breaks for its size.</summary>
+    private static bool IsMinified(string text)
+    {
+        int nl = 0;
+        foreach (char c in text) if (c == '\n') nl++;
+        return text.Length >= 200 && nl <= text.Length / 200;
+    }
+
     private static string TryPrettyJson(string text, ref string format)
     {
         // Only reformat "minified" JSON (few line breaks for its size).
-        int nl = 0;
-        foreach (char c in text) if (c == '\n') nl++;
-        if (text.Length < 200 || nl > text.Length / 200) return text;
+        if (!IsMinified(text)) return text;
         try
         {
             using var doc = JsonDocument.Parse(text, new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip });

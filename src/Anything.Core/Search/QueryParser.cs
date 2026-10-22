@@ -189,14 +189,14 @@ public static class QueryParser
             return text.Length == 0 ? null : new TextNode(text, flags);
         }
 
-        /// <summary>Reads "name:" at the current position when name is a known modifier/function.</summary>
+        /// <summary>Reads "name:" at the current position when name is a known modifier/function; dashes after the first character are left out, as in Everything 1.5 (date-taken: is datetaken:).</summary>
         bool TryReadName(out string name)
         {
             name = "";
             int i = _pos;
-            while (i < s.Length && char.IsAsciiLetterOrDigit(s[i])) i++;
+            while (i < s.Length && (char.IsAsciiLetterOrDigit(s[i]) || (s[i] == '-' && i > _pos))) i++;
             if (i == _pos || i >= s.Length || s[i] != ':') return false;
-            string candidate = s[_pos..i];
+            string candidate = s[_pos..i].Replace("-", "");
             if (!IsKnownName(candidate)) return false;
             name = candidate;
             _pos = i + 1;
@@ -269,5 +269,12 @@ public static class QueryParser
             literal = '\0';
             return false;
         }
+    }
+
+    /// <summary>Adds the search-inside-files names (content:, width:, title:, cmyk: …) to the tables.</summary>
+    static QueryParser()
+    {
+        foreach (var (alias, canonical) in Content.Search.ContentFunctions.FunctionAliases) Functions[alias] = canonical;
+        foreach (var (alias, canonical) in Content.Search.ContentFunctions.RestrictionAliases) Restrictions[alias] = canonical;
     }
 }

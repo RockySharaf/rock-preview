@@ -27,6 +27,12 @@ public sealed class SearchEngine : ISearchEngine
     /// <summary>Clock used for relative dates (today, last2weeks, ...). Tests inject a fixed "now".</summary>
     internal Func<DateTime> Clock { get; set; } = () => DateTime.Now;
 
+    /// <summary>How long plain words wait for their lookups inside files (tests change it).</summary>
+    internal TimeSpan ContentBudget { get; set; } = Content.Search.ContentSearch.PlainBudget;
+
+    /// <summary>Test hook: "before-lock", "locked" (read lock held) and "unlocking" (still held).</summary>
+    internal Action<string>? Probe { get; set; }
+
     public SearchEngine() { }
 
     public SearchResults Search(FileIndex index, string query, SearchOptions options, SortKey sort, bool descending, CancellationToken cancellationToken)
@@ -36,11 +42,21 @@ public sealed class SearchEngine : ISearchEngine
         var sw = Stopwatch.StartNew();
         cancellationToken.ThrowIfCancellationRequested();
 
-        QueryNode node = QueryParser.ParseWithFilter(query, options);
+        // The query and the filter are parsed apart, so only the query's plain words can look inside files (both parser versions).
+        QueryNode q = QueryParser.Parse(query, options);
+        QueryNode? filter = string.IsNullOrWhiteSpace(options.Filter) ? null : QueryParser.ParseWithFilter(null, options);
+        QueryNode node = filter is null ? q : QueryNode.And(q, filter);
+        var now = Clock();
+        Content.Search.ContentPrefetch? content; // every content lookup happens here, before the index lock
+        try { content = Content.Search.ContentSearch.Begin(index, q, options, now, cancellationToken, filter, ContentBudget); }
+        catch (QueryException ex) { return new SearchResults { Ids = [], Error = ex.Message, Elapsed = sw.Elapsed }; }
+        using var lease = content;
 
+        Probe?.Invoke("before-lock");
         index.Lock.EnterReadLock();
         try
         {
+            Probe?.Invoke("locked");
             var paths = _paths;
             if (paths == null || !paths.IsValidFor(index))
             {
@@ -48,7 +64,8 @@ public sealed class SearchEngine : ISearchEngine
                 _paths = paths;
             }
             (_releasePaths ??= new Timer(_ => _paths = null)).Change(PathCacheIdleMs, Timeout.Infinite);
-            var ctx = new SearchContext(index, paths, Clock());
+            var ctx = new SearchContext(index, paths, now);
+            Content.Search.ContentSearch.Attach(ctx, content);
             if (sort is SortKey.RunCount or SortKey.DateRun) ctx.NeedRuns = true;
             Matcher matcher;
             try
@@ -80,7 +97,7 @@ public sealed class SearchEngine : ISearchEngine
                         cancellationToken.ThrowIfCancellationRequested();
                         found = cache.Order(found, descending);
                     }
-                    return new SearchResults { Ids = found, Elapsed = sw.Elapsed };
+                    return Content.Search.ContentSearch.Results(found, matcher, ctx, sw, cancellationToken);
                 }
             }
 
@@ -88,10 +105,11 @@ public sealed class SearchEngine : ISearchEngine
             if (ctx.Dupe) ids = DupeFilter(index, ids);
             cancellationToken.ThrowIfCancellationRequested();
             ResultSorter.Sort(index, ctx, ids, sort, descending, cancellationToken);
-            return new SearchResults { Ids = ids, Elapsed = sw.Elapsed };
+            return Content.Search.ContentSearch.Results(ids, matcher, ctx, sw, cancellationToken);
         }
         finally
         {
+            Probe?.Invoke("unlocking");
             index.Lock.ExitReadLock();
         }
     }

@@ -15,6 +15,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Core has no UI dependencies: the preview shares its text decoding and line rule (TextDecoding, TextLines). -->
+    <ProjectReference Include="..\Anything.Core\Anything.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="PreviewHarness" />
     <InternalsVisibleTo Include="Anything.Tests" />
   </ItemGroup>

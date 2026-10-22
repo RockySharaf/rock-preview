@@ -12,7 +12,7 @@ namespace Anything;
 /// Process-wide state: the shared index and search engine, settings, the search windows, the tray icon,
 /// the global hotkey and the hidden message window that receives forwarded command lines.
 /// </summary>
-internal sealed class AnythingApp : ApplicationContext
+internal sealed partial class AnythingApp : ApplicationContext
 {
     readonly List<MainForm> _windows = [];
     readonly SynchronizationContext _sync;
@@ -51,7 +51,7 @@ internal sealed class AnythingApp : ApplicationContext
             if (cmd.Demo)
             {
                 index = new DemoIndexManager();
-                engine = new DemoSearchEngine();
+                engine = new DemoContentEngine(new DemoSearchEngine());
             }
             else
             {
@@ -96,6 +96,7 @@ internal sealed class AnythingApp : ApplicationContext
 
         UpdateTray();
         RegisterHotkey();
+        StartContent();
         HandleCommandLine(cmd, initial: true);
         StartUpdateChecks();
         RefreshDrives();
@@ -309,6 +310,7 @@ internal sealed class AnythingApp : ApplicationContext
         _welcome?.Close();
         _messageWindow.UnregisterHotkey();
         _messageWindow.DestroyHandle();
+        StopContent();
         try { IndexManager.Save(); } catch { }
         try { IndexManager.Dispose(); } catch { }
         ExitThread();

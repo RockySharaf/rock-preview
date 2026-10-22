@@ -109,6 +109,16 @@ public sealed class FileIndex
     /// <summary>Run counts and dates of the files opened from the app (Run Count, Date Run, runcount:, dr:).</summary>
     public RunHistory RunHistory { get; set; } = new();
 
+    /// <summary>The text index searches read for words inside files; null when there is none (content terms match nothing).</summary>
+    internal Content.ContentSource? Content { get; set; }
+
+    /// <summary>
+    /// Raised by <see cref="Compact"/> inside its write lock, after <see cref="Generation"/> moved, with the old-to-new id
+    /// map and the new generation. Each handler runs alone in a try/catch (a throwing one is ignored, so Compact always
+    /// returns the remap its callers translate with); handlers must not block.
+    /// </summary>
+    internal event Action<int[], long>? Compacted;
+
     /// <summary>Whether date accessed is indexed (<see cref="Accessed"/> is 0 for every entry while it isn't).</summary>
     public bool HasDateAccessed => _accessed != null;
 
@@ -513,6 +523,9 @@ public sealed class FileIndex
             Resize(Math.Max(1024, k + k / 32)); // ~3% headroom for live additions
             Interlocked.Increment(ref _version);
             Interlocked.Increment(ref _generation);
+            if (Compacted is { } compacted)
+                foreach (var handler in compacted.GetInvocationList())
+                    try { ((Action<int[], long>)handler)(remap, Interlocked.Read(ref _generation)); } catch { }
         }
         finally { Lock.ExitWriteLock(); }
         RaiseChanged();

@@ -142,6 +142,7 @@ internal sealed partial class MainForm
         _miDiacritics = Item("Match &Diacritics", () => Toggle(() => _diacritics = !_diacritics), Keys.Control | Keys.M);
         _miRegex = Item("Enable &Regex", () => Toggle(() => _regex = !_regex), Keys.Control | Keys.R);
         search.DropDownItems.AddRange([_miMatchCase, _miWholeWord, _miMatchPath, _miDiacritics, _miRegex, new ToolStripSeparator()]);
+        AddContentMenuItems(search);
         for (int i = 0; i < Filters.All.Length; i++)
         {
             int fi = i;
@@ -681,9 +682,9 @@ internal sealed partial class MainForm
         var m = new ContextMenuStrip();
         foreach (var c in Columns.All)
         {
-            if (c.Key == "name") continue;
+            if (c.Key == "name" || !HeaderMenuShows(c)) continue;
             string key = c.Key;
-            m.Items.Add(new ToolStripMenuItem(c.Title, null, (_, _) => ToggleColumn(key)) { Checked = _cols[key].Visible });
+            m.Items.Add(new ToolStripMenuItem(c.MenuTitle ?? c.Title, null, (_, _) => ToggleColumn(key)) { Checked = _cols[key].Visible });
         }
         ShowTransient(m, screen);
     }
@@ -716,7 +717,7 @@ internal sealed partial class MainForm
 
     // ---- export / bookmarks / about -----------------------------------------------------------
 
-    void Export()
+    async void Export()
     {
         using var dlg = new SaveFileDialog
         {
@@ -731,11 +732,11 @@ internal sealed partial class MainForm
         int type = dlg.FilterIndex - 1;
         _app.Settings.LastExportType = type;
         var columns = _list.Columns.Cast<ColumnHeader>().OrderBy(c => c.DisplayIndex).Select(c => (ColumnDef)c.Tag!).ToList();
-        var ids = _ids;
+        var ids = ResultsCurrent ? _ids : [];
         Cursor = Cursors.WaitCursor;
         try
         {
-            ResultExporter.Export(dlg.FileName, (ExportFormat)type, _app.IndexManager.Index, ids, columns);
+            await ResultExporter.ExportAsync(dlg.FileName, (ExportFormat)type, _app.IndexManager.Index, ids, columns, ContentExportText(), _resultGeneration);
         }
         catch (Exception ex)
         {
@@ -761,6 +762,7 @@ internal sealed partial class MainForm
             MatchPath = _matchPath,
             MatchDiacritics = _diacritics,
             Regex = _regex,
+            MatchContent = ContentTab().MatchContent,
         });
         _app.BookmarksChanged();
     }
@@ -778,6 +780,7 @@ internal sealed partial class MainForm
     {
         (_matchCase, _wholeWord, _matchPath, _diacritics, _regex) = (b.MatchCase, b.MatchWholeWord, b.MatchPath, b.MatchDiacritics, b.Regex);
         _filterIndex = Filters.IndexOf(b.Filter);
+        ApplyBookmarkContent(b);
         _sort = b.Sort;
         _desc = b.Descending;
         _suppress = true;

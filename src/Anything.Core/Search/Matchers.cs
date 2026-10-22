@@ -303,7 +303,7 @@ internal sealed class QueryCompiler(SearchContext ctx, bool largeIndex)
             NoneMatcher => AllMatcher.Instance,
             var m => new NotMatcher(m),
         },
-        TextNode t => CompileText(t.Text, t.Flags, allowWholeWord: true),
+        TextNode t => Content.Search.ContentCompile.Text(t, CompileText(t.Text, t.Flags, allowWholeWord: true), ctx),
         FunctionNode f => CompileFunction(f),
         _ => throw new QueryException("Unsupported query node " + node.GetType().Name),
     };
@@ -437,6 +437,7 @@ internal sealed class QueryCompiler(SearchContext ctx, bool largeIndex)
                 ctx.Dupe = true;
                 return new DupeMatcher();
         }
+        if (Content.Search.ContentCompile.Function(f, ctx) is { } cm) return cm;
         throw new QueryException($"Unknown function '{f.Name}:'");
     }
 

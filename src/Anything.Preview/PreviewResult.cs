@@ -111,6 +111,24 @@ public sealed class PreviewResult : IDisposable
     public Guid HandlerClsid { get; internal set; }
     public string? HandlerName { get; internal set; }
 
+    /// <summary>
+    /// The built-in text was shown instead of the file's own preview (a shell preview handler or a saved thumbnail) because
+    /// <see cref="PreviewOptions.PreferBuiltInText"/> asked for text the matches can be highlighted in.
+    /// </summary>
+    internal bool InsteadOfOriginal { get; set; }
+
+    /// <summary>The sheet a workbook table shows (xlsx, ods); null for other results.</summary>
+    internal string? Sheet { get; set; }
+
+    /// <summary>The shown sheet was picked by <see cref="PreviewOptions.Sheet"/>, not the default first visible one.</summary>
+    internal bool SheetFromOptions { get; set; }
+
+    /// <summary>
+    /// The match changed what is shown (built-in text instead of the original, slides in presentation order with notes,
+    /// minified JSON not reformatted): without a match the file is rendered again, so it looks exactly as it always did.
+    /// </summary>
+    internal bool ShapedByMatch { get; set; }
+
     public MediaInfo? Media { get; internal set; }
 
     /// <summary>Hex dump of the first bytes (binary files on the info card).</summary>
@@ -174,4 +192,14 @@ public sealed class PreviewOptions
     public bool AllowHostedHandler { get; init; } = true;
     /// <summary>Max bytes of text to load.</summary>
     public int MaxTextBytes { get; init; } = 1024 * 1024;
+    /// <summary>
+    /// Set while a search match is shown: the file's own text, so the words can be highlighted. The built-in Word,
+    /// Excel, PowerPoint, OpenDocument and RTF text renderers come before the shell preview handler and the saved
+    /// thumbnail (<see cref="PreviewResult.InsteadOfOriginal"/> says when that changed the outcome), text keeps its
+    /// lines (minified JSON isn't reformatted), PowerPoint slides come in presentation order with their notes, and a
+    /// one-page PDF keeps its page source.
+    /// </summary>
+    public bool PreferBuiltInText { get; init; }
+    /// <summary>The workbook sheet to show (xlsx, ods), matched by name; null or unknown = the first visible sheet.</summary>
+    public string? Sheet { get; init; }
 }

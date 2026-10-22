@@ -28,10 +28,12 @@ internal sealed class Bookmark
     public bool MatchPath { get; set; }
     public bool MatchDiacritics { get; set; }
     public bool Regex { get; set; }
+    /// <summary>Plain words also look inside files (Search › Match inside files); null = leave the window's toggle as it is.</summary>
+    public bool? MatchContent { get; set; }
 }
 
 /// <summary>Application settings persisted as a simple key=value ini in %APPDATA%\Anything\Anything.ini.</summary>
-internal sealed class AppSettings
+internal sealed partial class AppSettings
 {
     const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     const string RunValue = "Rock Preview";
@@ -238,6 +240,7 @@ internal sealed class AppSettings
         ix.IndexRecentChanges = Bool("index_recent_changes", ix.IndexRecentChanges);
         ix.RecentChangesFromJournal = Bool("load_recent_changes", ix.RecentChangesFromJournal);
         if (Str("database_path", "") is { Length: > 0 } db) ix.DatabasePath = db;
+        LoadContent(s, v);
 
         int count = Int("bookmark_count", 0);
         for (int i = 0; i < count; i++)
@@ -254,6 +257,7 @@ internal sealed class AppSettings
                 MatchPath = Bool(p + "match_path", false),
                 MatchDiacritics = Bool(p + "match_diacritics", false),
                 Regex = Bool(p + "match_regex", false),
+                MatchContent = v.ContainsKey(p + "match_content") ? Bool(p + "match_content", false) : null,
             };
             if (Enum.TryParse(Str(p + "sort", ""), true, out SortKey bs)) b.Sort = bs;
             if (b.Name.Length > 0) s.Bookmarks.Add(b);
@@ -329,6 +333,7 @@ internal sealed class AppSettings
         B("index_folder_size", Index.IndexFolderSizes);
         B("index_recent_changes", Index.IndexRecentChanges);
         B("load_recent_changes", Index.RecentChangesFromJournal);
+        SaveContent(sb);
         W("bookmark_count", Bookmarks.Count);
         for (int i = 0; i < Bookmarks.Count; i++)
         {
@@ -344,6 +349,7 @@ internal sealed class AppSettings
             B(p + "match_path", b.MatchPath);
             B(p + "match_diacritics", b.MatchDiacritics);
             B(p + "match_regex", b.Regex);
+            if (b.MatchContent is bool mc) B(p + "match_content", mc);
         }
         try
         {

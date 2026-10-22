@@ -82,6 +82,7 @@ internal sealed class BookmarksForm : DialogBase
         {
             Name = b.Name, Query = b.Query, Filter = b.Filter, Sort = b.Sort, Descending = b.Descending,
             MatchCase = b.MatchCase, MatchWholeWord = b.MatchWholeWord, MatchPath = b.MatchPath, MatchDiacritics = b.MatchDiacritics, Regex = b.Regex,
+            MatchContent = b.MatchContent,
         }).ToList();
 
         SuspendLayout();
@@ -188,6 +189,47 @@ internal sealed class SearchSyntaxForm : Form
         FILTER MACROS
           audio:  zip:  doc:  exe:  pic:  video:
 
+        SEARCH INSIDE FILES (Settings › Indexing › Search inside files)
+          plain words                With Search › Match inside files on, a word of 3 or more letters also
+                                     finds files with it inside; those matched by name come first
+                                     (Chinese, Japanese, Korean: 2 characters; use content: for longer);
+                                     with Match Path or Regex on, words match names only (use content:)
+          content:<word>             A word inside the file, starting like this: content:invoice
+          ww:content:report          Exactly that word
+          content:"annual report"    Words next to each other
+          content:INV-2024           Codes: the separators don't matter
+          content:inv*24             A wildcard within one word (regular expressions can't be used)
+          case:content:Café          Exact case; diacritics:content:café for exact accents
+          content:                   Files whose words are searchable
+                                     (utf8content:, ansicontent: and Everything's other content: names mean the same)
+          title:  subject:  comment: (description:)  author: (authors:)  keywords: (keyword:, tags:, tag:)
+                                     A word in that field (documents' properties, pictures; an email's subject
+                                     is subject:, its sender author:)
+          from: (sender:)  to: (recipients:)
+                                     An email's sender / its recipients (To and Cc)
+          pagecount:<n>              Pages, slides or sheets, e.g. pagecount:>20 (also page-count:)
+          contentstatus:<status>     How reading went: ok, truncated, notext, cloud, optedout, efs, password,
+                                     toobig, damaged, unsupported, denied, timeout, crashed; failed = any problem
+
+        PICTURES' DETAILS (with "Also search inside documents and pictures' details")
+          width:  height:            Size in pixels as shown, e.g. width:>=3000 (also wide:, high:)
+          dimensions:<w>x<h>         e.g. dimensions:2480x3508  dimensions:>=1920x1080 (also dimension:)
+          orientation:<o>            landscape, portrait or square
+          dpi:<n>                    Resolution (the lower of the two), e.g. dpi:<300  dpi:72..150
+          horizontalresolution:<n>  verticalresolution:<n>
+                                     Resolution across / down, in dpi
+          colormode:<mode>           rgb, cmyk, gray, lab, indexed, bitmap, multichannel, duotone;
+                                     cmyk: and rgb: for short (cmyk: logo)
+          colorspace:<space>         The EXIF colour space: srgb or uncalibrated (also colorrepresentation:)
+          bitdepth:<n>               Bits per pixel (also bitsperpixel:, bpp:)
+          rating:<n>                 Stars, 0-5
+          datetaken:<date>           Like dm:, e.g. datetaken:2023  date-taken:lastweek
+          camera:  cameramake: (cameramaker:)  cameramodel:   e.g. camera:canon
+          gps:  !gps:                With / without a place
+
+          Names with a dash work too (date-taken:). These function names are new: to find a file whose
+          name contains one, put it in quotes, e.g. "title:draft" or "camera:old.jpg".
+
         EXAMPLES
           report pdf                 names containing "report" and "pdf"
           *.mp3 | *.flac             mp3 or flac files
@@ -195,9 +237,12 @@ internal sealed class SearchSyntaxForm : Form
           "my documents" !temp       phrase, excluding "temp"
           c:\projects\ .cs            .cs files under c:\projects
           dm:today folder:           folders modified today
+          content:invoice ext:pdf    PDFs with "invoice" inside
+          dpi:<300 cmyk:             CMYK pictures under 300 dpi
+          tags:beach datetaken:2024  pictures tagged "beach", taken in 2024
 
-        Search menu toggles (Ctrl+I case, Ctrl+B whole word, Ctrl+U path, Ctrl+M diacritics, Ctrl+R regex)
-        apply to the whole search; modifiers override them per term.
+        Search menu toggles (Ctrl+I case, Ctrl+B whole word, Ctrl+U path, Ctrl+M diacritics, Ctrl+R regex,
+        Match inside files) apply to the whole search; modifiers override them per term.
         """;
 
     SearchSyntaxForm()

@@ -16,7 +16,8 @@ internal static class PdfPreview
     /// <summary>Files up to this size are loaded into memory (no handle kept); larger ones stream with full sharing.</summary>
     private const long InMemoryLimit = 96L * 1024 * 1024;
 
-    public static async Task<PreviewResult?> RenderAsync(string path, Size target, CancellationToken ct, string provider = "PDF")
+    /// <param name="keepSinglePage">Keep the page source of a one-page document too (a search match is shown on it).</param>
+    public static async Task<PreviewResult?> RenderAsync(string path, Size target, CancellationToken ct, string provider = "PDF", bool keepSinglePage = false)
     {
         var src = await PdfPageSource.OpenAsync(path, ct).ConfigureAwait(false);
         if (src == null) return null;
@@ -27,11 +28,11 @@ internal static class PdfPreview
             {
                 FormatName = provider == "PDF" ? "PDF document" : "PDF-compatible document",
                 Image = first,
-                Pages = src.Count > 1 ? src : null,
+                Pages = src.Count > 1 || keepSinglePage ? src : null,
             };
             res.AddMeta("Pages", src.Count.ToString());
             res.AddMeta("Page size", src.FirstPageSizeText);
-            if (src.Count <= 1) src.Dispose();
+            if (res.Pages == null) src.Dispose();
             return res;
         }
         catch

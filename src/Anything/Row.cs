@@ -24,6 +24,12 @@ internal sealed class Row
     public int Icon = -1;
     public IReadOnlyList<(int Start, int Length)>? NameHighlights, PathHighlights;
     public ListViewItem? Item;
+    /// <summary>The line this result matched inside the file (Matching text), once SnippetResolver has it; null meanwhile or when none.</summary>
+    public Anything.Core.Content.ContentSnippet? Snippet;
+    /// <summary>Why the file's words aren't searchable, shown in Matching text instead of a line ("Password-protected").</summary>
+    public string? SnippetReason;
+    /// <summary>The snippet was looked up for the current query (found or not), so the row doesn't ask again.</summary>
+    public bool SnippetAsked;
 
     public string TypeText => _type ??= ShellInfo.GetTypeName(Ext, IsDir);
 
@@ -74,6 +80,7 @@ internal sealed class Row
         "date_recently_changed" => FormatDate(RecentChange),
         "run_count" => RunCount > 0 ? RunCount.ToString("N0", CultureInfo.CurrentCulture) : "",
         "date_run" => FormatDate(LastRun),
+        "content" => Snippet is { } s ? Anything.Core.Content.ContentPresentation.SnippetPrefix(s) + Anything.Core.Content.ContentPresentation.SnippetBody(s).Text : SnippetReason ?? "",
         _ => "",
     };
 
