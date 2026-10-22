@@ -421,12 +421,14 @@ internal sealed partial class MainForm : Form
         int focus = FocusedIndex();
         if (thumbs)
         {
+            bool shown = _grid.Visible;
             _grid.ThumbSize = EffectiveThumbSize;
             if (_listFont != null) _grid.Font = _listFont;
             _grid.BackColor = _list.BackColor;
             _grid.ForeColor = _list.ForeColor;
             _grid.SetCount(_ids.Length, reset: false);
-            if (focus >= 0) _grid.EnsureVisible(focus);
+            // Switching to Thumbnails shows the focused item; zooming keeps the place the grid is at.
+            if (focus >= 0 && !shown) _grid.EnsureVisible(focus);
         }
         else if (focus >= 0 && focus < _ids.Length)
         {
@@ -923,11 +925,12 @@ internal sealed partial class MainForm : Form
 
         _suppress = true;
         _list.BeginUpdate();
+        int newFocus = -1;
         try
         {
             if (_list.SelectedIndices.Count > 0) _list.SetAllSelected(false);
             _list.VirtualListSize = _ids.Length;
-            int newFocus = SelectIds(focusedId, selectedIds);
+            newFocus = SelectIds(focusedId, selectedIds);
             if (_ids.Length > 0)
             {
                 if (reason == SearchReason.NewQuery) _list.EnsureVisible(0);
@@ -941,7 +944,12 @@ internal sealed partial class MainForm : Form
             _suppress = false;
         }
         _list.Invalidate();
-        if (ThumbnailMode) _grid.SetCount(_ids.Length, reset: reason == SearchReason.NewQuery);
+        if (ThumbnailMode)
+        {
+            _grid.SetCount(_ids.Length, reset: reason == SearchReason.NewQuery);
+            // A new sort order moves the focused file: the grid follows it, as the list does.
+            if (reason == SearchReason.Resort && newFocus >= 0) _grid.EnsureVisible(newFocus);
+        }
         UpdateStatus();
         QueuePreview();
         UpdateFolderBar(); // a search inside a folder the index doesn't have says so, and so does the empty text
