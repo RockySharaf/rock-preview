@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Security.Principal;
+using Anything.Core;
 using Microsoft.Win32;
 
 namespace Anything;
@@ -78,21 +80,20 @@ internal static class ExplorerReplacement
         return classes is not null && References(classes, folder);
     }
 
-    /// <summary>Why another account stops an uninstall for everyone.</summary>
-    public enum AccountUse { UsesIt, CouldNotCheck }
-
     /// <summary>
     /// The other Windows accounts whose folders, drives, This PC or Win+E run the program in <paramref name="folder"/>, or
     /// whose settings couldn't be checked (counted too, so the program isn't deleted under them), with their names (null
-    /// when Windows can't name the account: an old profile of a removed account). A signed-in account's registry classes
-    /// are loaded under HKEY_USERS; a signed-out one's are read from its UsrClass.dat. Both need administrator rights.
-    /// Accounts in <paramref name="except"/> (SIDs) are skipped.
+    /// when Windows can't name the account now: a work account away from its network, say) and profile folders. A
+    /// signed-in account's registry classes are loaded under HKEY_USERS; a signed-out one's are read from its UsrClass.dat.
+    /// Both need administrator rights. Accounts in <paramref name="except"/> (SIDs) are skipped, and so is a signed-out
+    /// local account that was deleted from this PC (UninstallRules.IsRemovedLocalAccount): it never signs in again.
     /// </summary>
-    public static List<(string Sid, string? Name, AccountUse Use)> OtherAccountsUsing(string folder, IEnumerable<string?> except)
+    public static List<OtherAccount> OtherAccountsUsing(string folder, IEnumerable<string?> except)
     {
         var skip = new HashSet<string>(except.OfType<string>(), StringComparer.OrdinalIgnoreCase);
-        var found = new List<(string, string?, AccountUse)>();
+        var found = new List<OtherAccount>();
         var loaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using var profiles = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList");
         foreach (string hive in Registry.Users.GetSubKeyNames())
         {
             if (!hive.EndsWith("_Classes", StringComparison.OrdinalIgnoreCase)) continue;
@@ -102,32 +103,51 @@ internal static class ExplorerReplacement
             try
             {
                 using var classes = Registry.Users.OpenSubKey(hive);
-                if (classes is not null && References(classes, folder)) found.Add((sid, AccountName(sid), AccountUse.UsesIt));
+                if (classes is not null && References(classes, folder)) found.Add(new(sid, Identify(sid).Name, ProfileOf(profiles, sid), AccountUse.UsesIt));
             }
-            catch (Exception) { found.Add((sid, AccountName(sid), AccountUse.CouldNotCheck)); }
+            catch (Exception) { found.Add(new(sid, Identify(sid).Name, ProfileOf(profiles, sid), AccountUse.CouldNotCheck)); }
         }
         // Accounts that aren't signed in: their classes hive is a file in their profile, read privately and let go again.
-        using var profiles = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList");
+        string? machine = null;
         foreach (string key in profiles?.GetSubKeyNames() ?? [])
         {
             // Only people's accounts (local, domain, Microsoft or work accounts), not the system's service accounts, and
             // only keys that are an account (not a profile repair's "<SID>.bak").
             if (!(key.StartsWith("S-1-5-21-", StringComparison.OrdinalIgnoreCase) || key.StartsWith("S-1-12-1-", StringComparison.OrdinalIgnoreCase))
                 || !IsSid(key) || skip.Contains(key) || loaded.Contains(key)) continue;
-            using var profile = profiles!.OpenSubKey(key);
-            if (profile?.GetValue("ProfileImagePath") is not string { Length: > 0 } raw) continue;
-            string file = Path.Combine(Environment.ExpandEnvironmentVariables(raw), @"AppData\Local\Microsoft\Windows\UsrClass.dat");
+            if (ProfileOf(profiles, key) is not { } home) continue;
+            string file = Path.Combine(home, @"AppData\Local\Microsoft\Windows\UsrClass.dat");
             if (!File.Exists(file)) continue; // never signed in, or no classes of its own: nothing can point here
+            AccountUse? use = null;
             int rc = RegLoadAppKey(file, out var handle, KEY_READ, 0, 0);
-            if (rc != 0) { handle.Dispose(); found.Add((key, AccountName(key), AccountUse.CouldNotCheck)); continue; }
-            try
+            if (rc != 0) { handle.Dispose(); use = AccountUse.CouldNotCheck; }
+            else
             {
-                using var classes = RegistryKey.FromHandle(handle);
-                if (References(classes, folder)) found.Add((key, AccountName(key), AccountUse.UsesIt));
+                try
+                {
+                    using var classes = RegistryKey.FromHandle(handle);
+                    if (References(classes, folder)) use = AccountUse.UsesIt;
+                }
+                catch (Exception) { use = AccountUse.CouldNotCheck; }
             }
-            catch (Exception) { found.Add((key, AccountName(key), AccountUse.CouldNotCheck)); }
+            if (use is not { } why) continue;
+            // Named only now: looking up an account away from its domain can take a while.
+            var (name, notMapped) = Identify(key);
+            if (UninstallRules.IsRemovedLocalAccount(key, notMapped, machine ??= MachineAccountDomain())) continue;
+            found.Add(new(key, name, home, why));
         }
         return found;
+    }
+
+    /// <summary>An account's profile folder from the ProfileList, or null when it lists none.</summary>
+    static string? ProfileOf(RegistryKey? profiles, string sid)
+    {
+        try
+        {
+            using var profile = profiles?.OpenSubKey(sid);
+            return profile?.GetValue("ProfileImagePath") is string { Length: > 0 } raw ? Environment.ExpandEnvironmentVariables(raw) : null;
+        }
+        catch (Exception) { return null; }
     }
 
     static bool IsSid(string text)
@@ -178,11 +198,45 @@ internal static class ExplorerReplacement
         return key?.GetValue(null) as string;
     }
 
-    static string? AccountName(string sid)
+    /// <summary>
+    /// The account's name, or null when Windows can't name it; NotMapped when Windows said there is no such account, not
+    /// when it couldn't find out (a domain controller that can't be reached may answer either way).
+    /// </summary>
+    static (string? Name, bool NotMapped) Identify(string sid)
     {
-        try { return new System.Security.Principal.SecurityIdentifier(sid).Translate(typeof(System.Security.Principal.NTAccount)).Value; }
-        catch (Exception) { return null; }
+        try { return (new SecurityIdentifier(sid).Translate(typeof(NTAccount)).Value, false); }
+        catch (IdentityNotMappedException) { return (null, true); }
+        catch (Exception) { return (null, false); }
     }
+
+    /// <summary>This PC's own account domain (its local accounts' SIDs are it and one more number), or null when unknown.</summary>
+    static string? MachineAccountDomain()
+    {
+        var attributes = new LSA_OBJECT_ATTRIBUTES { Length = Marshal.SizeOf<LSA_OBJECT_ATTRIBUTES>() };
+        if (LsaOpenPolicy(IntPtr.Zero, ref attributes, POLICY_VIEW_LOCAL_INFORMATION, out IntPtr policy) != 0) return null;
+        try
+        {
+            if (LsaQueryInformationPolicy(policy, PolicyAccountDomainInformation, out IntPtr info) != 0) return null;
+            try
+            {
+                IntPtr sid = Marshal.PtrToStructure<POLICY_ACCOUNT_DOMAIN_INFO>(info).DomainSid;
+                return sid == IntPtr.Zero ? null : new SecurityIdentifier(sid).Value;
+            }
+            finally { LsaFreeMemory(info); }
+        }
+        catch (Exception) { return null; }
+        finally { LsaClose(policy); }
+    }
+
+    const int POLICY_VIEW_LOCAL_INFORMATION = 0x1, PolicyAccountDomainInformation = 5;
+    [StructLayout(LayoutKind.Sequential)]
+    struct LSA_OBJECT_ATTRIBUTES { public int Length; public IntPtr RootDirectory, ObjectName; public int Attributes; public IntPtr SecurityDescriptor, SecurityQualityOfService; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct POLICY_ACCOUNT_DOMAIN_INFO { public ushort NameLength, NameMaximumLength; public IntPtr NameBuffer, DomainSid; }
+    [DllImport("advapi32.dll")] static extern int LsaOpenPolicy(IntPtr systemName, ref LSA_OBJECT_ATTRIBUTES attributes, int access, out IntPtr policy);
+    [DllImport("advapi32.dll")] static extern int LsaQueryInformationPolicy(IntPtr policy, int infoClass, out IntPtr buffer);
+    [DllImport("advapi32.dll")] static extern int LsaFreeMemory(IntPtr buffer);
+    [DllImport("advapi32.dll")] static extern int LsaClose(IntPtr policy);
 
     /// <summary>Makes <paramref name="exe"/> replace File Explorer. Safe to call again to move it to another exe.</summary>
     public static void Enable(string exe)

@@ -209,12 +209,18 @@ Ultimate File Explorer doesn't patch File Explorer to change that.
    and earlier choices.
 2. Prefer no install? Download **`RockPreview.exe`** — the portable version runs from any folder or USB stick.
 
-Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall in one click from the app's
-**Settings › About › Uninstall** (or from Windows' **Settings › Apps**): the program, its shortcuts, start with Windows
-and the instant-indexing service go, folders and Win+E go back to File Explorer, and your settings and search index stay
-unless you tick *Also delete my Ultimate File Explorer settings and search index*. Windows may also ask for permission (to
-remove the service, or an install for everyone). If another account on this PC still uses it in place of File Explorer,
-it says so and removes nothing until that account turns it off.
+Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall the installed version in one
+click from the app's **Settings › About › Uninstall** (or from Windows' **Settings › Apps**): the program, its shortcuts,
+start with Windows and the instant-indexing service go, folders and Win+E go back to File Explorer, and your settings and
+search index stay unless you tick *Also delete my Ultimate File Explorer settings and search index*. Windows may also ask
+for permission (to remove the service, or an install for everyone). If another account on this PC still uses it in place
+of File Explorer, or its settings can't be checked, it says so and removes nothing until that account turns it off (a
+local account that was deleted from this PC doesn't count).
+
+The portable version has no Settings › Apps entry. If it set Windows up for itself (*Use instead of Windows File
+Explorer*, *Start when Windows starts* or instant indexing), **Settings › About › Remove from this PC** turns all of that
+off, with the same question about your settings and search index, and keeps `RockPreview.exe`: delete it afterwards. If
+it set nothing up, deleting `RockPreview.exe` is all there is to do.
 
 > **Windows SmartScreen** may say "Windows protected your PC" because the download isn't code-signed yet.
 > Click **More info › Run anyway**.

@@ -214,10 +214,13 @@ static class Program
         }
     }
 
-    /// <summary>Sends a command line to the running Rock Preview, if there is one (setup uses it to close the app).</summary>
-    public static bool ForwardToRunning(IReadOnlyList<string> args)
+    /// <summary>
+    /// Sends a command line to the running Rock Preview (or with <paramref name="demo"/>, the running demo), if there is
+    /// one (setup uses it to close the app).
+    /// </summary>
+    public static bool ForwardToRunning(IReadOnlyList<string> args, bool demo = false)
     {
-        IntPtr hwnd = FindInstance("", 0);
+        IntPtr hwnd = FindInstance(demo ? ".Demo" : "", 0);
         if (hwnd == IntPtr.Zero) return false;
         Forward(hwnd, args);
         return true;

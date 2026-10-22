@@ -46,6 +46,11 @@ internal sealed partial class SettingsForm : Form
     // Keyboard
     readonly HotkeyBox _hotkey = new();
     readonly ToggleSwitch _hotkeyWin = new();
+    // About
+    SettingCard? _uninstallCard;
+    Button? _uninstallButton;
+    Action? _uninstallAction; // what the button does, from the last look (RefreshUninstallCard)
+    int _uninstallLook;       // that look's number: an earlier one that answers later is dropped
 
     static Color Back => ExplorerTheme.Dark ? Color.FromArgb(0x20, 0x20, 0x20) : Color.FromArgb(0xF3, 0xF3, 0xF3);
     internal static Color CardFill => ExplorerTheme.Dark ? Color.FromArgb(0x2B, 0x2B, 0x2B) : Color.FromArgb(0xFB, 0xFB, 0xFB);
@@ -123,6 +128,7 @@ internal sealed partial class SettingsForm : Form
     {
         base.OnLoad(e);
         RefreshRoots(); // the drives and their item counts, also for when Indexing is opened later
+        RefreshUninstallCard();
         _rootsTimer.Start();
     }
 
@@ -174,6 +180,7 @@ internal sealed partial class SettingsForm : Form
         _content.ResumeLayout();
         _content.AutoScrollPosition = Point.Empty;
         if (_sections[index].Name == "Folders") _app.Tried(GettingStarted.Folders);
+        if (_sections[index].Name == "About") RefreshUninstallCard();
         if (IndexingShown) RefreshRoots();
     }
 
@@ -622,30 +629,65 @@ internal sealed partial class SettingsForm : Form
             UninstallCard());
     }
 
-    /// <summary>Uninstall in one click and one question, when there is an installed copy (not for a portable one).</summary>
+    /// <summary>
+    /// Uninstall in one click and one question: the installed copy, or for a copy that isn't installed (portable) Remove
+    /// from this PC once it set Windows up for itself, which deleting its file would leave pointing at nothing. Filled in
+    /// by <see cref="RefreshUninstallCard"/>.
+    /// </summary>
     SettingCard UninstallCard()
     {
-        // The installed copy this one is first (the one in use when both a just-me and an everyone install exist).
-        var installed = Setup.FindInstalled(Path.GetDirectoryName(Environment.ProcessPath)) ?? Setup.FindInstalled();
-        var button = CardButton("Uninstall", () => Uninstall(installed!.Folder));
-        button.Enabled = installed != null;
-        return Card("Uninstall", installed != null
-            ? "Removes Ultimate File Explorer from this PC: the program, its shortcuts, start with Windows and the instant-indexing " +
-              "service, and gives folders and Win+E back to File Explorer. Your files are not affected."
-            : "Ultimate File Explorer isn't installed on this PC: this copy runs on its own, and deleting it removes it.", button);
+        _uninstallButton = CardButton("Uninstall", () => _uninstallAction?.Invoke());
+        _uninstallButton.Enabled = false;
+        return _uninstallCard = Card("Uninstall", "", _uninstallButton);
     }
 
-    void Uninstall(string folder)
+    /// <summary>
+    /// Looks (off the UI thread: the registry, the program file, the service manager) at what Uninstall would remove, when
+    /// the window opens and each time About is shown, since General and Indexing change what a portable copy set up.
+    /// </summary>
+    async void RefreshUninstallCard()
     {
-        if (Setup.ConfirmUninstall(this, folder) is not bool removeData) return;
+        if (_uninstallCard is null || _uninstallButton is null || Path.GetDirectoryName(Environment.ProcessPath) is not { Length: > 0 } own) return;
+        int look = ++_uninstallLook;
+        // The installed copy this one is first (the one in use when both a just-me and an everyone install exist).
+        var (installed, footprint) = await Task.Run(() =>
+        {
+            var inst = Setup.FindInstalled(own) ?? Setup.FindInstalled();
+            return (inst, inst is null ? Setup.FootprintOf(own) : null);
+        });
+        if (IsDisposed || look != _uninstallLook) return;
+        bool portable = installed is null && footprint is { Any: true };
+        _uninstallButton.Text = portable ? "Remove from this PC" : "Uninstall";
+        _uninstallButton.Enabled = installed is not null || portable;
+        _uninstallAction = installed is not null ? () => Uninstall(installed.Folder, portable: false)
+                         : portable ? () => Uninstall(own, portable: true)
+                         : null;
+        _uninstallCard.SetDescription(installed is not null
+            ? "Removes Ultimate File Explorer from this PC: the program, its shortcuts, start with Windows and the instant-indexing " +
+              "service, and gives folders and Win+E back to File Explorer. Your files are not affected."
+            : UninstallRules.NotInstalledCardText(footprint?.Takeover == true, footprint?.StartsWithWindows == true, footprint?.Service == true, own));
+    }
+
+    void Uninstall(string folder, bool portable)
+    {
+        string what = portable ? "Remove from this PC" : "Uninstall";
+        if (Setup.ConfirmUninstall(this, folder, portable) is not bool removeData) return;
         if (_app.IsDemo)
         {
-            TaskDialog.ShowDialog(this, new TaskDialogPage { Caption = Text, Heading = "Nothing was uninstalled", Text = "This is the demo: Uninstall works in the real app.", Icon = TaskDialogIcon.Information });
+            TaskDialog.ShowDialog(this, new TaskDialogPage { Caption = Text, Heading = portable ? "Nothing was removed" : "Nothing was uninstalled", Text = $"This is the demo: {what} works in the real app.", Icon = TaskDialogIcon.Information });
             return;
         }
-        if (!Setup.StartUninstall(folder, removeData))
+        if (!Setup.StartUninstall(folder, removeData, portable))
         {
-            TaskDialog.ShowDialog(this, new TaskDialogPage { Caption = Text, Heading = "The uninstall couldn't be started", Text = "Uninstall Ultimate File Explorer from Settings › Apps instead.", Icon = TaskDialogIcon.Error });
+            TaskDialog.ShowDialog(this, new TaskDialogPage
+            {
+                Caption = Text,
+                Heading = $"{what} couldn't be started",
+                Text = portable
+                    ? $"Before deleting {Setup.ExeName}, turn off Use instead of Windows File Explorer and Start when Windows starts in Settings › General."
+                    : "Uninstall Ultimate File Explorer from Settings › Apps instead.",
+                Icon = TaskDialogIcon.Error,
+            });
             return;
         }
         Close(); // the uninstall closes the app next
