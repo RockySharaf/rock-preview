@@ -59,11 +59,11 @@ public class FacadeTests
             h.File(@"C:\Users\Me\Jobs\a.pdf", "alpha");
             h.File(@"C:\Users\Me\Jobs\b.pdf", "beta");
         });
-        // A listing tab of C:\Users\Me\Jobs: its own FileIndex with its own ids.
+        // A listing tab of C:\Users\Me\Jobs: its own FileIndex with its own ids, its files at the size and date they were read at.
         var listing = new FileIndex();
         int root = listing.AddRoot(@"C:\Users\Me\Jobs");
-        int b = listing.Add("b.pdf", root, FileAttributes.Archive, 10, 1, 0);
-        int a = listing.Add("a.pdf", root, FileAttributes.Archive, 10, 1, 0);
+        int b = Listed(h, listing, root, @"C:\Users\Me\Jobs\b.pdf");
+        int a = Listed(h, listing, root, @"C:\Users\Me\Jobs\a.pdf");
         ContentServices.ShareWith(h.Index, listing);
         Assert.NotNull(listing.Content);
         using (var view = listing.Content!.AcquireView())
@@ -91,6 +91,123 @@ public class FacadeTests
         Assert.Null(listing.Content!.AcquireView());
         ContentServices.Unshare(listing);
         Assert.Null(listing.Content);
+    }
+
+    /// <summary>A file of the harness's index added to a listing at the size and date the index has (those it was read at).</summary>
+    static int Listed(Harness h, FileIndex listing, int parent, string path)
+    {
+        int id = h.Id(path);
+        return listing.Add(Path.GetFileName(path), parent, FileAttributes.Archive, h.Index.Size(id), h.Index.Modified(id), 0);
+    }
+
+    /// <summary>The listing id a path's document is bound to through the index the listing shares (-1 = none).</summary>
+    static int BoundIn(FileIndex listing, string path)
+    {
+        using var view = listing.Content!.AcquireView()!;
+        var doc = view.Store.Find(Harness.Key(path))!.Value;
+        listing.Lock.EnterReadLock();
+        try { return listing.Content.MapFor(listing, view)!.FileId(view.Store.Segments[doc.Segment].Id, doc.Doc); }
+        finally { listing.Lock.ExitReadLock(); }
+    }
+
+    [Fact]
+    public void A_listing_of_a_drive_finds_the_documents_of_a_root_folder_on_it()
+    {
+        // Also search D:\Data while D: itself isn't indexed: the index's root is D:\Data, the listing's is D:.
+        var settings = Harness.DefaultSettings();
+        settings.Folders = [@"C:\Users\Me", @"D:\Data"];
+        using var h = new Harness(settings);
+        h.Folder(@"C:\Users\Me");
+        h.Root(@"D:\Data");
+        h.File(@"D:\Data\Jobs\a.pdf", "alpha");
+        h.Start();
+        h.Settle();
+        Assert.NotNull(h.Row(@"D:\Data\Jobs\a.pdf"));
+        var listing = new FileIndex();
+        int root = listing.AddRoot("D:");
+        int data = listing.Add("Data", root, FileAttributes.Directory, -1, 0, 0);
+        int jobs = listing.Add("Jobs", data, FileAttributes.Directory, -1, 0, 0);
+        int a = Listed(h, listing, jobs, @"D:\Data\Jobs\a.pdf");
+        // A folder no root is at or below: skipped whole.
+        int other = listing.Add("Other", root, FileAttributes.Directory, -1, 0, 0);
+        listing.Add("b.pdf", other, FileAttributes.Archive, 10, 1, 0);
+        ContentServices.ShareWith(h.Index, listing);
+        Assert.Equal(a, BoundIn(listing, @"D:\Data\Jobs\a.pdf"));
+    }
+
+    [Fact]
+    public void A_listing_of_a_subst_letter_finds_the_documents_under_the_folder_it_shows()
+    {
+        using var h = Ready(h => h.File(@"C:\Users\Me\Jobs\a.pdf", "the budget for the year"));
+        // S: is a SUBST of C:\Users\Me\Jobs: the listing reads S:, the index knows its files under C:.
+        var listing = new FileIndex();
+        int a = Listed(h, listing, listing.AddRoot("S:"), @"C:\Users\Me\Jobs\a.pdf");
+        ContentServices.ShareWith(h.Index, listing, new Dictionary<string, string> { [@"S:\"] = @"C:\Users\Me\Jobs" });
+        Assert.Equal(a, BoundIn(listing, @"C:\Users\Me\Jobs\a.pdf"));
+        // Its rows' Matching text is looked up under the same name; a path on no aliased folder stays as it is.
+        Assert.Equal(@"C:\Users\Me\Jobs\a.pdf", ContentServices.IndexedPath(listing, @"S:\a.pdf"));
+        Assert.Equal(@"T:\a.pdf", ContentServices.IndexedPath(listing, @"T:\a.pdf"));
+        var highlighter = ContentHighlighter.Create("content:budget", new SearchOptions())!;
+        Assert.NotNull(h.Content.GetSnippet(ContentServices.IndexedPath(listing, @"S:\a.pdf"), highlighter));
+        // Shared without the alias, S: is in no root: nothing is bound.
+        var plain = new FileIndex();
+        Listed(h, plain, plain.AddRoot("S:"), @"C:\Users\Me\Jobs\a.pdf");
+        ContentServices.ShareWith(h.Index, plain);
+        Assert.Equal(-1, BoundIn(plain, @"C:\Users\Me\Jobs\a.pdf"));
+        Assert.Equal(@"S:\a.pdf", ContentServices.IndexedPath(plain, @"S:\a.pdf"));
+    }
+
+    [Theory]
+    [InlineData(0)] // a store about the listing's size: bound by a merge-join with its rows
+    [InlineData(2000)] // a store much larger than the listing: bound by lookups
+    public void A_listed_file_changed_since_it_was_read_isnt_bound_to_its_old_words(int others)
+    {
+        var store = new FakeStore();
+        ushort volume = store.VolumeIndex("path:C:", @"C:\");
+        using (var b = store.BeginBatch())
+        {
+            for (int i = 0; i < others; i++)
+                b.Add(new DocRow(Harness.Key($@"C:\Archive\x{i}.pdf"), 1, 1, volume, 0, ContentKind.Pdf, DocStatus.Ok, 0, 0), $@"Archive\x{i}.pdf", new StoredDoc("x", [], null));
+            // Read at 100 bytes, modified at 5000 (undated.pdf with no date).
+            foreach (var (name, modified) in ((string, long)[])[("same.pdf", 5000), ("resized.pdf", 5000), ("redated.pdf", 5000), ("undated.pdf", 0)])
+                b.Add(new DocRow(Harness.Key($@"C:\Jobs\{name}"), modified, 100, volume, 0, ContentKind.Pdf, DocStatus.Ok, 0, 0), $@"Jobs\{name}", new StoredDoc(name, [], null));
+            b.Commit().View.Dispose();
+        }
+        var listing = new FileIndex();
+        int root = listing.AddRoot(@"C:\Jobs");
+        int same = listing.Add("same.pdf", root, FileAttributes.Archive, 100, 5000, 0);
+        listing.Add("resized.pdf", root, FileAttributes.Archive, 120, 5000, 0);
+        listing.Add("redated.pdf", root, FileAttributes.Archive, 100, 6000, 0);
+        listing.Add("undated.pdf", root, FileAttributes.Archive, 100, 0, 0);
+        var maps = new OnDemandMap();
+        using var view = new ContentView(store.Acquire(), DocIdMap.Empty(-1), ContentMode.Documents);
+        int IdOf(string name)
+        {
+            var doc = view.Store.Find(Harness.Key($@"C:\Jobs\{name}"))!.Value;
+            listing.Lock.EnterReadLock();
+            try { return maps.For(listing, view, _ => ("path:C:", "Jobs")).FileId(view.Store.Segments[doc.Segment].Id, doc.Doc); }
+            finally { listing.Lock.ExitReadLock(); }
+        }
+        Assert.Equal(same, IdOf("same.pdf"));
+        // Saved since (another size, another date), or with no date to tell: matched by name only.
+        Assert.Equal(-1, IdOf("resized.pdf"));
+        Assert.Equal(-1, IdOf("redated.pdf"));
+        Assert.Equal(-1, IdOf("undated.pdf"));
+        Assert.Equal((1, 0), (maps.Builds, maps.Patches));
+        // The file is saved again while the tab shows it: the watcher's new size and date unbind it, in a patch.
+        listing.Update(same, size: 130, modifiedFileTimeUtc: 7000);
+        Assert.Equal(-1, IdOf("same.pdf"));
+        Assert.Equal((1, 1), (maps.Builds, maps.Patches));
+        // Put back as it was read: bound again.
+        listing.Update(same, size: 100, modifiedFileTimeUtc: 5000);
+        Assert.Equal(same, IdOf("same.pdf"));
+        Assert.Equal((1, 2), (maps.Builds, maps.Patches));
+        // The CLI's map binds by key alone, as before.
+        var byKey = new OnDemandMap(sameStampOnly: false);
+        var redated = view.Store.Find(Harness.Key(@"C:\Jobs\redated.pdf"))!.Value;
+        listing.Lock.EnterReadLock();
+        try { Assert.NotEqual(-1, byKey.For(listing, view, _ => ("path:C:", "Jobs")).FileId(view.Store.Segments[redated.Segment].Id, redated.Doc)); }
+        finally { listing.Lock.ExitReadLock(); }
     }
 
     [Fact]

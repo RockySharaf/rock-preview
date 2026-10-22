@@ -231,6 +231,15 @@ internal sealed class RootSnapshot
     public (string Key, string Prefix)? Resolve(string folder)
         => TryResolve(folder, out var key, out var rel, out _, out _) ? (key, rel) : null;
 
+    /// <summary>Whether a known root lies below a folder ("E:" while "E:\Data" is a root): a listing of it can hold its files.</summary>
+    public bool HoldsRootBelow(string folder)
+    {
+        string path = VolumeKeys.Clean(folder);
+        foreach (var r in _roots)
+            if (r.Name.Length > path.Length + 1 && r.Name[path.Length] == '\\' && r.Name.StartsWith(path, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
     /// <summary>The document key of a full path; false when no known root holds it.</summary>
     public bool TryKeyOf(string fullPath, out ulong key, out string volumeKey, out string relativePath, out string display)
     {

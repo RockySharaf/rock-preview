@@ -68,12 +68,26 @@ public static class ContentServices
     /// Shares from's text index with another index (folder listings); ids are mapped on demand, kept in a
     /// ConditionalWeakTable&lt;FileIndex, OnDemandMap&gt; keyed by the other index's Generation (no Compacted subscription).
     /// </summary>
-    public static void ShareWith(FileIndex from, FileIndex to)
+    public static void ShareWith(FileIndex from, FileIndex to) => ShareWith(from, to, null);
+
+    /// <summary>
+    /// ShareWith for a listing whose folders from's index knows by other names (each listed folder → its name there, as
+    /// FolderCoverage.IndexedAs gives it: "S:\" → "C:\Work" when S: is a SUBST of it, a junction → the folder it points
+    /// to): their files are matched under those names. Pairs that name the same folder twice are ignored.
+    /// </summary>
+    public static void ShareWith(FileIndex from, FileIndex to, IReadOnlyDictionary<string, string>? aliases)
     {
         if (ReferenceEquals(from, to)) return;
         // Forwarded, not copied: the listing follows the main index's text index as it is turned on, off or rebuilt.
-        to.Content = new SharedContentSource(from);
+        to.Content = new SharedContentSource(from, aliases is { Count: > 0 } ? new RootAliases(aliases) : RootAliases.None);
     }
+
+    /// <summary>
+    /// The path a listing's file has in the text index it shares (ShareWith): under its folder's indexed name when it has
+    /// one (a SUBST letter's), else as given. GetSnippet and GetStatus take it for the listing's rows.
+    /// </summary>
+    public static string IndexedPath(FileIndex index, string fullPath)
+        => index.Content is SharedContentSource shared ? shared.Aliases.Indexed(fullPath) : fullPath;
 
     /// <summary>Stops sharing with an index (FolderListing.Dispose): clears to.Content.</summary>
     public static void Unshare(FileIndex to) => to.Content = null;

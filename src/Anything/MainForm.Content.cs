@@ -343,11 +343,17 @@ internal sealed partial class MainForm
             row.SnippetAsked = true;
             return;
         }
-        if (!snippets.TryGet(row.FullPath, highlighter, this, out var result, out bool stale)) return;
+        if (!snippets.TryGet(ContentPathOf(_resultIndex, row.FullPath), highlighter, this, out var result, out bool stale)) return;
         row.Snippet = result.Snippet;
         row.SnippetReason = result.Snippet is null && result.Reason is { } why ? ContentPresentation.Reason(why) : null;
         row.SnippetAsked = !stale; // a line from before new words came in shows until it is looked up again
     }
+
+    /// <summary>
+    /// The path the text index knows a result by: a listing's file in a folder the index names otherwise (a SUBST letter,
+    /// a link) is looked up under that name.
+    /// </summary>
+    static string ContentPathOf(FileIndex? index, string path) => index is null ? path : ContentServices.IndexedPath(index, path);
 
     /// <summary>The row's tooltip: the whole matching line and where it is ("Page 4 of 12").</summary>
     void SetContentToolTip(ListViewItem item, Row row)
@@ -430,9 +436,10 @@ internal sealed partial class MainForm
         var highlighter = _app.ContentOn ? ContentTab().Highlighter : null;
         if (highlighter is null) return null;
         var content = _app.Content;
+        var index = _resultIndex;
         return path =>
         {
-            try { return content.GetSnippet(path, highlighter) is { } s ? ContentPresentation.SnippetPrefix(s) + OneLine(ContentPresentation.SnippetBody(s).Text) : ""; }
+            try { return content.GetSnippet(ContentPathOf(index, path), highlighter) is { } s ? ContentPresentation.SnippetPrefix(s) + OneLine(ContentPresentation.SnippetBody(s).Text) : ""; }
             catch (Exception) { return ""; }
         };
     }
@@ -473,9 +480,10 @@ internal sealed partial class MainForm
             return;
         }
         var content = _app.Content;
+        string indexed = ContentPathOf(_resultIndex, path);
         var lookup = Task.Run(() =>
         {
-            try { return content.GetSnippet(path, highlighter); }
+            try { return content.GetSnippet(indexed, highlighter); }
             catch (Exception) { return null; }
         });
         _ = ShowPreviewWhenMatched(path, highlighter, lookup, seq, samePath);

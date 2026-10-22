@@ -175,8 +175,13 @@ internal sealed partial class MainForm
         // From the index manager, so that a drive being ejected is let go of, as the index does.
         try { listing = _app.IndexManager.CreateListing(roots, _app.Settings.Index.Clone()); }
         catch (ArgumentException) { return; } // no folder left to read: the index answers
-        // Searches of the listing look inside files too, through the main index's text index (mapped by path).
-        Anything.Core.Content.ContentServices.ShareWith(_app.IndexManager.Index, listing.Index);
+        // Searches of the listing look inside files too, through the main index's text index (mapped by path): a folder
+        // the index knows by another name (a SUBST letter, a link) under that name. CoverageOf remembers the fresh look
+        // ChooseZapSource took, so nothing is read again here.
+        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in roots)
+            if (_app.CoverageOf(r) is { IndexedAs: { } indexedAs }) aliases[r] = indexedAs;
+        Anything.Core.Content.ContentServices.ShareWith(_app.IndexManager.Index, listing.Index, aliases);
         tab.Listing = listing;
         tab.ZapSearchRoots = roots;
         listing.Changed += () => _app.Post(() => OnListingChanged(tab, listing));

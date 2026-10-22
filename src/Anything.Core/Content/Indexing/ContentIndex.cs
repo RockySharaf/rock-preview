@@ -59,7 +59,9 @@ internal sealed class ContentIndex : ContentSource, IContentIndex, IFollowerHost
 
     internal override ContentView? AcquireView() => Follower is { } f ? Acquire(ref f.Published) : null;
 
-    internal override DocIdMap? MapFor(FileIndex index, ContentView view)
+    internal override DocIdMap? MapFor(FileIndex index, ContentView view) => MapFor(index, view, RootAliases.None);
+
+    internal override DocIdMap? MapFor(FileIndex index, ContentView view, RootAliases aliases)
     {
         if (ReferenceEquals(index, _index))
         {
@@ -70,9 +72,13 @@ internal sealed class ContentIndex : ContentSource, IContentIndex, IFollowerHost
             if (Follower is { } f && Volatile.Read(ref f.Published) is { } current && current.Map.Generation == generation) return current.Map;
             return null;
         }
-        // Another index (a folder listing, through ShareWith): ids mapped on demand, per generation.
+        // Another index (a folder listing, through ShareWith): ids mapped on demand, per generation. Its folders are placed
+        // through the follower's snapshot of the roots only (VolumeKeys would call Win32 under the listing's read lock):
+        // under their indexed names (a SUBST letter's listing), and folder by folder below a listed folder that no root
+        // holds but one is in (a listing of E: while E:\Data is the root).
         var roots = Follower?.Roots ?? RootSnapshot.Empty;
-        return _onDemand.For(index, view, name => roots.Resolve(name));
+        if (aliases.Count == 0) return _onDemand.For(index, view, roots.Resolve, roots.HoldsRootBelow);
+        return _onDemand.For(index, view, path => roots.Resolve(aliases.Indexed(path)), path => roots.HoldsRootBelow(aliases.Indexed(path)));
     }
 
     internal override DocSetCache Cache => _cache;

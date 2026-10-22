@@ -18,6 +18,12 @@ public abstract class ContentSource
     internal abstract DocIdMap? MapFor(FileIndex index, ContentView view);
 
     /// <summary>
+    /// MapFor for another index (a folder listing) whose folders this one knows by other names: "S:" is "C:\Work" when S: is
+    /// a SUBST of it. A source that maps no other index that way ignores them.
+    /// </summary>
+    internal virtual DocIdMap? MapFor(FileIndex index, ContentView view, Indexing.RootAliases aliases) => MapFor(index, view);
+
+    /// <summary>
     /// Document sets kept across keystrokes and the lookups still running, shared by every engine and tab: resolved sets
     /// per (term key, segment id), and in-flight lookups keyed by term key that later searches join.
     /// </summary>

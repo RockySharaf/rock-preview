@@ -770,6 +770,14 @@ internal sealed class Harness : IDisposable
         return id;
     }
 
+    /// <summary>A root entry named for a folder ("D:\Data", as Also search these folders makes one), not for its drive.</summary>
+    public int Root(string path)
+    {
+        int id = Index.AddRoot(path);
+        _ids[path] = id;
+        return id;
+    }
+
     /// <summary>"C:" or "\\server\share".</summary>
     public static bool IsRoot(string path)
         => path.Length == 2 && path[1] == ':' || path.StartsWith(@"\\", StringComparison.Ordinal) && path[2..].Count(c => c == '\\') == 1;
