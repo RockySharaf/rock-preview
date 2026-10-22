@@ -461,4 +461,29 @@ public class FollowerReviewTests
         }
         finally { dir.Delete(true); }
     }
+
+    [Fact]
+    public async Task Setups_count_leaves_out_drives_whose_kind_is_switched_off()
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "names-kind-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            for (int i = 0; i < 4; i++) File.WriteAllBytes(Path.Combine(dir.FullName, $"d{i}.pdf"), new byte[100]);
+            var settings = new ContentSettings { UseMyFolders = false };
+            async Task<int> Pdfs(IndexSettings names, DriveKind kind)
+                => (await ContentEstimator.CountFoldersAsync([dir.FullName], settings, TimeSpan.FromSeconds(20), null, CancellationToken.None, names, _ => kind))
+                    .Kinds.GetValueOrDefault(ContentKind.Pdf).Files;
+
+            Assert.Equal(4, await Pdfs(new IndexSettings { IndexRemovableDrives = false, IndexNetworkDrives = false }, DriveKind.Fixed));
+            // The folder's drive is a USB drive or a network drive, and those are switched off: the name index never has it.
+            Assert.Equal(0, await Pdfs(new IndexSettings { IndexRemovableDrives = false }, DriveKind.Removable));
+            Assert.Equal(0, await Pdfs(new IndexSettings { IndexNetworkDrives = false }, DriveKind.Network));
+            // 1.4.0's list of drives, without this one.
+            string other = char.ToUpperInvariant(dir.FullName[0]) == 'Q' ? @"R:\" : @"Q:\";
+            Assert.Equal(0, await Pdfs(new IndexSettings { Volumes = [other] }, DriveKind.Fixed));
+            // Searched by name as a folder, it counts whatever its drive is.
+            Assert.Equal(4, await Pdfs(new IndexSettings { IndexRemovableDrives = false, Folders = [dir.FullName] }, DriveKind.Removable));
+        }
+        finally { dir.Delete(true); }
+    }
 }

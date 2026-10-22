@@ -137,11 +137,14 @@ internal sealed partial class AnythingApp
     public string ContentOfferText => _kept is { } kept ? ContentPresentation.OfferKept(kept)
         : ContentPresentation.Offer(_offerEstimate, ContentFoldersNotSearchedByName());
 
-    /// <summary>The folders searched inside that the name index doesn't hold under the settings (none in the demo).</summary>
+    /// <summary>
+    /// The folders searched inside that the name index doesn't hold under the settings (none in the demo), by the plan's
+    /// own answer, as the folder bar has it (<see cref="CoverageOf"/>: remembered until the settings or the drives change).
+    /// </summary>
     IReadOnlyList<string> ContentFoldersNotSearchedByName()
     {
         if (IsDemo) return [];
-        try { return ContentEstimator.FoldersNotSearchedByName(Settings.Content, Settings.Index); }
+        try { return ContentEstimator.FoldersNotSearchedByName(Settings.Content, Settings.Index, coverageOf: f => CoverageOf(f)); }
         catch (Exception) { return []; }
     }
 

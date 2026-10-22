@@ -720,7 +720,11 @@ internal sealed partial class AnythingApp : ApplicationContext
                 KnownDrives = t.Result;
                 _coverage.Clear();
                 FindLeftOutDrives();
-                foreach (var w in _windows) w.UpdateFolderBar(); // and the left-out drive bar
+                foreach (var w in _windows)
+                {
+                    w.UpdateFolderBar(); // and the left-out drive bar
+                    w.UpdateOfferBar(); // the folders it says aren't searched by name follow the drives too
+                }
             });
         }, TaskScheduler.Default);
     }
@@ -788,12 +792,23 @@ internal sealed partial class AnythingApp : ApplicationContext
     {
         if (IsDemo) return null;
         if (!fresh && _coverage.TryGetValue(folder, out var known)) return known;
-        var ix = Settings.Index;
-        var drives = DrivesFor(folder, fresh);
-        var (attributes, links) = IndexPlan.ChainReaders(drives, folder);
-        var coverage = IndexPlan.Coverage(ix, drives, folder, new ExclusionFilter(ix), attributes, links);
+        var coverage = Coverage(folder, DrivesFor(folder, fresh));
         if (_coverage.Count >= 256) _coverage.Clear();
         return _coverage[folder] = coverage;
+    }
+
+    /// <summary>
+    /// <see cref="CoverageOf"/> under the settings as they are this moment, worked out again and not remembered: Settings
+    /// changes them before they're applied. Never asks anything on the network either. Null in the demo.
+    /// </summary>
+    public FolderCoverage? CoverageNow(string folder) => IsDemo ? null : Coverage(folder, DrivesFor(folder));
+
+    /// <summary>The plan's answer under the settings, reading only the folder's own chain (never the network: the UI thread asks).</summary>
+    FolderCoverage Coverage(string folder, IReadOnlyList<DriveEntry> drives)
+    {
+        var ix = Settings.Index;
+        var (attributes, links) = IndexPlan.ChainReaders(drives, folder);
+        return IndexPlan.Coverage(ix, drives, folder, new ExclusionFilter(ix), attributes, links);
     }
 
     /// <summary>"C:\" for any spelling of a drive's root (c:, C:\., \\?\C:\).</summary>

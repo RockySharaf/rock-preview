@@ -1,5 +1,6 @@
 using Anything.Core;
 using Anything.Core.Content;
+using Anything.Core.Indexing;
 
 namespace Anything.Tests.Content.App;
 
@@ -106,6 +107,67 @@ public sealed class NotSearchedByNameTests
         Assert.False(ContentEstimator.NameIndexRules(@"\\nas\jobs\2024", new IndexSettings(), []).Held);
         Assert.True(ContentEstimator.NameIndexRules(@"\\nas\jobs\2024", new IndexSettings { Folders = [@"\\nas\jobs"] }, []).Held);
         Assert.True(ContentEstimator.NameIndexRules(@"D:\Projects", new IndexSettings(), []).Held);
+    }
+
+    [Fact]
+    public void Without_a_drive_list_whole_drives_follow_the_switches_of_their_kind()
+    {
+        // Setup's check: E: is a USB drive and Z: a network drive, as Windows says without touching them.
+        static DriveKind Kind(string root) => char.ToUpperInvariant(root[0]) switch { 'E' => DriveKind.Removable, 'Z' => DriveKind.Network, _ => DriveKind.Fixed };
+        static bool Held(string folder, IndexSettings names) => ContentEstimator.NameIndexRules(folder, names, [], Kind).Held;
+
+        Assert.True(Held(@"E:\Work", new IndexSettings()));
+        Assert.False(Held(@"E:\Work", new IndexSettings { IndexRemovableDrives = false }));
+        Assert.False(Held(@"E:\", new IndexSettings { IndexRemovableDrives = false }));
+        Assert.False(Held(@"Z:\Docs", new IndexSettings { IndexNetworkDrives = false }));
+        Assert.True(Held(@"D:\Projects", new IndexSettings { IndexRemovableDrives = false, IndexNetworkDrives = false }));
+        // 1.4.0's list of drives keeps a fixed drive missing from it off; other kinds follow their own switches.
+        var listed = new IndexSettings { Volumes = [@"C:\"] };
+        Assert.True(Held(Documents, listed));
+        Assert.False(Held(@"D:\Projects", listed));
+        Assert.True(Held(@"E:\Work", listed));
+        // In a folder searched by name, its drive's switches don't count: it is searched as a folder.
+        Assert.True(Held(@"E:\Work\2024", new IndexSettings { IndexRemovableDrives = false, Folders = [@"E:\Work"] }));
+    }
+
+    [Fact]
+    public void With_a_drive_list_the_plans_own_answer_decides()
+    {
+        // Settings and the offer ask IndexPlan.Coverage, as the folder bar does: a hidden folder left out, a folder behind
+        // a junction and a USB drive switched off aren't held, though setup's check (no drive list) holds the first two.
+        List<DriveEntry> drives =
+        [
+            new(@"C:\", DriveKind.Fixed, "NTFS", "", true, null, null),
+            new(@"E:\", DriveKind.Removable, "exFAT", "", true, null, null),
+            new(@"G:\", DriveKind.Fixed, "", "", false, null, null), // locked
+        ];
+        var attributes = new Dictionary<string, FileAttributes>(StringComparer.OrdinalIgnoreCase)
+        {
+            [@"C:\Private"] = FileAttributes.Directory | FileAttributes.Hidden,
+            [@"C:\Games"] = FileAttributes.Directory | FileAttributes.ReparsePoint,
+        };
+        var names = new IndexSettings { ExcludeHidden = true, IndexRemovableDrives = false };
+        FolderCoverage Coverage(string folder) => IndexPlan.Coverage(names, drives, folder, attributesOf: p => attributes.TryGetValue(p, out var a) ? a : null);
+        var content = new ContentSettings { UseMyFolders = false, Folders = [@"C:\Private", @"C:\Games\Saves", @"E:\Work", @"G:\Cards", @"C:\Work"] };
+
+        var missing = ContentEstimator.FoldersNotSearchedByName(content, names, coverageOf: Coverage);
+        Assert.Equal([@"C:\Private", @"C:\Games\Saves", @"E:\Work"], missing);
+        Assert.Empty(ContentEstimator.FoldersNotSearchedByName(new ContentSettings { UseMyFolders = false, Folders = [@"C:\Private", @"C:\Games\Saves"] },
+            new IndexSettings { ExcludeHidden = true }));
+        // "Search them by name too" adds them to the folders searched by name, which holds them.
+        names.Folders = [.. missing];
+        Assert.Empty(ContentEstimator.FoldersNotSearchedByName(content, names, coverageOf: Coverage));
+    }
+
+    [Fact]
+    public void A_drive_that_is_not_ready_holds_its_folders_once_it_is()
+    {
+        // Every switch lets it in: adding its folders to the folders searched by name would change nothing.
+        Assert.True(ContentEstimator.HeldByName(new FolderCoverage(@"G:\Cards", CoverageReason.DriveNotReady, null, @"G:\Cards", null, @"G:\")));
+        Assert.True(ContentEstimator.HeldByName(new FolderCoverage(@"C:\Work", CoverageReason.Covered, "C:", @"C:\Work", null, null)));
+        Assert.True(ContentEstimator.HeldByName(null)); // the demo
+        Assert.False(ContentEstimator.HeldByName(new FolderCoverage(@"E:\Work", CoverageReason.DriveKindOff, null, @"E:\Work", null, @"E:\")));
+        Assert.False(ContentEstimator.HeldByName(new FolderCoverage(@"\\nas\jobs", CoverageReason.NotSearched, null, @"\\nas\jobs", null, null)));
     }
 
     // ---- the words ---------------------------------------------------------------------------------

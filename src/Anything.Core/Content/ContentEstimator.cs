@@ -453,33 +453,35 @@ public static class ContentEstimator
     /// Counts by listing folders (no administrator, no service); stops at the budget (Complete = false). With the name
     /// index's settings (<paramref name="names"/>: Setup on an update), only what the name index holds is counted, since the
     /// text index reads nothing else: its excluded folders, patterns and hidden or system files are left out, and a folder
-    /// it doesn't hold at all (its drive left out or not indexed, and no "also search" folder covering it) counts nothing.
+    /// it doesn't hold at all (its drive left out or not indexed, USB or network drives switched off, and no "also search"
+    /// folder covering it) counts nothing.
     /// </summary>
     public static Task<ContentCensus> CountFoldersAsync(IReadOnlyList<string> folders, ContentSettings settings, TimeSpan budget, IProgress<ContentCensus>? progress,
         CancellationToken ct, IndexSettings? names = null)
+        => CountFoldersAsync(folders, settings, budget, progress, ct, names, Drives.KindOf);
+
+    /// <param name="kindOf">The kind of a drive ("D:\"), read without touching it (tests pass their own).</param>
+    internal static Task<ContentCensus> CountFoldersAsync(IReadOnlyList<string> folders, ContentSettings settings, TimeSpan budget, IProgress<ContentCensus>? progress,
+        CancellationToken ct, IndexSettings? names, Func<string, DriveKind> kindOf)
     {
         var s = settings.Clone();
         var list = ContentSettings.MergeNested(folders);
-        var n = names == null ? null : new IndexSettings
-        {
-            IndexNtfsVolumes = names.IndexNtfsVolumes,
-            SkipDrives = [.. names.SkipDrives],
-            Folders = [.. names.Folders],
-            ExcludeFolders = [.. names.ExcludeFolders],
-            ExcludePatterns = [.. names.ExcludePatterns],
-            ExcludeHidden = names.ExcludeHidden,
-            ExcludeSystem = names.ExcludeSystem,
-        };
-        return Task.Run(() => CountFolders(list, s, budget, progress, ct, n), ct);
+        // All of it: the drive switches (USB and network drives, 1.4.0's list of drives) decide what is held too.
+        var n = names?.Clone();
+        return Task.Run(() => CountFolders(list, s, budget, progress, ct, n, kindOf), ct);
     }
 
     /// <summary>
     /// Whether the name index holds <paramref name="folder"/> under these settings, and the rules a listing of it follows:
     /// the content rules (deny-lists, content_exclude_folders) plus the name index's own (its excluded folders, patterns,
     /// hidden or system files). Inside an "also search these folders" root, rules leaving out that root or a folder above
-    /// it don't apply (ExclusionFilter.WithoutAncestorsOf), as in the name index.
+    /// it don't apply (ExclusionFilter.WithoutAncestorsOf), as in the name index. Without a drive list (setup), whether it
+    /// or a folder above it is hidden or system, a link or a volume mounted in a folder isn't looked at: the app asks
+    /// <see cref="IndexPlan.Coverage"/>, which knows (<see cref="FoldersNotSearchedByName"/>).
     /// </summary>
-    internal static (bool Held, ExclusionFilter Filter) NameIndexRules(string folder, IndexSettings names, IReadOnlyList<string> contentRules)
+    /// <param name="kindOf">The kind of a drive ("D:\"), read without touching it; <see cref="Drives.KindOf"/> when null (tests pass their own).</param>
+    internal static (bool Held, ExclusionFilter Filter) NameIndexRules(string folder, IndexSettings names, IReadOnlyList<string> contentRules,
+        Func<string, DriveKind>? kindOf = null)
     {
         string path = folder.Trim().TrimEnd('\\');
         string? root = null;
@@ -504,24 +506,30 @@ public static class ContentEstimator
         // mapped to an indexed letter is held under that letter, which isn't known without asking Windows; adding it there
         // anyway is harmless: the name index skips a folder a root it plans already holds.
         if (IndexPlan.IsUnc(path)) return (false, filter);
-        // Not below an "also search" folder: only a whole indexed drive holds it.
-        string drive = path.Length >= 2 && path[1] == ':' ? path[..2] : path;
-        if (!names.IndexNtfsVolumes) return (false, filter);
-        foreach (var skip in names.SkipDrives)
-            if (string.Equals(skip?.Trim().TrimEnd('\\', ':'), drive.TrimEnd(':'), StringComparison.OrdinalIgnoreCase)) return (false, filter);
-        if (IndexPlan.IsLeftOut(nameOnly, drive + "\\") || nameOnly.ExcludesPathOrAncestor(drive, path)) return (false, filter);
+        // Not below an "also search" folder: only a whole indexed drive holds it, by the plan's own rule for the drive (its
+        // switch, its kind's switch, the folders left out). Taken as ready: one that isn't is searched once it is.
+        bool letter = path.Length >= 2 && path[1] == ':' && char.IsAsciiLetter(path[0]);
+        string drive = letter ? path[..2] : path;
+        var kind = letter ? (kindOf ?? Drives.KindOf)(drive + "\\") : DriveKind.Unknown;
+        var entry = new DriveEntry(drive + "\\", kind, "", "", IsReady: true, NetworkPath: null, SubstTarget: null);
+        if (IndexPlan.ForDrive(names, entry, nameOnly) != DriveIndexing.Indexed || nameOnly.ExcludesPathOrAncestor(drive, path)) return (false, filter);
         return (true, filter);
     }
 
     /// <summary>
     /// The folders searched inside (My folders while they're used, then the folders added, nested ones merged) that the
-    /// name index doesn't hold under <paramref name="names"/> (<see cref="NameIndexRules"/>): the text index reads only
-    /// what the name index holds, so nothing in them is ever read inside. A folder the content rules leave out
-    /// (content_exclude_folders) isn't listed: it isn't to be read anyway. Adding the folders listed to
-    /// <see cref="IndexSettings.Folders"/> makes the name index hold them. <paramref name="myFolders"/>: My folders'
-    /// paths; <see cref="ContentSettings.MyFolders"/> when null.
+    /// name index doesn't hold under <paramref name="names"/>: the text index reads only what the name index holds, so
+    /// nothing in them is ever read inside. A folder the content rules leave out (content_exclude_folders) isn't listed:
+    /// it isn't to be read anyway. Adding the folders listed to <see cref="IndexSettings.Folders"/> makes the name index
+    /// hold them. <paramref name="myFolders"/>: My folders' paths; <see cref="ContentSettings.MyFolders"/> when null.
     /// </summary>
-    public static IReadOnlyList<string> FoldersNotSearchedByName(ContentSettings settings, IndexSettings names, IReadOnlyList<string>? myFolders = null)
+    /// <param name="coverageOf">
+    /// The plan's own answer for a folder under <paramref name="names"/> (<see cref="IndexPlan.Coverage"/> with the app's
+    /// drive list, as the folder bar gets it), read by <see cref="HeldByName"/>. Null: <see cref="NameIndexRules"/>, which
+    /// knows no drive list (setup).
+    /// </param>
+    public static IReadOnlyList<string> FoldersNotSearchedByName(ContentSettings settings, IndexSettings names, IReadOnlyList<string>? myFolders = null,
+        Func<string, FolderCoverage?>? coverageOf = null)
     {
         IReadOnlyList<string> mine = settings.UseMyFolders ? myFolders ?? ContentSettings.MyFolders() : [];
         var leftOut = new ExclusionFilter(new IndexSettings { ExcludeFolders = [.. settings.ExcludeFolders] });
@@ -530,10 +538,20 @@ public static class ContentEstimator
         {
             string root = Path.GetPathRoot(folder) is { Length: > 0 } r ? r : folder;
             if (leftOut.ExcludesFolder(root, root) || leftOut.ExcludesPathOrAncestor(root, folder)) continue;
-            if (!NameIndexRules(folder, names, []).Held) missing.Add(folder);
+            bool held = coverageOf != null ? HeldByName(coverageOf(folder)) : NameIndexRules(folder, names, []).Held;
+            if (!held) missing.Add(folder);
         }
         return missing;
     }
+
+    /// <summary>
+    /// Whether the name index holds a folder, from the plan's answer (<see cref="IndexPlan.Coverage"/>): it is covered, or
+    /// on a drive that isn't ready, which every switch lets in, so it is searched once the drive is (the folder bar offers
+    /// nothing there either, and adding it to the folders searched by name would only stay behind). No answer (the demo)
+    /// counts as held.
+    /// </summary>
+    public static bool HeldByName(FolderCoverage? coverage) =>
+        coverage is not { } c || c.Covered || c.Reason == CoverageReason.DriveNotReady;
 
     sealed class Tallies
     {
@@ -622,7 +640,7 @@ public static class ContentEstimator
     }
 
     static ContentCensus CountFolders(IReadOnlyList<string> folders, ContentSettings s, TimeSpan budget, IProgress<ContentCensus>? progress, CancellationToken ct,
-        IndexSettings? names = null)
+        IndexSettings? names, Func<string, DriveKind> kindOf)
     {
         var tallies = new Tallies();
         var extras = ContentTypes.ExtraSet(s.ExtraTextExtensions);
@@ -639,7 +657,7 @@ public static class ContentEstimator
             var filter = contentFilter;
             if (names != null)
             {
-                (bool held, filter) = NameIndexRules(folder, names, contentRules);
+                (bool held, filter) = NameIndexRules(folder, names, contentRules, kindOf);
                 if (!held) return; // the name index doesn't hold it: nothing in it is ever read inside
             }
             try

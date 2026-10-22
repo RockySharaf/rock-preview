@@ -28,9 +28,10 @@ internal static partial class Setup
 
     /// <summary>
     /// The folders this user searches inside (My folders while used, and the folders added) that their name index doesn't
-    /// hold under their settings, so nothing in them is read inside: the check Settings › Indexing makes
-    /// (ContentEstimator.FoldersNotSearchedByName). Empty when there are none or the settings can't be read (a new
-    /// install's defaults search every drive by name).
+    /// hold under their settings, so nothing in them is read inside: the check Settings › Indexing makes, without its drive
+    /// list (ContentEstimator.FoldersNotSearchedByName: the drive switches by each drive's kind, not hidden folders, links
+    /// or mounted volumes). Empty when there are none or the settings can't be read (a new install's defaults search every
+    /// drive by name).
     /// </summary>
     public static IReadOnlyList<string> ContentFoldersNotSearchedByName()
     {

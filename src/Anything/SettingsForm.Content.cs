@@ -711,12 +711,13 @@ internal sealed partial class SettingsForm
 
     /// <summary>
     /// The folders searched inside (My folders while used, and the folders added) that the name index doesn't hold under
-    /// the settings as they are now: nothing in them is read inside. None in the demo, whose text index reads its own.
+    /// the settings as they are now, by the plan's own answer (the folder bar's: drive switches, links, mounted volumes,
+    /// hidden or system folders): nothing in them is read inside. None in the demo, whose text index reads its own.
     /// </summary>
     IReadOnlyList<string> NotSearchedByName()
     {
         if (_app.IsDemo) return [];
-        try { return ContentEstimator.FoldersNotSearchedByName(_app.Settings.Content, _app.Settings.Index); }
+        try { return ContentEstimator.FoldersNotSearchedByName(_app.Settings.Content, _app.Settings.Index, coverageOf: _app.CoverageNow); }
         catch (Exception) { return []; }
     }
 
@@ -754,14 +755,12 @@ internal sealed partial class SettingsForm
         RefreshContent();
     }
 
-    /// <summary>Whether the name index holds the folder already: a root it's in, or a folder searched by name.</summary>
-    bool SearchedByName(string path)
-    {
-        if (_app.Settings.Index.Folders.Any(f => AppSettings.IsUnder(path, f))) return true;
-        if (_roots.Count > 0) return _roots.Any(r => AppSettings.IsUnder(path, r.Path));
-        // Nothing listed yet: local drives are indexed whole (unless that's off), network shares are not.
-        return !path.StartsWith(@"\\", StringComparison.Ordinal) && _app.Settings.Index.IndexNtfsVolumes;
-    }
+    /// <summary>
+    /// Whether the name index holds the folder already under the settings as they are now, by the plan's own answer: in a
+    /// folder searched by name, or a drive searched whole, and not left out there (as hidden, behind a link, on a volume
+    /// mounted in a folder).
+    /// </summary>
+    bool SearchedByName(string path) => ContentEstimator.HeldByName(_app.CoverageNow(path));
 
     /// <summary>
     /// What the added folder costs, counted live: from the name index when it holds it (again once its root is ready, if
