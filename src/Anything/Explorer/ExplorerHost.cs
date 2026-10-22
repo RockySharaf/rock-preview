@@ -175,6 +175,7 @@ internal sealed class ExplorerHost : Control
         if (ShellNative.SHCreateItemFromParsingName(location, IntPtr.Zero, ref iid, out var item) != ShellNative.S_OK || item == null)
             return false;
         _selectAfterNavigate = selectPath;
+        _renameAfterSelect = false;
         _pendingItem = item;
         return _browser.BrowseToObject(item, ShellNative.SBSP_ABSOLUTE) == ShellNative.S_OK;
     }
@@ -255,6 +256,27 @@ internal sealed class ExplorerHost : Control
         finally { Marshal.ReleaseComObject(view); }
     }
 
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        // WinForms focuses the host itself (back from another app, Tab): the keys belong to the file view inside it.
+        if (_browser != null) BeginInvoke(() => { if (Focused) FocusView(); });
+    }
+
+    /// <summary>
+    /// Focus moved into the file view behind WinForms' back: make the container's ActiveControl agree, so switching to
+    /// another app and back returns to the files, as in Explorer, not to the navigation pane or the search box.
+    /// </summary>
+    void SyncActiveControl()
+    {
+        if (IsDisposed || !FocusInView(out _)) return;
+        try
+        {
+            if (GetContainerControl() is ContainerControl cc && cc.ActiveControl != this && CanSelect) cc.ActiveControl = this;
+        }
+        catch (Exception) { }
+    }
+
     [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr hWnd);
     [DllImport("user32.dll")] static extern bool IsChild(IntPtr hWndParent, IntPtr hWnd);
 
@@ -285,6 +307,14 @@ internal sealed class ExplorerHost : Control
         CurrentIconIndex = ShellInfo.GetIconIndex(pidl);
         _lastSelection = null;
         _lastSelectionCount = -1;
+        // A new folder's rename belongs to the folder it was made in: going elsewhere before it shows (Back, Up, a
+        // double-click) drops it, or the rename box would open on a same-named item here.
+        if (_renameAfterSelect && !string.Equals(Path.TrimEndingDirectorySeparator(Path.GetDirectoryName(_selectAfterNavigate) ?? ""),
+                Path.TrimEndingDirectorySeparator(CurrentPath ?? ""), StringComparison.OrdinalIgnoreCase))
+        {
+            _selectAfterNavigate = null;
+            _renameAfterSelect = false;
+        }
         if (_selectAfterNavigate != null) { _selectAttempts = 0; _selectTimer.Start(); }
         ApplyViewTheme();
         Navigated?.Invoke();
@@ -420,21 +450,24 @@ internal sealed class ExplorerHost : Control
     void TrySelectPending()
     {
         string? path = _selectAfterNavigate;
-        if (path == null || ++_selectAttempts > 30) { _selectTimer.Stop(); _selectAfterNavigate = null; return; }
+        if (path == null || ++_selectAttempts > 30) { _selectTimer.Stop(); _selectAfterNavigate = null; _renameAfterSelect = false; return; }
+        // A rename box closes when the view gets the focus after it opens, so the view gets it first, a tick earlier.
+        if (_renameAfterSelect && _selectAttempts == 1) { FocusView(); return; }
         var view = GetView<IShellView>(ShellNative.IID_IShellView);
         if (view == null) return;
         IntPtr pidl = IntPtr.Zero;
         try
         {
-            if (SHParseDisplayName(path, IntPtr.Zero, out pidl, 0, out _) != ShellNative.S_OK || pidl == IntPtr.Zero) { _selectAfterNavigate = null; return; }
+            if (SHParseDisplayName(path, IntPtr.Zero, out pidl, 0, out _) != ShellNative.S_OK || pidl == IntPtr.Zero) { _selectAfterNavigate = null; _renameAfterSelect = false; return; }
             IntPtr child = ShellNative.ILFindLastID(pidl);
-            uint flags = ShellNative.SVSI_SELECT | ShellNative.SVSI_DESELECTOTHERS | ShellNative.SVSI_ENSUREVISIBLE | ShellNative.SVSI_FOCUSED;
+            uint flags = (_renameAfterSelect ? ShellNative.SVSI_EDIT : ShellNative.SVSI_SELECT)
+                | ShellNative.SVSI_DESELECTOTHERS | ShellNative.SVSI_ENSUREVISIBLE | ShellNative.SVSI_FOCUSED;
             if (view.SelectItem(child, flags) == ShellNative.S_OK)
             {
                 _selectTimer.Stop();
                 _selectAfterNavigate = null;
-                FocusView();
-                if (_renameAfterSelect) { _renameAfterSelect = false; RenameSelection(); }
+                if (_renameAfterSelect) _renameAfterSelect = false;
+                else FocusView();
             }
         }
         finally
@@ -598,9 +631,43 @@ internal sealed class ExplorerHost : Control
 
     // ---- keyboard ----------------------------------------------------------------------------
 
+    /// <summary>
+    /// The window with keyboard focus belongs to the file view: its items, or (<paramref name="inRename"/>) the box
+    /// renaming one (new folders open in it).
+    /// </summary>
+    bool FocusInView(out bool inRename)
+    {
+        inRename = false;
+        var focus = GetFocus();
+        if (focus == IntPtr.Zero) return false;
+        var view = GetView<IShellView>(ShellNative.IID_IShellView);
+        if (view == null) return false;
+        try
+        {
+            if (view.GetWindow(out var viewHwnd) != ShellNative.S_OK || (focus != viewHwnd && !IsChild(viewHwnd, focus))) return false;
+        }
+        finally { Marshal.ReleaseComObject(view); }
+        var sb = new System.Text.StringBuilder(32);
+        GetClassName(focus, sb, sb.Capacity);
+        inRename = sb.ToString().Equals("Edit", StringComparison.OrdinalIgnoreCase);
+        return true;
+    }
+
+    /// <summary>
+    /// Keys for the rename box: all but Alt shortcuts and Ctrl+Tab (the window's tabs). Space, Escape, Tab (on to the
+    /// next item), Ctrl+A/C/V/Z and the arrows edit the name instead of reaching the view's accelerators or the form's
+    /// shortcuts and menus.
+    /// </summary>
+    static bool IsRenameKey(Keys keyData)
+        => (keyData & Keys.Alt) == 0 && !((keyData & Keys.Control) != 0 && (keyData & Keys.KeyCode) == Keys.Tab);
+
+    [DllImport("user32.dll")] static extern IntPtr GetFocus();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
     /// <summary>Lets the shell view handle its accelerators (Delete, F2, Ctrl+C/X/V/A...) before Rock Preview's menus.</summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (FocusInView(out bool inRename) && inRename && IsRenameKey(keyData)) return false;
         if (keyData is Keys.Escape) return base.ProcessCmdKey(ref msg, keyData);
         var view = GetView<IShellView>(ShellNative.IID_IShellView);
         if (view != null)
@@ -619,6 +686,15 @@ internal sealed class ExplorerHost : Control
         }
         return base.ProcessCmdKey(ref msg, keyData);
     }
+
+    protected override bool IsInputKey(Keys keyData)
+    {
+        if (FocusInView(out bool inRename) && inRename && IsRenameKey(keyData)) return true;
+        return base.IsInputKey(keyData);
+    }
+
+    protected override bool IsInputChar(char charCode)
+        => FocusInView(out _) || base.IsInputChar(charCode); // type-ahead and typing in the rename box, not mnemonics
 
     // ---- COM callbacks (separate object so the Control itself is never exposed to COM) --------
 
@@ -652,7 +728,16 @@ internal sealed class ExplorerHost : Control
             try { return host.OnDefaultCommand() ? ShellNative.S_OK : ShellNative.S_FALSE; }
             catch (Exception) { return ShellNative.S_FALSE; }
         }
-        public int OnStateChange(IntPtr ppshv, uint uChange) => ShellNative.S_OK;
+        public int OnStateChange(IntPtr ppshv, uint uChange)
+        {
+            try
+            {
+                if (uChange == ShellNative.CDBOSC_SETFOCUS && host.IsHandleCreated && !host.IsDisposed)
+                    host.BeginInvoke(host.SyncActiveControl); // not inside the view's own focus change
+            }
+            catch (Exception) { }
+            return ShellNative.S_OK;
+        }
         public int IncludeObject(IntPtr ppshv, IntPtr pidl) => ShellNative.S_OK;
         public int Notify(IntPtr ppshv, uint dwNotifyType) => ShellNative.S_OK;
         public int GetDefaultMenuText(IntPtr ppshv, IntPtr pszText, int cchMax) => ShellNative.S_FALSE;

@@ -275,14 +275,20 @@ internal sealed partial class MainForm
         }
     }
 
-    /// <summary>The folders selected in the Explorer view (none when nothing, or only files, are selected).</summary>
+    /// <summary>
+    /// The folders selected in the Explorer view when only folders are, at most <see cref="MaxScopeFolders"/>; none when
+    /// nothing, a file or more are selected, so a search after Ctrl+A is never limited to part of what was selected.
+    /// </summary>
     List<string> SelectedFolders()
     {
-        var folders = new List<string>();
-        if (!_browsing || _explorer.SelectedCount == 0) return folders;
-        foreach (var p in _explorer.GetSelectedPaths(64)) if (Directory.Exists(p)) folders.Add(p);
-        return folders;
+        if (!_browsing || _explorer.SelectedCount == 0) return [];
+        var selected = _explorer.GetSelectedPaths(MaxScopeFolders + 1);
+        if (selected.Count > MaxScopeFolders) return [];
+        foreach (var p in selected) if (!Directory.Exists(p)) return [];
+        return selected;
     }
+
+    const int MaxScopeFolders = 64;
 
     /// <summary>Where a search looks, for the search box and status bar ("images", "3 folders"); null = everywhere.</summary>
     string? ScopeLabel()
