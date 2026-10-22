@@ -91,56 +91,72 @@ internal sealed class ContentPrefetch : IDisposable
         var cache = Source?.Cache ?? new DocSetCache();
         var segments = View.Store.Segments;
         var states = new Dictionary<string, TermState>(StringComparer.Ordinal);
-        foreach (var (node, term) in Plan.Terms)
-        {
-            string key = term.Key;
-            if (!states.TryGetValue(key, out var state))
-            {
-                cache.Retain(key, segments); // the sets of segments merged away go
-                state = new TermState(term, key) { Parts = new DocSet?[segments.Count] };
-                for (int s = 0; s < segments.Count; s++)
-                {
-                    if (cache.TryGet(key, segments[s].Id, out var set)) state.Parts[s] = set;
-                    else state.Missing.Add(s);
-                }
-                if (state.Missing.Count > 0) state.Lookup = cache.Join(key, term, Source, View, state.Missing);
-                states[key] = state;
-            }
-            _byNode[node] = state;
-        }
-
+        // Every lookup is held until the search is done: one it isn't waiting on right now (a plain word behind a slow
+        // explicit term) is still asked for, so it can't be cancelled unannounced meanwhile.
+        var held = new List<Lookup>();
         try
         {
-            // Plain words share one budget: helpers start on all of them at once while the search waits, so one slow item
-            // (a cold disk) can't hold it past the budget. Explicit terms (content:, fields, pictures) have none.
-            long deadline = Environment.TickCount64 + (long)Math.Max(0, plainBudget.TotalMilliseconds);
-            foreach (var state in states.Values)
-                if (state.Term.Plain && state.Lookup is { } lookup) lookup.Assist(SegmentIds(state, segments), deadline, ct, Helpers);
-            foreach (var state in states.Values)
-                if (!state.Term.Plain && state.Lookup is { } lookup) lookup.Pump(SegmentIds(state, segments), ct, Helpers);
-            foreach (var state in states.Values)
-                if (state.Term.Plain && state.Lookup is { } lookup && !lookup.WaitFor(SegmentIds(state, segments), deadline, ct))
-                    lookup.GiveUp();
-        }
-        catch (OperationCanceledException)
-        {
-            // The search was cancelled, not the lookups: they go on for the next search (cancelled after ~10 s unasked).
-            foreach (var state in states.Values) state.Lookup?.GiveUp();
-            throw;
-        }
-
-        foreach (var state in states.Values)
-        {
-            foreach (int s in state.Missing)
+            foreach (var (node, term) in Plan.Terms)
             {
-                uint id = segments[s].Id;
-                if (state.Lookup != null && state.Lookup.TryResult(id, out var set)) state.Parts[s] = set ?? DocSet.Empty;
-                else if (cache.TryGet(state.Key, id, out var cached)) state.Parts[s] = cached;
-                else state.Pending = true;
+                string key = term.Key;
+                if (!states.TryGetValue(key, out var state))
+                {
+                    cache.Retain(key, segments); // the sets of segments merged away go
+                    state = new TermState(term, key) { Parts = new DocSet?[segments.Count] };
+                    for (int s = 0; s < segments.Count; s++)
+                    {
+                        if (cache.TryGet(key, segments[s].Id, out var set)) state.Parts[s] = set;
+                        else state.Missing.Add(s);
+                    }
+                    if (state.Missing.Count > 0)
+                    {
+                        state.Lookup = cache.Join(key, term, Source, View, state.Missing);
+                        state.Lookup.Hold();
+                        held.Add(state.Lookup);
+                    }
+                    states[key] = state;
+                }
+                _byNode[node] = state;
             }
-            foreach (var p in state.Parts) if (p != null) state.Resolved++;
-            state.Set = DocSet.Join(state.Parts);
-            Pending |= state.Pending;
+
+            try
+            {
+                // Plain words share one budget: helpers start on all of them at once while the search waits, so one slow
+                // item (a cold disk) can't hold it past the budget. Explicit terms (content:, fields, pictures) have none.
+                long deadline = Environment.TickCount64 + (long)Math.Max(0, plainBudget.TotalMilliseconds);
+                foreach (var state in states.Values)
+                    if (state.Term.Plain && state.Lookup is { } lookup) lookup.Assist(SegmentIds(state, segments), deadline, ct, Helpers);
+                foreach (var state in states.Values)
+                    if (!state.Term.Plain && state.Lookup is { } lookup) lookup.Pump(SegmentIds(state, segments), ct, Helpers);
+                foreach (var state in states.Values)
+                    if (state.Term.Plain && state.Lookup is { } lookup && !lookup.WaitFor(SegmentIds(state, segments), deadline, ct))
+                        lookup.GiveUp();
+            }
+            catch (OperationCanceledException)
+            {
+                // The search was cancelled, not the lookups: they go on for the next search (announced after ~10 s
+                // unasked, cancelled when nobody asks again within as long).
+                foreach (var state in states.Values) state.Lookup?.GiveUp();
+                throw;
+            }
+
+            foreach (var state in states.Values)
+            {
+                foreach (int s in state.Missing)
+                {
+                    uint id = segments[s].Id;
+                    if (state.Lookup != null && state.Lookup.TryResult(id, out var set)) state.Parts[s] = set ?? DocSet.Empty;
+                    else if (cache.TryGet(state.Key, id, out var cached)) state.Parts[s] = cached;
+                    else state.Pending = true;
+                }
+                foreach (var p in state.Parts) if (p != null) state.Resolved++;
+                state.Set = DocSet.Join(state.Parts);
+                Pending |= state.Pending;
+            }
+        }
+        finally
+        {
+            foreach (var lookup in held) lookup.Release();
         }
     }
 

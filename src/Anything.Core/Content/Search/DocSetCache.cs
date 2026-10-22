@@ -182,7 +182,10 @@ internal sealed class DocSetCache
             long now = Environment.TickCount64, limit = (long)UnaskedLimit.TotalMilliseconds;
             foreach (var l in _lookups.Values)
             {
-                if (now - l.LastAsked <= limit)
+                // Asked again since it was announced, even when this sweep comes later than the limit (a busy thread
+                // pool): it is wanted, so it may be announced again rather than cancelled.
+                if (l.AnnouncedAt != 0 && l.LastAsked >= l.AnnouncedAt) l.AnnouncedAt = 0;
+                if (l.Held || now - l.LastAsked <= limit)
                 {
                     l.AnnouncedAt = 0; // asked again since: it may be announced again later
                     continue;
@@ -265,6 +268,7 @@ internal sealed class Lookup
     bool _completed, _cancelled, _submitted;
     volatile bool _gaveUp;
     long _lastAsked;
+    int _holders; // searches in progress that asked for it
     volatile int _queued;
 
     internal Lookup(DocSetCache cache, string key, ContentTerm term, ContentSource? source)
@@ -280,6 +284,11 @@ internal sealed class Lookup
     public string Key { get; }
     /// <summary>When a search last asked for it (Environment.TickCount64).</summary>
     public long LastAsked => Interlocked.Read(ref _lastAsked);
+    /// <summary>
+    /// A search in progress holds it: asking the whole time, even while it waits for another term or does an item itself
+    /// for long.
+    /// </summary>
+    internal bool Held => Volatile.Read(ref _holders) > 0;
     /// <summary>Work is waiting to be taken.</summary>
     public bool HasQueued => _queued > 0;
     /// <summary>It finished or was cancelled; it never takes work again.</summary>
@@ -290,6 +299,16 @@ internal sealed class Lookup
     internal long AnnouncedAt;
 
     void Asked() => Interlocked.Exchange(ref _lastAsked, Environment.TickCount64);
+
+    /// <summary>A search asks for it until <see cref="Release"/>, however long the search's other work takes.</summary>
+    internal void Hold() => Interlocked.Increment(ref _holders);
+
+    /// <summary>The search is done with it: from now on its last ask counts, made here (covering what the search does next).</summary>
+    internal void Release()
+    {
+        Asked();
+        Interlocked.Decrement(ref _holders);
+    }
 
     /// <summary>
     /// Nobody asked for it lately although its results are still missing somewhere: says so as if it had finished, so
@@ -384,27 +403,36 @@ internal sealed class Lookup
     /// <summary>
     /// Waits until the segments are resolved (true), the deadline passes (false) or ct is cancelled
     /// (OperationCanceledException, within about 10 ms, or one candidate's confirmation when the search was doing that
-    /// itself). A waiting search counts as asking for the lookup; when nothing has run for <see cref="HelpGraceMs"/> (no
-    /// helper got a thread), it takes work itself, stopping at ct or the deadline like a helper.
+    /// itself). A waiting search counts as asking for the lookup, also while it does an item itself; when nothing has run
+    /// for <see cref="HelpGraceMs"/> (no helper got a thread), it takes work itself, stopping at ct or the deadline like a
+    /// helper.
     /// </summary>
     internal bool WaitFor(IReadOnlyList<uint> segmentIds, long deadline, CancellationToken ct)
     {
-        long helpAfter = Environment.TickCount64 + HelpGraceMs;
-        while (true)
+        Hold();
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            Item? item = null;
-            lock (_gate)
+            long helpAfter = Environment.TickCount64 + HelpGraceMs;
+            while (true)
             {
-                if (AllDone(segmentIds)) return true;
-                if (_cancelled) return false;
-                long now = Environment.TickCount64;
-                if (now >= deadline) return false;
-                if (_running == 0 && now >= helpAfter) item = Take();
-                if (item == null) Monitor.Wait(_gate, (int)Math.Min(deadline - now, 10));
+                ct.ThrowIfCancellationRequested();
+                Item? item = null;
+                lock (_gate)
+                {
+                    if (AllDone(segmentIds)) return true;
+                    if (_cancelled) return false;
+                    long now = Environment.TickCount64;
+                    if (now >= deadline) return false;
+                    if (_running == 0 && now >= helpAfter) item = Take();
+                    if (item == null) Monitor.Wait(_gate, (int)Math.Min(deadline - now, 10));
+                }
+                Asked();
+                if (item != null) Run(item, ct, deadline);
             }
-            Asked();
-            if (item != null) Run(item, ct, deadline);
+        }
+        finally
+        {
+            Release();
         }
     }
 

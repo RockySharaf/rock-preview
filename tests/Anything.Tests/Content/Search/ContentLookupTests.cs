@@ -232,6 +232,71 @@ public class ContentLookupTests
     }
 
     [Fact]
+    public void A_search_after_the_announcement_keeps_the_lookup_even_when_the_next_sweep_comes_late()
+    {
+        // No timed sweeps (an hour apart): the test sweeps by hand, each time past the limit, as a busy thread pool would.
+        var cache = new DocSetCache { UnaskedLimit = TimeSpan.FromMilliseconds(100), SweepEvery = TimeSpan.FromHours(1) };
+        var (f, _) = SlowSegments(cache);
+        Assert.True(f.Run("budget", ContentFixture.Plain).ContentPending);
+        Thread.Sleep(150);
+        cache.Sweep();
+        Assert.Equal(1, f.Source.Completed); // nobody asked within the limit: announced
+        Assert.True(f.Run("budget", ContentFixture.Plain).ContentPending); // the window searches again and joins it
+        Thread.Sleep(150);
+        cache.Sweep();
+        Assert.Equal(1, cache.LookupCount); // asked since the announcement: not cancelled ...
+        Assert.Equal(2, f.Source.Completed); // ... but announced again, nobody having asked since
+        cache.Clear();
+    }
+
+    [Fact]
+    public void A_search_doing_an_item_itself_for_longer_than_the_limit_still_asks_for_the_lookup()
+    {
+        // No timed sweeps: the item sweeps by hand, past the limit, while the waiting search works on it itself.
+        var cache = new DocSetCache { UnaskedLimit = TimeSpan.FromMilliseconds(100), SweepEvery = TimeSpan.FromHours(1) };
+        var f = NewFixture(cache);
+        f.Doc(Inside, "the budget for next year");
+        var store = f.Publish();
+        store.FakeSegments[0].OnTerms = () =>
+        {
+            Thread.Sleep(150);
+            cache.Sweep();
+        };
+        var plan = ContentPlan.Build(QueryParser.Parse("budget", ContentFixture.Plain), ContentFixture.Plain, f.Source.Mode, ContentFixture.Now);
+        var term = plan.Terms.Values.Single(t => t.Plain);
+        using var view = f.Source.AcquireView()!;
+        uint segment = view.Store.Segments[0].Id;
+        var lookup = cache.Join(term.Key, term, f.Source, view, [0]);
+        // No helpers: the search takes the item itself.
+        Assert.True(lookup.WaitFor([segment], long.MaxValue, CancellationToken.None));
+        Assert.True(cache.TryGet(term.Key, segment, out _), "the lookup was cancelled while its search worked on it");
+    }
+
+    [Fact]
+    public void A_plain_word_waiting_behind_a_long_explicit_term_is_still_asked_for()
+    {
+        // No timed sweeps: the explicit term's first item sweeps by hand, past the limit, while the plain word waits.
+        var cache = new DocSetCache { UnaskedLimit = TimeSpan.FromMilliseconds(100), SweepEvery = TimeSpan.FromHours(1) };
+        var f = Fixture(cache);
+        var store = f.Publish();
+        int items = 0;
+        foreach (var seg in store.FakeSegments)
+            seg.OnTerms = () =>
+            {
+                if (Interlocked.Increment(ref items) != 1) return;
+                Thread.Sleep(150);
+                cache.Sweep();
+            };
+        f.Engine.ContentBudget = TimeSpan.Zero; // the plain word's helpers take nothing: it only waits for its turn
+        Assert.True(f.Run("plan content:budget", ContentFixture.Plain).ContentPending);
+        // Handed to the background lane, it finishes and says so (cancelled unannounced, it never would).
+        Assert.True(f.Source.WaitCompleted(Long), "the plain word's lookup was cancelled while its search worked on another term");
+        var r = f.Run("plan content:budget", ContentFixture.Plain);
+        Assert.False(r.ContentPending);
+        Assert.Equal([Second], r.Ids.Select(f.Index.GetFullPath));
+    }
+
+    [Fact]
     public void A_search_doing_a_confirmation_itself_stops_within_one_candidate_and_hands_back_the_rest()
     {
         var cache = new DocSetCache();
