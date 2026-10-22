@@ -209,6 +209,15 @@ internal static class ExplorerReplacement
         catch (Exception) { return (null, false); }
     }
 
+    /// <summary>
+    /// Whether the account <paramref name="sid"/> is certainly gone: one of this PC's own local accounts that Windows says
+    /// no longer exists (UninstallRules.IsRemovedLocalAccount). Asks Windows: call it off the UI thread.
+    /// </summary>
+    public static bool IsRemovedAccount(string sid)
+        // Only this PC's own accounts are looked up: a domain account away from its network can take a while to answer,
+        // and it is never certainly gone.
+        => UninstallRules.IsRemovedLocalAccount(sid, notMapped: true, MachineAccountDomain()) && Identify(sid).NotMapped;
+
     /// <summary>This PC's own account domain (its local accounts' SIDs are it and one more number), or null when unknown.</summary>
     static string? MachineAccountDomain()
     {

@@ -20,12 +20,17 @@ public enum ServiceFor { NotThisUser, OnlyThisUser, ThisUserAndOthers }
 /// <summary>
 /// The uninstall's decisions and words that need nothing from Windows, so they are tested: which running copies stop it,
 /// which accounts can't, what it tells the user about those accounts, whose the instant-indexing service is, and what
-/// Settings › About says about a copy that isn't installed.
+/// Settings › About's Uninstall card says.
 /// </summary>
 public static class UninstallRules
 {
-    /// <summary>Said when Remove from this PC leaves the instant-indexing service because other accounts use it too.</summary>
-    public const string ServiceStays = "The instant-indexing service stays: other accounts on this PC use it too.";
+    /// <summary>
+    /// Said when Remove from this PC leaves the instant-indexing service because other accounts use it too, with how to
+    /// remove it later: once this copy is deleted, no copy or Settings › Apps entry is left to offer it. Only the user can
+    /// tell that the others no longer use it, so it is never advised outright.
+    /// </summary>
+    public const string ServiceStays = "The instant-indexing service stays: other accounts on this PC use it too. If none of them " +
+        "uses Ultimate File Explorer any more, remove it by running \"sc delete RockPreviewService\" in a command prompt opened as administrator.";
 
     /// <summary>
     /// Whether a copy running in session <paramref name="copySession"/> stops a caller in <paramref name="callerSession"/>:
@@ -54,23 +59,30 @@ public static class UninstallRules
     /// <summary>
     /// What to tell the user when other accounts stop an uninstall for everyone, with what each can do. An account whose
     /// settings couldn't be checked is never said to use it, and one Windows can't name is shown by its SID and profile
-    /// folder: never called removed, and never with advice to delete anything of it.
+    /// folder: never called removed, and deleting its profile is offered only as a last resort, once its organization has
+    /// confirmed the account is gone (a deleted work account can't sign in, and Windows can't tell it from one away from
+    /// its network).
     /// </summary>
     public static string OtherAccountsMessage(IEnumerable<OtherAccount> others)
     {
         const string TurnOff = "turn off Settings › General › Use instead of Windows File Explorer";
-        const string Network = "If it's a work or school account, connecting this PC to that network lets Windows name it.";
+        const string Network = "If it's a work or school account that still exists, connecting this PC to that network lets Windows name it.";
         var lines = new List<string> { "Nothing was removed, because other accounts on this PC may still need it:" };
         foreach (var a in others)
         {
-            string unknown = $"an account Windows couldn't identify ({a.Sid}{(a.Profile is { Length: > 0 } p ? $", profile folder {p}" : "")})";
+            string? profile = a.Profile is { Length: > 0 } p ? p : null;
+            string unknown = $"an account Windows couldn't identify ({a.Sid}{(profile is not null ? $", profile folder {profile}" : "")})";
+            // Never this app's guess: only the organization knows the account is gone and not just away from its network.
+            string lastResort = "If your organization has confirmed that this account no longer exists (someone who has left), an " +
+                                "administrator can delete its profile in System Properties › Advanced › User Profiles, after saving " +
+                                $"anything still needed from {profile ?? "its profile folder"}.";
             lines.Add((a.Use, a.Name) switch
             {
                 (AccountUse.CouldNotCheck, { } name) => $"• {name}'s settings couldn't be checked. Sign in as {name} once, then sign out.",
-                (AccountUse.CouldNotCheck, null) => $"• The settings of {unknown} couldn't be checked. Sign in as that account once, then sign out. {Network}",
+                (AccountUse.CouldNotCheck, null) => $"• The settings of {unknown} couldn't be checked. Sign in as that account once, then sign out. {Network} {lastResort}",
                 (_, { } name) => $"• {name} uses it in place of File Explorer. Sign in as {name} and {TurnOff} (if it's already off, change " +
                                  "any other setting once: that clears what's left).",
-                _ => $"• {char.ToUpperInvariant(unknown[0])}{unknown[1..]} uses it in place of File Explorer. Sign in as that account and {TurnOff}. {Network}",
+                _ => $"• {char.ToUpperInvariant(unknown[0])}{unknown[1..]} uses it in place of File Explorer. Sign in as that account and {TurnOff}. {Network} {lastResort}",
             });
         }
         lines.Add("Then uninstall again.");
@@ -102,18 +114,47 @@ public static class UninstallRules
     /// <summary>
     /// Whom the instant-indexing service answers, from its list of allowed users (SIDs) and this user's SID (<paramref
     /// name="me"/>, null when unknown). Remove from this PC removes the service only when it is this user's alone: another
-    /// account's copy (an install of its own, which this user can't see) may depend on it.
+    /// account's copy (an install of its own, which this user can't see) may depend on it. An account <paramref
+    /// name="isGone"/> says is certainly gone doesn't count: the list only ever grows, and a deleted account's SID would
+    /// keep the service for nobody. It is asked only about other accounts, and only until one that isn't gone is found.
     /// </summary>
-    public static ServiceFor ServiceIsFor(IEnumerable<string> allowedUsers, string? me)
+    public static ServiceFor ServiceIsFor(IEnumerable<string> allowedUsers, string? me, Func<string, bool>? isGone = null)
     {
         if (string.IsNullOrEmpty(me)) return ServiceFor.NotThisUser;
         bool mine = false, others = false;
         foreach (string sid in allowedUsers)
         {
             if (string.Equals(sid, me, StringComparison.OrdinalIgnoreCase)) mine = true;
-            else others = true;
+            else if (!others && isGone?.Invoke(sid) != true) others = true;
         }
         return !mine ? ServiceFor.NotThisUser : others ? ServiceFor.ThisUserAndOthers : ServiceFor.OnlyThisUser;
+    }
+
+    /// <summary>
+    /// Settings › About's Uninstall card for the installed copy. When this window is another copy (<paramref
+    /// name="copy"/>, its program file: a portable copy run while an install exists) that folders and Win+E open with
+    /// (<paramref name="takeover"/>) or that starts with Windows, the uninstall leaves that, since it is that copy's own:
+    /// the card says so, never that folders go back to File Explorer then, and that copy's Remove from this PC, offered
+    /// once the installed copy is gone, turns it off.
+    /// </summary>
+    public static string InstalledCardText(string? copy, bool takeover, bool startsWithWindows)
+    {
+        const string Files = "Your files are not affected.";
+        if (copy is null || !(takeover || startsWithWindows))
+            return "Removes Ultimate File Explorer from this PC: the program, its shortcuts, start with Windows and the instant-indexing " +
+                   $"service, and gives folders and Win+E back to File Explorer. {Files}";
+        string removes = startsWithWindows ? "the program, its shortcuts and the instant-indexing service"
+                                           : "the program, its shortcuts, start with Windows and the instant-indexing service";
+        string still = (takeover, startsWithWindows) switch
+        {
+            (true, true) => "folders and Win+E open with it and it starts with Windows",
+            (true, false) => "folders and Win+E open with it",
+            _ => "it starts with Windows",
+        };
+        return $"Removes the installed Ultimate File Explorer from this PC: {removes}" +
+               $"{(takeover ? "" : ", and gives folders and Win+E back to File Explorer")}. This window is another copy ({copy}): " +
+               $"{still}, which Uninstall doesn't change. Once the installed copy is uninstalled, Settings › About in this copy " +
+               $"offers Remove from this PC to turn that off. {Files}";
     }
 
     /// <summary>

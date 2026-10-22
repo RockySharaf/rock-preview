@@ -4,7 +4,7 @@ namespace Anything.Tests;
 
 /// <summary>
 /// What the uninstall decides and says without Windows: running copies, other accounts, whose the service is, which file a
-/// command runs, a portable copy's card.
+/// command runs, the Uninstall card.
 /// </summary>
 public sealed class UninstallRulesTests
 {
@@ -72,15 +72,34 @@ public sealed class UninstallRulesTests
     [Theory]
     [InlineData(AccountUse.UsesIt)]
     [InlineData(AccountUse.CouldNotCheck)]
-    public void AnAccountWindowsCantNameIsShownAndNeverToldToDeleteAnything(AccountUse use)
+    public void AnAccountWindowsCantNameIsToldToDeleteNothingUnlessItsOrganizationConfirmsItIsGone(AccountUse use)
     {
         string text = UninstallRules.OtherAccountsMessage([new(Domain, null, @"C:\Users\sam.work", use)]);
         Assert.Contains(Domain, text);
         Assert.Contains(@"profile folder C:\Users\sam.work", text);
         Assert.Contains("Sign in as that account", text);
-        Assert.Contains("connecting this PC to that network", text);
-        Assert.DoesNotContain("elete", text);
+        Assert.Contains("If it's a work or school account that still exists, connecting this PC to that network", text);
         Assert.DoesNotContain("removed account", text);
+        // Deleting its profile is a last resort, only once its organization says the account is gone: never the app's guess.
+        const string lastResort = "If your organization has confirmed that this account no longer exists (someone who has left), an " +
+                                  "administrator can delete its profile in System Properties › Advanced › User Profiles, after saving " +
+                                  @"anything still needed from C:\Users\sam.work.";
+        Assert.Contains(lastResort, text);
+        string rest = text.Replace(lastResort, "");
+        Assert.DoesNotContain("elete", rest);
+        Assert.DoesNotContain("User Profiles", rest);
+    }
+
+    [Fact]
+    public void AnUnnamedAccountWithoutAProfileFolderIsStillToldWhereToSaveFrom()
+        => Assert.Contains("after saving anything still needed from its profile folder.",
+            UninstallRules.OtherAccountsMessage([new(Domain, null, null, AccountUse.UsesIt)]));
+
+    [Fact]
+    public void ANamedAccountIsNeverToldToDeleteItsProfile()
+    {
+        foreach (var use in new[] { AccountUse.UsesIt, AccountUse.CouldNotCheck })
+            Assert.DoesNotContain("elete", UninstallRules.OtherAccountsMessage([new(Domain, @"PC\Sam", @"C:\Users\Sam", use)]));
     }
 
     [Fact]
@@ -126,6 +145,48 @@ public sealed class UninstallRulesTests
         Assert.DoesNotContain("service is installed", withTakeover);
     }
 
+    [Fact]
+    public void AServiceThatStaysSaysHowToRemoveItOnceNobodyElseUsesIt()
+        // Once this copy is deleted nothing in the app is left to offer it, but other accounts may still need it.
+        => Assert.Contains("If none of them uses Ultimate File Explorer any more, remove it by running \"sc delete RockPreviewService\"",
+            UninstallRules.ServiceStays);
+
+    // ---- an installed copy, from another copy ---------------------------------------------------
+
+    const string Installed = "Removes Ultimate File Explorer from this PC: the program, its shortcuts, start with Windows and the " +
+                             "instant-indexing service, and gives folders and Win+E back to File Explorer. Your files are not affected.";
+
+    [Fact]
+    public void TheInstalledCopysCardSaysFoldersGoBackToFileExplorer()
+    {
+        Assert.Equal(Installed, UninstallRules.InstalledCardText(null, false, false));
+        // Another copy that set nothing up for itself changes nothing.
+        Assert.Equal(Installed, UninstallRules.InstalledCardText(@"E:\Downloads\RockPreview.exe", false, false));
+    }
+
+    [Fact]
+    public void AnotherCopyFoldersOpenWithIsNeverSaidToGiveThemBack()
+    {
+        string text = UninstallRules.InstalledCardText(@"E:\Downloads\RockPreview.exe", takeover: true, startsWithWindows: false);
+        Assert.DoesNotContain("back to File Explorer", text);
+        Assert.Contains(@"This window is another copy (E:\Downloads\RockPreview.exe): folders and Win+E open with it, which Uninstall doesn't change.", text);
+        Assert.Contains("Once the installed copy is uninstalled, Settings › About in this copy offers Remove from this PC", text);
+        Assert.Contains("the program, its shortcuts, start with Windows and the instant-indexing service.", text);
+    }
+
+    [Fact]
+    public void AnotherCopyThatStartsWithWindowsIsSaidToKeepDoingSo()
+    {
+        string text = UninstallRules.InstalledCardText(@"E:\Downloads\RockPreview.exe", takeover: false, startsWithWindows: true);
+        Assert.Contains("the program, its shortcuts and the instant-indexing service, and gives folders and Win+E back to File Explorer.", text);
+        Assert.Contains(": it starts with Windows, which Uninstall doesn't change.", text);
+
+        string both = UninstallRules.InstalledCardText(@"E:\Downloads\RockPreview.exe", takeover: true, startsWithWindows: true);
+        Assert.DoesNotContain("back to File Explorer", both);
+        Assert.DoesNotContain("start with Windows and", both);
+        Assert.Contains(": folders and Win+E open with it and it starts with Windows, which Uninstall doesn't change.", both);
+    }
+
     // ---- whose the instant-indexing service is ------------------------------------------------
 
     const string Me = Machine + "-1001", Other = Machine + "-1002";
@@ -147,6 +208,23 @@ public sealed class UninstallRulesTests
         Assert.Equal(ServiceFor.NotThisUser, UninstallRules.ServiceIsFor([Other], Me));
         Assert.Equal(ServiceFor.NotThisUser, UninstallRules.ServiceIsFor([], Me)); // the list couldn't be read
         Assert.Equal(ServiceFor.NotThisUser, UninstallRules.ServiceIsFor([Me], null)); // who this is couldn't be found out
+    }
+
+    [Fact]
+    public void AnAccountThatIsCertainlyGoneDoesntShareTheService()
+    {
+        // Its SID stays on the list, which only ever grows; it would otherwise keep the service for nobody.
+        Assert.Equal(ServiceFor.OnlyThisUser, UninstallRules.ServiceIsFor([Other, Me], Me, sid => sid == Other));
+        Assert.Equal(ServiceFor.ThisUserAndOthers, UninstallRules.ServiceIsFor([Other, Domain, Me], Me, sid => sid == Other));
+        Assert.Equal(ServiceFor.NotThisUser, UninstallRules.ServiceIsFor([Other], Me, _ => true));
+    }
+
+    [Fact]
+    public void OnlyOtherAccountsAreLookedUpAndOnlyUntilOneIsntGone()
+    {
+        var asked = new List<string>();
+        Assert.Equal(ServiceFor.ThisUserAndOthers, UninstallRules.ServiceIsFor([Me, Domain, Other], Me, sid => { asked.Add(sid); return false; }));
+        Assert.Equal([Domain], asked);
     }
 
     // ---- the program a command runs ---------------------------------------------------------------

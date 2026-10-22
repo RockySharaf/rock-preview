@@ -651,11 +651,14 @@ internal sealed partial class SettingsForm : Form
             || Path.GetDirectoryName(exe) is not { Length: > 0 } own) return;
         int look = ++_uninstallLook;
         // The installed copy this one is first (the one in use when both a just-me and an everyone install exist). A copy
-        // that isn't installed is looked for by its own file, whatever it is called: its settings point at that file.
+        // that isn't installed is looked for by its own file, whatever it is called: its settings point at that file. So
+        // is this copy when it isn't the installed one (a portable copy run while an install exists): what it set up for
+        // itself is left by the installed copy's uninstall, and the card says so.
         var (installed, footprint) = await Task.Run(() =>
         {
             var inst = Setup.FindInstalled(own) ?? Setup.FindInstalled();
-            return (inst, inst is null ? Setup.FootprintOf(exe) : null);
+            bool another = inst is not null && !Setup.SamePath(exe, Path.Combine(inst.Folder, Setup.ExeName));
+            return (inst, inst is null || another ? Setup.FootprintOf(exe) : null);
         });
         if (IsDisposed || look != _uninstallLook) return;
         bool portable = installed is null && footprint is { Any: true };
@@ -665,8 +668,7 @@ internal sealed partial class SettingsForm : Form
                          : portable ? () => Uninstall(own, portable: true)
                          : null;
         _uninstallCard.SetDescription(installed is not null
-            ? "Removes Ultimate File Explorer from this PC: the program, its shortcuts, start with Windows and the instant-indexing " +
-              "service, and gives folders and Win+E back to File Explorer. Your files are not affected."
+            ? UninstallRules.InstalledCardText(footprint is null ? null : exe, footprint?.Takeover == true, footprint?.StartsWithWindows == true)
             : UninstallRules.NotInstalledCardText(footprint?.Takeover == true, footprint?.StartsWithWindows == true,
                 footprint?.Service ?? ServiceFor.NotThisUser, own));
     }

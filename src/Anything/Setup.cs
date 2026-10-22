@@ -543,9 +543,12 @@ internal static partial class Setup
         return new Footprint(takeover, startup, service);
     }
 
-    /// <summary>Whom the instant-indexing service answers, seen from this user (NotThisUser when it isn't installed).</summary>
+    /// <summary>
+    /// Whom the instant-indexing service answers, seen from this user (NotThisUser when it isn't installed). A local
+    /// account deleted from this PC doesn't count: its SID stays on the service's list, which nothing takes users off.
+    /// </summary>
     static ServiceFor ServiceForThisUser() => global::Anything.IndexService.IsInstalled()
-        ? UninstallRules.ServiceIsFor(global::Anything.IndexService.AllowedUserSids(), CurrentUserSid())
+        ? UninstallRules.ServiceIsFor(global::Anything.IndexService.AllowedUserSids(), CurrentUserSid(), ExplorerReplacement.IsRemovedAccount)
         : ServiceFor.NotThisUser;
 
     /// <summary>
@@ -769,7 +772,8 @@ internal static partial class Setup
         }
     }
 
-    static bool SamePath(string a, string b)
+    /// <summary>Two paths name the same file or folder, compared as full paths (case and a trailing backslash don't matter).</summary>
+    internal static bool SamePath(string a, string b)
     {
         try { return string.Equals(Path.GetFullPath(a).TrimEnd('\\'), Path.GetFullPath(b).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase); }
         catch (Exception) { return false; }

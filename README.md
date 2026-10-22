@@ -218,13 +218,18 @@ start with Windows and the instant-indexing service go, folders and Win+E go bac
 search index stay unless you tick *Also delete my Ultimate File Explorer settings and search index*. Windows may also ask
 for permission (to remove the service, or an install for everyone). If another account on this PC still uses it in place
 of File Explorer, or its settings can't be checked, it says so and removes nothing until that account turns it off (a
-local account that was deleted from this PC doesn't count).
+local account that was deleted from this PC doesn't count; for an account Windows can't name that your organization
+has confirmed is gone, an administrator can delete its profile instead). In a portable copy run while Ultimate File
+Explorer is also installed, Uninstall removes the installed copy and leaves what the portable copy set up for itself,
+and says so: open the portable copy again afterwards for Remove from this PC.
 
 The portable version has no Settings › Apps entry. If it set Windows up for itself (*Use instead of Windows File
 Explorer*, *Start when Windows starts* or instant indexing), **Settings › About › Remove from this PC** turns all of that
 off, with the same question about your settings and search index, and keeps the program file (`RockPreview.exe`, or
 whatever you renamed it to): delete it afterwards. The instant-indexing service is one for the whole PC, so it stays if
-other accounts on this PC use it too. If the copy set nothing up, deleting its file is all there is to do.
+other accounts on this PC use it too (not a local account deleted from this PC); if none of them uses it any more,
+`sc delete RockPreviewService` in a command prompt opened as administrator removes it. If the copy set nothing up,
+deleting its file is all there is to do.
 
 > **Windows SmartScreen** may say "Windows protected your PC" because the download isn't code-signed yet.
 > Click **More info › Run anyway**.
