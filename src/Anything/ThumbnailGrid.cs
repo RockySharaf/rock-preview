@@ -14,7 +14,11 @@ internal sealed class ThumbnailGrid : Control
     const long MaxCachedBytes = 40L * 1024 * 1024; // decoded thumbnails kept for nearby rows
     long _cachedBytes;
 
-    readonly VScrollBar _scroll = new() { Dock = DockStyle.Right, SmallChange = 1 };
+    /// <summary>Its Value is how far the grid is scrolled, in pixels (as File Explorer scrolls: smoothly, not by rows).</summary>
+    readonly VScrollBar _scroll = new() { Dock = DockStyle.Right };
+    double _wheelPixels; // a touchpad's small wheel steps, added up until they make a whole pixel
+    int _zoomDelta;      // Ctrl+wheel steps, added up until they make a whole notch
+    int _topItem;        // the item at the top, kept there when cells change size or the grid its width
     readonly Dictionary<string, Bitmap> _thumbs = new(StringComparer.OrdinalIgnoreCase);
     readonly Queue<string> _order = new();
     readonly HashSet<string> _none = new(StringComparer.OrdinalIgnoreCase);
@@ -64,7 +68,7 @@ internal sealed class ThumbnailGrid : Control
                  ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
         TabStop = true;
         Controls.Add(_scroll);
-        _scroll.ValueChanged += (_, _) => Invalidate();
+        _scroll.ValueChanged += (_, _) => { _topItem = Offset / Cell.Height * Columns; Invalidate(); };
     }
 
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
@@ -75,9 +79,8 @@ internal sealed class ThumbnailGrid : Control
         {
             value = Math.Clamp(value, 48, 512);
             if (value == _thumbSize) return;
-            _thumbSize = value;
+            KeepTopItem(() => _thumbSize = value);
             ClearThumbs();
-            UpdateScroll();
             Invalidate();
         }
     }
@@ -87,7 +90,7 @@ internal sealed class ThumbnailGrid : Control
     {
         _count = count;
         CancelPending();
-        if (reset) { _anchor = -1; _scroll.Value = 0; }
+        if (reset) { _anchor = -1; _scroll.Value = 0; _topItem = 0; _wheelPixels = 0; }
         UpdateScroll();
         Invalidate();
     }
@@ -95,9 +98,9 @@ internal sealed class ThumbnailGrid : Control
     public void EnsureVisible(int index)
     {
         if (index < 0 || index >= _count) return;
-        int cols = Columns, row = index / cols, top = _scroll.Value, vis = VisibleRows;
-        if (row < top) SetTop(row);
-        else if (row >= top + vis) SetTop(row - vis + 1);
+        int h = Cell.Height, top = index / Columns * h;
+        if (top < Offset) ScrollTo(top);
+        else if (top + h > Offset + ClientSize.Height) ScrollTo(top + h - ClientSize.Height);
     }
 
     // ---- geometry -------------------------------------------------------------------------------
@@ -109,35 +112,56 @@ internal sealed class ThumbnailGrid : Control
     int Rows => (_count + Columns - 1) / Columns;
     int VisibleRows => Math.Max(1, ClientSize.Height / Cell.Height);
 
-    void SetTop(int row) => _scroll.Value = Math.Clamp(row, _scroll.Minimum, Math.Max(_scroll.Minimum, _scroll.Maximum - _scroll.LargeChange + 1));
+    /// <summary>How far the grid is scrolled, in pixels from the top of the first row.</summary>
+    int Offset => _scroll.Value;
+    int MaxOffset => Math.Max(0, Rows * Cell.Height - ClientSize.Height);
+
+    void ScrollTo(int offset) =>
+        _scroll.Value = Math.Clamp(offset, 0, Math.Max(0, Math.Min(MaxOffset, _scroll.Maximum - _scroll.LargeChange + 1)));
+
+    /// <summary>
+    /// Keeps the item at the top in view while cells change size or the grid changes width (zoom, resize, font): a
+    /// pixel offset would otherwise land somewhere else. The item is the one remembered when the grid last scrolled,
+    /// since by the time a resize is seen the old size is gone.
+    /// </summary>
+    void KeepTopItem(Action change)
+    {
+        int item = _topItem;
+        change();
+        UpdateScroll();
+        ScrollTo(item / Columns * Cell.Height);
+        _topItem = item; // the same item next time too, not its row's first one
+    }
 
     void UpdateScroll()
     {
-        int vis = VisibleRows, rows = Rows;
-        _scroll.LargeChange = vis;
-        _scroll.Maximum = Math.Max(0, rows - 1);
-        _scroll.Enabled = rows > vis;
-        if (_scroll.Value > Math.Max(0, rows - vis)) _scroll.Value = Math.Max(0, rows - vis);
+        int content = Rows * Cell.Height, page = Math.Max(1, ClientSize.Height);
+        // A scroll bar's furthest Value is Maximum - LargeChange + 1: with these, the last row's bottom at the bottom.
+        _scroll.LargeChange = page;
+        _scroll.SmallChange = Math.Max(1, Cell.Height / 3);
+        _scroll.Maximum = Math.Max(0, content - 1);
+        _scroll.Enabled = content > page;
+        if (_scroll.Value > MaxOffset) _scroll.Value = MaxOffset;
     }
 
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        UpdateScroll();
+        KeepTopItem(() => { });
     }
 
     protected override void OnFontChanged(EventArgs e)
     {
         base.OnFontChanged(e);
-        UpdateScroll();
+        KeepTopItem(() => { });
     }
 
     Rectangle CellRect(int index)
     {
-        int cols = Columns, row = index / cols - _scroll.Value, col = index % cols;
+        int cols = Columns, row = index / cols, col = index % cols;
         var c = Cell;
         int spare = (GridWidth - cols * c.Width) / 2; // center the grid horizontally
-        return new Rectangle(spare + col * c.Width, row * c.Height, c.Width, c.Height);
+        return new Rectangle(spare + col * c.Width, row * c.Height - Offset, c.Width, c.Height);
     }
 
     int HitTest(Point p)
@@ -145,7 +169,7 @@ internal sealed class ThumbnailGrid : Control
         var c = Cell;
         int cols = Columns, spare = (GridWidth - cols * c.Width) / 2;
         if (p.X < spare || p.X >= spare + cols * c.Width || p.Y < 0) return -1;
-        int index = (_scroll.Value + p.Y / c.Height) * cols + (p.X - spare) / c.Width;
+        int index = (p.Y + Offset) / c.Height * cols + (p.X - spare) / c.Width;
         return index < _count ? index : -1;
     }
 
@@ -166,7 +190,9 @@ internal sealed class ThumbnailGrid : Control
             return;
         }
 
-        int cols = Columns, first = _scroll.Value * cols, last = Math.Min(_count - 1, (_scroll.Value + VisibleRows + 1) * cols - 1);
+        // The rows the view shows, partly or whole.
+        int cols = Columns, cellHeight = Cell.Height;
+        int first = Offset / cellHeight * cols, last = Math.Min(_count - 1, ((Offset + ClientSize.Height) / cellHeight + 1) * cols - 1);
         int focused = FocusedIndex();
         var visiblePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var selBack = Color.FromArgb(90, SystemColors.Highlight);
@@ -327,13 +353,34 @@ internal sealed class ThumbnailGrid : Control
         if (e.Button == MouseButtons.Left && i >= 0) ItemActivated?.Invoke(i);
     }
 
+    /// <summary>
+    /// A mouse wheel sends 120 per notch; a touchpad sends many small steps (10, 20, 40...). Every step counts, so a
+    /// touchpad scrolls smoothly: a notch moves a third of a row per line Windows scrolls (one row at its default of 3
+    /// lines), or a screen when Windows is set to scroll a screen at a time. Ctrl zooms, a notch at a time.
+    /// </summary>
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         base.OnMouseWheel(e);
-        int notches = e.Delta / 120;
-        if (notches == 0) return;
-        if ((ModifierKeys & Keys.Control) != 0) { ZoomRequested?.Invoke(notches); return; }
-        SetTop(_scroll.Value - notches * Math.Max(1, SystemInformation.MouseWheelScrollLines / 3));
+        if ((ModifierKeys & Keys.Control) != 0)
+        {
+            _wheelPixels = 0;
+            _zoomDelta += e.Delta;
+            int notches = _zoomDelta / 120;
+            if (notches == 0) return;
+            _zoomDelta -= notches * 120;
+            ZoomRequested?.Invoke(notches);
+            return;
+        }
+        _zoomDelta = 0;
+        int lines = SystemInformation.MouseWheelScrollLines;
+        double perNotch = lines < 0 ? ClientSize.Height : Cell.Height * Math.Max(1, lines) / 3.0;
+        // A change of direction starts afresh, so a leftover fraction never moves the grid the old way.
+        if (Math.Sign(_wheelPixels) != Math.Sign(e.Delta)) _wheelPixels = 0;
+        _wheelPixels += e.Delta * perNotch / 120.0;
+        int pixels = (int)_wheelPixels;
+        if (pixels == 0) return;
+        _wheelPixels -= pixels;
+        ScrollTo(Offset - pixels);
     }
 
     protected override bool IsInputKey(Keys keyData) => (keyData & Keys.KeyCode) switch
