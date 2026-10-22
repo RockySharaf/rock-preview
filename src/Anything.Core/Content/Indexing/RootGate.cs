@@ -1,6 +1,6 @@
 namespace Anything.Core.Content.Indexing;
 
-/// <summary>Root status for read and delete decisions (GetRoots now, StateOfRoot after the other session merges).</summary>
+/// <summary>Root status for read and delete decisions (IIndexManager.StateOfRoot, else the last GetRoots count).</summary>
 internal interface IRootGate
 {
     /// <summary>Status, entries and completeness of a root by its name ("C:", "D:\Data", "\\server\share"); null = not held.</summary>
@@ -15,12 +15,12 @@ internal interface IRootGate
 internal readonly record struct RootGateState(RootStatus Status, bool HasEntries, bool Complete);
 
 /// <summary>
-/// The gate in this worktree, backed by <see cref="IIndexManager.GetRoots"/> (status only). GetRoots counts every entry
+/// The app's gate: <see cref="IIndexManager.StateOfRoot"/> first (status, entries and completeness from the manager's own
+/// root list), else the last <see cref="IIndexManager.GetRoots"/> count (status only). GetRoots counts every entry
 /// under the index's read lock, so it is called off-thread, only on the name index's Scanning↔Ready edges (and when the
 /// index was cleared since the last count), at most once a minute; HasEntries is left to the follower's own walk. What it
 /// counted describes the index of that moment: after an edge away from Ready (a rescan or a Rebuild starting, a load) or
-/// a Clear, no root is complete until a count made after it says so. After the other session merges, this becomes
-/// StateOfRoot (one file).
+/// a Clear, no root is complete until a count made after it says so.
 /// </summary>
 internal sealed class RootGate : IRootGate, IDisposable
 {
@@ -62,6 +62,9 @@ internal sealed class RootGate : IRootGate, IDisposable
     /// <inheritdoc/>
     public RootGateState? StateOf(string rootName)
     {
+        // The name index answers itself when it can (StateOfRoot takes only its list lock and counts nothing); null means
+        // it doesn't hold the root, is loading or starting over, or can't tell (the demo's), so the last count decides.
+        if (_names.StateOfRoot(rootName) is { } state) return new RootGateState(state.Status, state.HasEntries, state.Complete);
         var counted = Volatile.Read(ref _counted);
         if (!counted.Statuses.TryGetValue(rootName.TrimEnd('\\'), out var status)) return null;
         return new RootGateState(status, HasEntries: true, Complete: status == RootStatus.Ready && Current(counted));

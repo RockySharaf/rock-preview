@@ -175,6 +175,8 @@ internal sealed partial class MainForm
         // From the index manager, so that a drive being ejected is let go of, as the index does.
         try { listing = _app.IndexManager.CreateListing(roots, _app.Settings.Index.Clone()); }
         catch (ArgumentException) { return; } // no folder left to read: the index answers
+        // Searches of the listing look inside files too, through the main index's text index (mapped by path).
+        Anything.Core.Content.ContentServices.ShareWith(_app.IndexManager.Index, listing.Index);
         tab.Listing = listing;
         tab.ZapSearchRoots = roots;
         listing.Changed += () => _app.Post(() => OnListingChanged(tab, listing));

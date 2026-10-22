@@ -194,6 +194,29 @@ public class RootGateTests
     }
 
     [Fact]
+    public void StateOfRoot_answers_first_with_entries_and_completeness_and_the_count_decides_where_it_is_null()
+    {
+        var index = new FileIndex();
+        var names = new FakeNames(index)
+        {
+            State = IndexState.Ready,
+            Roots = [new IndexedRootInfo(@"C:\", DriveKind.Fixed, false, "MFT", RootStatus.Ready, 10, null),
+                     new IndexedRootInfo(@"D:\", DriveKind.Fixed, false, "MFT", RootStatus.Ready, 10, null)],
+        };
+        using var gate = new RootGate(names, () => 0);
+        Assert.True(SpinWait.SpinUntil(() => gate.Loads == 1, 5000));
+        // The manager's own answer wins over the count: a root it holds with no entries yet, still scanning.
+        names.RootStates["C:"] = new RootState(RootStatus.Scanning, HasEntries: false, Complete: false);
+        Assert.Equal(new RootGateState(RootStatus.Scanning, false, false), gate.StateOf(@"C:\"));
+        names.RootStates["C:"] = new RootState(RootStatus.Offline, HasEntries: true, Complete: true);
+        Assert.Equal(new RootGateState(RootStatus.Offline, true, true), gate.StateOf("C:"));
+        // Where it says nothing, the last count decides; a root neither knows is not held.
+        Assert.Equal(new RootGateState(RootStatus.Ready, true, true), gate.StateOf("D:"));
+        Assert.Null(gate.StateOf("E:"));
+        Assert.Equal(1, names.GetRootsCalls);
+    }
+
+    [Fact]
     public void The_demo_gate_says_every_root_is_ready_once_the_names_are()
     {
         var names = new FakeNames(new FileIndex()) { State = IndexState.Scanning };

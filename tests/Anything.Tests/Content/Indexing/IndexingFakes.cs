@@ -650,6 +650,9 @@ internal sealed class FakeNames(FileIndex index) : IIndexManager
         OnGetRoots?.Invoke();
         return Roots;
     }
+    /// <summary>What StateOfRoot says by root name ("C:", @"D:\Data"); a name not here is null (as a manager that can't tell).</summary>
+    public Dictionary<string, RootState> RootStates { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public RootState? StateOfRoot(string rootName) => RootStates.TryGetValue(rootName.TrimEnd('\\'), out var s) ? s : null;
     public void Raise() => StateChanged?.Invoke();
     public void Dispose() { }
 }
