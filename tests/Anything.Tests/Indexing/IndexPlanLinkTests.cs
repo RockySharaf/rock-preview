@@ -305,4 +305,49 @@ public sealed class IndexPlanLinkTests
         Assert.Equal([@"D:\Data"], IndexPlan.Names(drives, @"D:\Data\", disk.Attributes, disk.Target));
         Assert.Empty(IndexPlan.Names(drives, @"relative\path", disk.Attributes, disk.Target));
     }
+
+    [Fact]
+    public void A_listing_of_a_folder_behind_a_link_is_named_only_where_the_link_points()
+    {
+        // Documents\Projects is a junction to D:\Projects, D: is off, and "Show them in searches" added D:\Projects\Active.
+        var drives = new[] { Fixed(@"C:\"), Fixed(@"D:\"), Fixed(@"E:\"), Subst(@"S:\", @"C:\Users\Me"), Subst(@"T:\", @"E:\Work") };
+        const string Projects = @"C:\Users\Me\Documents\Projects";
+        var disk = On((Projects, @"D:\Projects"));
+        var settings = new IndexSettings { SkipDrives = [@"D:\"], Folders = [@"D:\Projects\Active"] };
+        // As the app finds them: the coverage and the names in one look, with the chain readers.
+        List<string> Names(IndexSettings s, string folder, Disk d)
+        {
+            var (chain, links) = IndexPlan.ChainReaders(drives, folder, d.Attributes, d.Target);
+            return IndexPlan.ListingNames(drives, IndexPlan.Coverage(s, drives, folder, attributesOf: chain, linkTargetOf: links), chain, links);
+        }
+
+        var c = Coverage(settings, drives, Projects, disk);
+        Assert.Equal(CoverageReason.BehindLink, c.Reason);
+        Assert.Equal("C:", c.Root);
+        Assert.Equal(Projects, c.IndexedAs);
+        // C:'s index stops at the junction, so its name for the folder holds no words: only where it points, which
+        // D:\Projects\Active lies below. Spelled by a SUBST letter of C:, the same.
+        Assert.Equal([@"D:\Projects"], Names(settings, Projects, disk));
+        Assert.Equal([@"D:\Projects"], Names(settings, @"S:\Documents\Projects", disk));
+
+        // Searched where it points: its name in the index first, then every name it has, as for any folder.
+        var there = new IndexSettings { SkipDrives = [@"D:\"], Folders = [@"D:\Projects"] };
+        Assert.Equal([@"D:\Projects", Projects], Names(there, Projects, disk));
+        Assert.Equal([@"D:\Projects", @"S:\Documents\Projects", Projects], Names(there, @"S:\Documents\Projects", disk));
+        // No link on its way: its name in the index (as the root below spells it), then its own.
+        Assert.Equal([@"D:\"], Names(settings, @"D:\", disk));
+
+        // Where the junction points can't be read: nowhere else to look, so its own names stay.
+        var unread = On((Projects, ""));
+        Assert.Equal(CoverageReason.BehindLink, Coverage(settings, drives, Projects, unread).Reason);
+        Assert.Equal([Projects], Names(settings, Projects, unread));
+
+        // A link to a folder behind another link: only where the last one leads (with its drive's names), not the folder
+        // on D:, whose index stops at the second link.
+        var twice = On((@"C:\A", @"D:\B"), (@"D:\B\C", @"T:\Real"));
+        var on = new IndexSettings { SkipDrives = [@"E:\"] };
+        Assert.Equal(CoverageReason.BehindLink, Coverage(on, drives, @"C:\A\C", twice).Reason);
+        Assert.Equal([@"T:\Real", @"E:\Work\Real"], Names(on, @"C:\A\C", twice));
+        Assert.Empty(IndexPlan.ListingNames(drives, IndexPlan.Coverage(on, drives, @"relative\path", attributesOf: disk.Attributes, linkTargetOf: disk.Target)));
+    }
 }

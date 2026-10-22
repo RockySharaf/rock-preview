@@ -209,9 +209,44 @@ public static class IndexPlan
         if (FolderName(folder) is not { } name) return [];
         var names = new List<string>();
         foreach (var path in ThroughLinks(drives, name, attributesOf ?? ReadAttributes, LinkReader(attributesOf, linkTargetOf)))
-            foreach (var form in Aliases(drives, path))
-                if (!names.Exists(n => Same(n, form))) names.Add(AsPath(form));
+            AddNames(drives, names, path);
         return names;
+    }
+
+    /// <summary>
+    /// The names a folder listing of <see cref="FolderCoverage.Folder"/> finds its files' words under, the one to try
+    /// first first, each once: its name in the index (<see cref="FolderCoverage.IndexedAs"/>), then <see cref="Names"/>.
+    /// A folder behind a link whose target is not searched (<see cref="CoverageReason.BehindLink"/>) has only the names
+    /// where its links lead: the root that holds its own name stops at the link, and so does one holding a name on the
+    /// way through another link, so those names would place its files where no words can be (on C: for files on D:),
+    /// ahead of the root below that has them (C:\Users\Me\Projects is a junction to D:\Projects, D: is off and
+    /// D:\Projects\Active is searched). Empty when it is not a folder on a drive or a share.
+    /// </summary>
+    /// <param name="coverage">The folder's <see cref="Coverage"/>, found with the same readers.</param>
+    /// <param name="attributesOf">As for <see cref="Coverage"/>; the same readers read nothing again.</param>
+    /// <param name="linkTargetOf">As for <see cref="Coverage"/>.</param>
+    public static List<string> ListingNames(IReadOnlyList<DriveEntry> drives, FolderCoverage coverage, Func<string, FileAttributes?>? attributesOf = null,
+        Func<string, string?>? linkTargetOf = null)
+    {
+        if (coverage.IndexedAs is not { } indexedAs || FolderName(coverage.Folder) is not { } name) return [];
+        var paths = ThroughLinks(drives, name, attributesOf ?? ReadAttributes, LinkReader(attributesOf, linkTargetOf)).ToList();
+        var names = new List<string>();
+        // Each step but the last has a link on its way. A link that can't be read leaves one step: nothing better to try.
+        if (coverage.Reason == CoverageReason.BehindLink && paths.Count > 1)
+        {
+            AddNames(drives, names, paths[^1]);
+            return names;
+        }
+        names.Add(indexedAs);
+        foreach (var path in paths) AddNames(drives, names, path);
+        return names;
+    }
+
+    /// <summary>Adds <paramref name="path"/> and the names its drive gives it (<see cref="Aliases"/>) to <paramref name="names"/>, each once.</summary>
+    static void AddNames(IReadOnlyList<DriveEntry> drives, List<string> names, string path)
+    {
+        foreach (var form in Aliases(drives, path))
+            if (!names.Exists(n => Same(n, form))) names.Add(AsPath(form));
     }
 
     /// <summary>

@@ -189,16 +189,17 @@ internal sealed partial class MainForm
     }
 
     /// <summary>
-    /// The names a listing of these folders finds their files' words under: each folder's name in the index first
-    /// (IndexedAs), then every other name it has, so roots spelled either way are reached (Z:\Music picked in Settings,
-    /// \\nas\share\Docs shown in searches by its share). For a new listing, CoverageOf remembers the fresh look
+    /// The names a listing of these folders finds their files' words under (IndexPlan.ListingNames): each folder's name in
+    /// the index first (IndexedAs), then every other name it has, so roots spelled either way are reached (Z:\Music picked
+    /// in Settings, \\nas\share\Docs shown in searches by its share); a folder behind a link only where the link points, as
+    /// its own name is in a root that stops at the link. For a new listing, CoverageOf remembers the fresh look
     /// ChooseZapSource took, names and all, so nothing is read again here.
     /// </summary>
     Dictionary<string, IReadOnlyList<string>> ListingNames(List<string> roots)
     {
         var names = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var r in roots)
-            if (_app.CoverageOf(r) is { IndexedAs: { } indexedAs }) names[r] = [indexedAs, .. _app.NamesOf(r)];
+            if (_app.ListingNamesOf(r) is { Count: > 0 } known) names[r] = known;
         return names;
     }
 

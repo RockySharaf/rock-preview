@@ -80,7 +80,7 @@ public static class ContentServices
 
     /// <summary>
     /// ShareWith for a listing whose folders have several names (each listed folder → its names, the one to try first
-    /// first: FolderCoverage.IndexedAs, then IndexPlan.Names): each folder's files are matched under the first of its
+    /// first, as IndexPlan.ListingNames gives them): each folder's files are matched under the first of its
     /// names a root of from's text index holds, and a folder no root holds is looked into when a root lies below it under
     /// any of them (Z:\ while Z:\Music and \\nas\share\Docs are roots). Sharing again, with the names the folders have
     /// now, maps the listing again. A folder whose only name is its own is ignored.

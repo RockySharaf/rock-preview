@@ -795,10 +795,11 @@ internal sealed partial class AnythingApp : ApplicationContext
     public FolderCoverage? CoverageOf(string folder, bool fresh = false) => Look(folder, fresh)?.Coverage;
 
     /// <summary>
-    /// Every name <paramref name="folder"/> has (<see cref="IndexPlan.Names"/>: its own, what its drive shows, where the
-    /// links on its way point), found in the same look as <see cref="CoverageOf"/>'s and remembered with it. Empty in the demo.
+    /// The names a folder listing of <paramref name="folder"/> finds its files' words under (<see cref="IndexPlan.ListingNames"/>:
+    /// its name in the index, then its own, what its drive shows, where the links on its way point; only where they point
+    /// when it is behind a link), found in the same look as <see cref="CoverageOf"/>'s and remembered with it. Empty in the demo.
     /// </summary>
-    public IReadOnlyList<string> NamesOf(string folder) => Look(folder, fresh: false)?.Names ?? [];
+    public IReadOnlyList<string> ListingNamesOf(string folder) => Look(folder, fresh: false)?.Names ?? [];
 
     (FolderCoverage Coverage, List<string> Names)? Look(string folder, bool fresh)
     {
@@ -816,14 +817,15 @@ internal sealed partial class AnythingApp : ApplicationContext
     public FolderCoverage? CoverageNow(string folder) => IsDemo ? null : Look(folder, DrivesFor(folder)).Coverage;
 
     /// <summary>
-    /// The plan's answer under the settings, and the folder's names, reading only the folder's own chain (never the
-    /// network: the UI thread asks), once for both.
+    /// The plan's answer under the settings, and the names a listing of the folder uses, reading only the folder's own
+    /// chain (never the network: the UI thread asks), once for both.
     /// </summary>
     (FolderCoverage Coverage, List<string> Names) Look(string folder, IReadOnlyList<DriveEntry> drives)
     {
         var ix = Settings.Index;
         var (attributes, links) = IndexPlan.ChainReaders(drives, folder);
-        return (IndexPlan.Coverage(ix, drives, folder, new ExclusionFilter(ix), attributes, links), IndexPlan.Names(drives, folder, attributes, links));
+        var coverage = IndexPlan.Coverage(ix, drives, folder, new ExclusionFilter(ix), attributes, links);
+        return (coverage, IndexPlan.ListingNames(drives, coverage, attributes, links));
     }
 
     /// <summary>"C:\" for any spelling of a drive's root (c:, C:\., \\?\C:\).</summary>
