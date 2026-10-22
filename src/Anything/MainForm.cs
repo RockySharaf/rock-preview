@@ -421,12 +421,14 @@ internal sealed partial class MainForm : Form
         int focus = FocusedIndex();
         if (thumbs)
         {
+            bool shown = _grid.Visible;
             _grid.ThumbSize = EffectiveThumbSize;
             if (_listFont != null) _grid.Font = _listFont;
             _grid.BackColor = _list.BackColor;
             _grid.ForeColor = _list.ForeColor;
             _grid.SetCount(_ids.Length, reset: false);
-            if (focus >= 0) _grid.EnsureVisible(focus);
+            // Switching to Thumbnails shows the focused item; zooming keeps the place the grid is at.
+            if (focus >= 0 && !shown) _grid.EnsureVisible(focus);
         }
         else if (focus >= 0 && focus < _ids.Length)
         {
