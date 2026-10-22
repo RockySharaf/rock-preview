@@ -618,7 +618,36 @@ internal sealed partial class SettingsForm : Form
             Card("Ultimate File Explorer", $"Version {current}, formerly Rock Preview. Free software under the GNU GPL v3."),
             Card("Updates", "See if a newer version is out.", CardButton("Check for updates", () => _app.CheckForUpdatesInteractive(this))),
             Card("Get started", "The short tour: Alt+X, Thumbnails, subfolders, sorting and choosing folders.", CardButton("Show", () => { Close(); _app.ShowGetStarted(); })),
-            Card("Source code and releases", "github.com/RockySharaf/rock-preview", CardButton("Open", () => AnythingApp.OpenWebPage("https://github.com/" + Anything.Core.UpdateCheck.Repository))));
+            Card("Source code and releases", "github.com/RockySharaf/rock-preview", CardButton("Open", () => AnythingApp.OpenWebPage("https://github.com/" + Anything.Core.UpdateCheck.Repository))),
+            UninstallCard());
+    }
+
+    /// <summary>Uninstall in one click and one question, when there is an installed copy (not for a portable one).</summary>
+    SettingCard UninstallCard()
+    {
+        var installed = Setup.FindInstalled();
+        var button = CardButton("Uninstall", () => Uninstall(installed!.Folder));
+        button.Enabled = installed != null;
+        return Card("Uninstall", installed != null
+            ? "Removes Ultimate File Explorer from this PC: the program, its shortcuts, start with Windows and the instant-indexing " +
+              "service, and gives folders and Win+E back to File Explorer. Your files are not affected."
+            : "Ultimate File Explorer isn't installed on this PC: this copy runs on its own, and deleting it removes it.", button);
+    }
+
+    void Uninstall(string folder)
+    {
+        if (Setup.ConfirmUninstall(this, folder) is not bool removeData) return;
+        if (_app.IsDemo)
+        {
+            TaskDialog.ShowDialog(this, new TaskDialogPage { Caption = Text, Heading = "Nothing was uninstalled", Text = "This is the demo: Uninstall works in the real app.", Icon = TaskDialogIcon.Information });
+            return;
+        }
+        if (!Setup.StartUninstall(removeData))
+        {
+            TaskDialog.ShowDialog(this, new TaskDialogPage { Caption = Text, Heading = "The uninstall couldn't be started", Text = "Uninstall Ultimate File Explorer from Settings › Apps instead.", Icon = TaskDialogIcon.Error });
+            return;
+        }
+        Close(); // the uninstall closes the app next
     }
 
     // ---- values -------------------------------------------------------------------------------

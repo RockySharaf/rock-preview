@@ -209,7 +209,10 @@ Ultimate File Explorer doesn't patch File Explorer to change that.
    and earlier choices.
 2. Prefer no install? Download **`RockPreview.exe`** — the portable version runs from any folder or USB stick.
 
-Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall from **Settings › Apps**.
+Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall in one click from the app's
+**Settings › About › Uninstall** (or from Windows' **Settings › Apps**): the program, its shortcuts, start with Windows
+and the instant-indexing service go, folders and Win+E go back to File Explorer, and your settings and search index stay
+unless you tick *Also delete my settings and search index*.
 
 > **Windows SmartScreen** may say "Windows protected your PC" because the download isn't code-signed yet.
 > Click **More info › Run anyway**.
