@@ -81,7 +81,7 @@ internal static class ExplorerTheme
         GFilter = '', GClose = '', GZap = '', GGrid = '', GBack = '', GForward = '',
         GUp = '', GRefresh = '', GSearch = '', GChevronDown = '', GChevronRight = '',
         GCheck = '', GSelectAll = '', GSelectNone = '', GProperties = '', GSettings = '',
-        GFolder = '', GNewFolder = '', GDetails = '';
+        GFolder = '', GNewFolder = '', GDetails = '', GPhoto = '';
 
     static string? s_uiFamily, s_iconFamily;
 
@@ -299,7 +299,7 @@ internal sealed class ExplorerToolStrip : ToolStrip
             bool iconOnly = item.DisplayStyle == ToolStripItemDisplayStyle.Image || string.IsNullOrEmpty(item.Text);
             int width;
             if (Kind == ExplorerBarKind.Navigation || Kind == ExplorerBarKind.Status) width = height;
-            else if (iconOnly) width = S(40);
+            else if (iconOnly) width = S(40) + (item is ToolStripSplitButton sb ? sb.DropDownButtonWidth : 0); // the gear's arrow
             else
             {
                 int text = TextRenderer.MeasureText(item.Text, labelFont, Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
@@ -317,6 +317,33 @@ internal sealed class ExplorerRenderer : ToolStripRenderer
     static int S(ToolStripItem item, int v) => v * (item.Owner?.DeviceDpi ?? 96) / 96;
 
     static ExplorerBarKind KindOf(ToolStripItem item) => item.Owner is ExplorerToolStrip ets ? ets.Kind : ExplorerBarKind.Plain;
+
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ToolStripItem, System.Runtime.CompilerServices.StrongBox<float>> s_glow = new();
+
+    /// <summary>An accent glow over a button, from 0 (none) to 1, to draw the eye to it (see MainForm.Hints.cs).</summary>
+    public static void SetGlow(ToolStripItem item, float amount)
+    {
+        if (amount <= 0)
+        {
+            if (!s_glow.Remove(item)) return;
+        }
+        else s_glow.GetOrCreateValue(item).Value = Math.Min(1f, amount);
+        item.Invalidate();
+    }
+
+    static void DrawGlow(Graphics g, ToolStripItem item, Rectangle r)
+    {
+        if (!s_glow.TryGetValue(item, out var glow) || item.Pressed || item.Selected) return;
+        var accent = ExplorerTheme.Accent;
+        ExplorerTheme.FillRounded(g, r, S(item, 4), Color.FromArgb((int)(glow.Value * 70), accent));
+        var old = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        float w = Math.Max(1f, S(item, 2) * 0.75f);
+        using var path = ExplorerTheme.RoundedRect(new RectangleF(r.X + w / 2, r.Y + w / 2, r.Width - w - 0.5f, r.Height - w - 0.5f), S(item, 4));
+        using var pen = new Pen(Color.FromArgb((int)(glow.Value * 255), accent), w);
+        g.DrawPath(pen, path);
+        g.SmoothingMode = old;
+    }
 
     public static bool HasChevron(ToolStripItem item) => item switch
     {
@@ -384,6 +411,7 @@ internal sealed class ExplorerRenderer : ToolStripRenderer
                  : on ? ExplorerTheme.Checked : null;
         var r = BackRect(sb);
         if (c is not null) ExplorerTheme.FillRounded(e.Graphics, r, S(sb, 4), c.Value);
+        DrawGlow(e.Graphics, sb, r);
         if (sb.Selected && sb.Enabled)
         {
             var arrow = sb.DropDownButtonBounds;

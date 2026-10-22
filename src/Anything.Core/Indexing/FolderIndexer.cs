@@ -49,6 +49,12 @@ internal sealed class FolderIndexer : RootIndexer
     public override long ProgressCount => Interlocked.Read(ref _progress.Value);
 
     /// <summary>
+    /// Only once a scan finished: a first scan adds entries as it goes, and one cut short is saved with no scan time (as
+    /// is the copy of a mapped drive since mapped to another share, which is scanned again).
+    /// </summary>
+    public override bool Complete => RootId >= 0 && LastScanUtc > 0;
+
+    /// <summary>
     /// The database keeps when the last full scan finished, and for a mapped drive which share it was (the journal
     /// fields are otherwise unused for folders): Z: mapped to another share since must not come back with the old files.
     /// </summary>
@@ -119,7 +125,7 @@ internal sealed class FolderIndexer : RootIndexer
         if (error != 0)
         {
             if (!KeepsEntries(error)) return false;
-            GoOffline(new RootUnavailableException(RootName, error, offline: true).Message);
+            GoOffline(new RootUnavailableException(RootName, error, offline: true));
             return true;
         }
         Status = RootStatus.Ready;
@@ -164,7 +170,7 @@ internal sealed class FolderIndexer : RootIndexer
             catch (RootUnavailableException ex) when (ex.Offline || KeepsEntries(ex.Error))
             {
                 // Keep what the index has; a later scan replaces it once the root is back.
-                GoOffline(ex.Message);
+                GoOffline(ex);
                 return;
             }
             catch (RootUnavailableException)
@@ -243,12 +249,16 @@ internal sealed class FolderIndexer : RootIndexer
         Detail = null;
     }
 
-    void GoOffline(string why)
+    /// <summary>The Windows error that took it offline, so it can be told in Windows' own words (a folder listing does).</summary>
+    public int OfflineError { get; private set; }
+
+    void GoOffline(RootUnavailableException why)
     {
         StopWatcher();
         _events.Clear();
+        OfflineError = why.Error;
         Status = RootStatus.Offline;
-        Detail = why;
+        Detail = why.Message;
     }
 
     /// <summary>
@@ -302,7 +312,7 @@ internal sealed class FolderIndexer : RootIndexer
                     _children = new Dictionary<ChildKey, int>(ChildKeyComparer.Instance);
                 }
             }
-            GoOffline(ex.Message);
+            GoOffline(ex);
             return;
         }
         catch (RootUnavailableException) { /* gone or unreadable: just the root */ }

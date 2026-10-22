@@ -350,6 +350,41 @@ public class SearchEngineTests : SearchTestBase
     }
 
     [Fact]
+    public void Filter_scopes_ignore_match_whole_words_and_match_case()
+    {
+        // The app's folder scopes: a name follows "C:\Docs\" (no word boundary), and the folder may be typed in another case.
+        var strict = new SearchOptions { MatchWholeWord = true, MatchCase = true };
+        AssertFinds("", strict with { Filter = @"file: ""c:\DOCS\""" }, Report, Notes, OldZip, Notes2);
+        // parent: compares folders itself (ignoring case, diacritics kept), whatever the toggles: a guard, not the fix.
+        AssertFinds("", strict with { Filter = @"file: parent:""c:\docs""" }, Report, Notes);
+        AssertFinds("", strict with { Filter = @"file: <""c:\docs\archive\"" | ""C:\MUSIC\"">" }, OldZip, Notes2, Song, SongTwo, Track, Cafe);
+        AssertFinds("", strict with { Filter = @"audio: ""c:\music\""" }, Song, SongTwo, Track, Cafe);
+        AssertFinds("^s", strict with { Regex = true, Filter = @"""c:\music\""" }, Song);
+
+        // The query itself keeps the window's options.
+        AssertFinds("song", strict with { Filter = @"""c:\music\""" }, Song);
+        AssertFinds(@"""C:\Docs\""", new SearchOptions { MatchWholeWord = true });
+        AssertFinds(@"""c:\DOCS\""", new SearchOptions { MatchCase = true });
+        AssertFinds(@"""C:\Docs\""", new SearchOptions { MatchCase = true }, @"C:\Docs\Archive", Report, Notes, OldZip, Notes2);
+    }
+
+    [Fact]
+    public void Filter_scopes_match_diacritics()
+    {
+        const string Accented = @"C:\Café\menu.txt", Plain = @"C:\Cafe\menu.txt";
+        Tree.File(Accented, 1);
+        Tree.File(Plain, 1);
+        AssertFinds("", new SearchOptions { Filter = @"file: ""C:\cafe\""" }, Plain);
+        AssertFinds("", new SearchOptions { Filter = @"file: ""c:\CAFÉ\""" }, Accented);
+        AssertFinds("", new SearchOptions { Filter = @"file: parent:""C:\café""" }, Accented); // parent: as above: a guard
+        AssertFinds("", new SearchOptions { Filter = @"file: nodiacritics:""C:\cafe\""" }, Plain, Accented);
+
+        // The query itself ignores diacritics unless the window asks for them.
+        AssertFinds(@"""C:\cafe\""", Plain, Accented);
+        AssertFinds(@"""C:\cafe\""", new SearchOptions { MatchDiacritics = true }, Plain);
+    }
+
+    [Fact]
     public void Results_report_elapsed()
     {
         var r = Run("song");

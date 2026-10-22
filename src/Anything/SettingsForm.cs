@@ -578,7 +578,7 @@ internal sealed class SettingsForm : Form
             Card("Also search these folders",
                 @"Folders on other drives, USB sticks or the network (\\server\share). They're searched even inside a drive or folder you leave out.",
                 includeButtons, _include),
-            Card("Leave these folders out", "Nothing inside them shows up in searches or in Thumbnails' every-file view.",
+            Card("Leave these folders out", "Nothing inside them shows up in searches. Thumbnails on one of them reads it from the disk.",
                 CardButton("Add a folder", () => _exclude.AddWithPicker(this, "Leave this folder out")), _exclude),
             Card("Leave out files named like", "Wildcards, separated by semicolons. For example *.tmp; ~$*", _patterns),
             Card("Leave out hidden files and folders", "Files Windows marks as hidden.", _exHidden),
@@ -782,7 +782,7 @@ internal sealed class SettingsForm : Form
         {
             Caption = Text,
             Heading = $"Leave out all of {drive}?",
-            Text = $"Nothing on {drive} will show up in searches or in Thumbnails. To stop indexing a drive, you can also turn it off under Indexing.",
+            Text = $"Nothing on {drive} will show up in searches. To stop indexing a drive, you can also turn it off under Indexing.",
             Icon = TaskDialogIcon.Warning,
             Buttons = { yes, no },
             DefaultButton = no,

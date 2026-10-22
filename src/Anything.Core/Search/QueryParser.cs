@@ -75,12 +75,23 @@ public static class QueryParser
         return new Parser(query).Run(flags with { Regex = false });
     }
 
-    /// <summary>Parses the query and ANDs the active filter (parsed with the same parser, regex off).</summary>
+    /// <summary>
+    /// How <see cref="SearchOptions.Filter"/> is read, whatever the window's toggles: ignoring case, with whole words off,
+    /// no regex, wildcards on and Match path off, but with diacritics matched, so a scope of <c>C:\cafe</c> does not take
+    /// <c>C:\café</c>.
+    /// </summary>
+    public static SearchOptions FilterOptions { get; } = new() { MatchDiacritics = true };
+
+    /// <summary>
+    /// Parses the query with <paramref name="options"/> and ANDs the active filter, parsed with <see cref="FilterOptions"/>:
+    /// the app builds the filter (macros, folder scopes), and Match whole words or Match case would empty a scope like
+    /// <c>"C:\x\"</c> or one typed in another case.
+    /// </summary>
     public static QueryNode ParseWithFilter(string? query, SearchOptions options)
     {
         var node = Parse(query, options);
         if (string.IsNullOrWhiteSpace(options.Filter)) return node;
-        var filter = Parse(options.Filter, options with { Regex = false, Filter = null });
+        var filter = Parse(options.Filter, FilterOptions);
         return QueryNode.And(node, filter);
     }
 

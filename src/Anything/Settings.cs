@@ -80,6 +80,12 @@ internal sealed class AppSettings
     public bool ScopeSearchToFolder { get; set; }
     /// <summary>ZAP includes files in subfolders (otherwise only the folder's own files).</summary>
     public bool ZapIncludeSubfolders { get; set; } = true;
+    /// <summary>"Every file in" shows only everyday files (pictures, videos, music, documents, design files...), not code or system files.</summary>
+    public bool EverydayFilesOnly { get; set; } = true;
+    /// <summary>Times the Thumbnails button has pulsed to show itself (a folder open for 3 seconds); it stops at 10.</summary>
+    public int ThumbnailsHintCount { get; set; }
+    /// <summary>Thumbnails has been used, so its button no longer pulses.</summary>
+    public bool ThumbnailsHintDone { get; set; }
     /// <summary>Explorer's navigation pane (Quick access, This PC, drives) in the browse view.</summary>
     public bool ExplorerNavPane { get; set; } = true;
     /// <summary>Navigation pane width in 96-DPI pixels.</summary>
@@ -194,6 +200,11 @@ internal sealed class AppSettings
         s.PreviewVisible = Bool("preview_visible", true);
         s.ScopeSearchToFolder = Bool("scope_search_to_folder", false);
         s.ZapIncludeSubfolders = Bool("zap_include_subfolders", true);
+        s.EverydayFilesOnly = Bool("everyday_files_only", true);
+        s.ThumbnailsHintCount = Math.Max(0, Int("thumbnails_hint_count", 0));
+        // Settings saved before the hint have no key. Results left as thumbnails say thumbnails were used; nothing else
+        // does, so everyone else still gets the hint, upgrading or not.
+        s.ThumbnailsHintDone = Bool("thumbnails_hint_done", Int("thumbnail_size", 0) > 0);
         s.ExplorerNavPane = Bool("explorer_nav_pane", true);
         s.NavPaneWidth = Math.Clamp(Int("nav_pane_width", 176), 120, 1200);
         if (s.NavPaneWidth == 250) s.NavPaneWidth = 176; // the old default; Explorer's pane is 176 (220px at 125%)
@@ -293,6 +304,9 @@ internal sealed class AppSettings
         B("preview_visible", PreviewVisible);
         B("scope_search_to_folder", ScopeSearchToFolder);
         B("zap_include_subfolders", ZapIncludeSubfolders);
+        B("everyday_files_only", EverydayFilesOnly);
+        W("thumbnails_hint_count", ThumbnailsHintCount);
+        B("thumbnails_hint_done", ThumbnailsHintDone);
         B("explorer_nav_pane", ExplorerNavPane);
         W("nav_pane_width", NavPaneWidth);
         W("last_location", Clean(LastLocation));

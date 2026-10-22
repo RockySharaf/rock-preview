@@ -136,6 +136,12 @@ internal abstract class RootIndexer : IDisposable
     /// <summary>Index id of the root entry, -1 when the root has no entries yet.</summary>
     public int RootId { get; protected set; } = -1;
 
+    /// <summary>
+    /// Its entries are a whole copy (<see cref="RootState.Complete"/>). A volume's root entry comes with the finished scan
+    /// (or the database), so having one is enough; a folder's first scan adds it at the start.
+    /// </summary>
+    public virtual bool Complete => RootId >= 0;
+
     /// <summary>Full scan into the index; atomically replaces any previous entries of this root when done.</summary>
     public abstract void Scan(CancellationToken ct);
 

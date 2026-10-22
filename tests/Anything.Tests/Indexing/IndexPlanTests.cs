@@ -681,4 +681,812 @@ public sealed class IndexPlanTests
         Assert.Equal(DriveIndexing.LeftOut, IndexPlan.ForDrive(settings, Fixed(@"D:\"), filter));
         Assert.Equal(DriveIndexing.Indexed, IndexPlan.ForDrive(settings, Fixed(@"D:\")));
     }
+
+    // ---- whether a folder is searched, and why not ----
+
+    static FolderCoverage Coverage(IndexSettings settings, string folder, params DriveEntry[] drives) => CoverageOn(new(), settings, folder, drives);
+
+    /// <summary>Coverage of <paramref name="folder"/>, with folder attribute reads from <paramref name="disk"/> as in <see cref="PlanOn"/>.</summary>
+    static FolderCoverage CoverageOn(Dictionary<string, FileAttributes> disk, IndexSettings settings, string folder, params DriveEntry[] drives)
+    {
+        var ci = new Dictionary<string, FileAttributes>(disk, StringComparer.OrdinalIgnoreCase);
+        return IndexPlan.Coverage(settings, drives, folder, attributesOf: p => ci.TryGetValue(p, out var a) ? a : null);
+    }
+
+    [Fact]
+    public void Folder_on_a_left_out_drive_names_the_rule()
+    {
+        var settings = new IndexSettings { ExcludeFolders = [@"C:\"], Folders = [@"C:\Users\ROG\Desktop"] };
+        var c = Coverage(settings, @"C:\tbay\city-heartbeat", Fixed(@"C:\"), Fixed(@"D:\"));
+        Assert.False(c.Covered);
+        Assert.Equal(CoverageReason.DriveLeftOut, c.Reason);
+        Assert.Equal(@"C:\", c.Rule);
+        Assert.Equal(@"C:\", c.Drive);
+        Assert.Null(c.Root);
+        Assert.Equal(@"C:\tbay\city-heartbeat", c.Folder);
+        Assert.Equal(@"C:\tbay\city-heartbeat", c.IndexedAs);
+
+        // The entry that hides the drive, as written.
+        settings.ExcludeFolders = [@"D:\Backup", "c:/"];
+        var again = Coverage(settings, @"C:\tbay\city-heartbeat\", Fixed(@"C:\"), Fixed(@"D:\"));
+        Assert.Equal(CoverageReason.DriveLeftOut, again.Reason);
+        Assert.Equal("c:/", again.Rule);
+        Assert.Equal(@"C:\tbay\city-heartbeat\", again.Folder);
+        Assert.Equal(@"C:\tbay\city-heartbeat", again.IndexedAs);
+    }
+
+    [Fact]
+    public void Folder_inside_an_added_folder_on_a_left_out_drive_is_covered()
+    {
+        var settings = new IndexSettings { ExcludeFolders = [@"C:\"], Folders = [@"C:\Users\ROG\Desktop"] };
+        foreach (var folder in new[] { @"C:\Users\ROG\Desktop", @"c:\users\rog\desktop\", @"C:\Users\ROG\Desktop\city-heartbeat\src" })
+        {
+            var c = Coverage(settings, folder, Fixed(@"C:\"));
+            Assert.True(c.Covered, folder);
+            Assert.Equal(CoverageReason.Covered, c.Reason);
+            Assert.Equal(@"C:\Users\ROG\Desktop", c.Root);
+            Assert.Null(c.Rule);
+            Assert.Null(c.Drive);
+        }
+        Assert.Equal(@"C:\Users\ROG\Desktop", Coverage(settings, @"c:\users\rog\desktop\", Fixed(@"C:\")).IndexedAs);
+        Assert.Equal(@"C:\Users\ROG\Desktop\city-heartbeat\src", Coverage(settings, @"C:\Users\ROG\Desktop\city-heartbeat\src", Fixed(@"C:\")).IndexedAs);
+
+        // Beside the added folder is still the left-out drive.
+        Assert.Equal(CoverageReason.DriveLeftOut, Coverage(settings, @"C:\Users\ROG\Documents", Fixed(@"C:\")).Reason);
+        Assert.Equal(CoverageReason.DriveLeftOut, Coverage(settings, @"C:\Users\ROG", Fixed(@"C:\")).Reason);
+    }
+
+    [Fact]
+    public void Folder_left_out_by_its_path_names_the_rule()
+    {
+        var settings = new IndexSettings { ExcludeFolders = [@"C:\Work\Old\", @"*\bin\obj", "node_modules"] };
+        var drives = new[] { Fixed(@"C:\"), Fixed(@"D:\") };
+
+        var old = Coverage(settings, @"C:\Work\Old\2024", drives);
+        Assert.Equal(CoverageReason.FolderLeftOut, old.Reason);
+        Assert.Equal(@"C:\Work\Old\", old.Rule);
+        Assert.Equal("C:", old.Root);
+        Assert.Equal(@"C:\Work\Old\2024", old.IndexedAs);
+        Assert.Null(old.Drive);
+        Assert.Equal(CoverageReason.FolderLeftOut, Coverage(settings, @"C:\Work\Old", drives).Reason);
+
+        var obj = Coverage(settings, @"D:\src\bin\obj\Debug", drives);
+        Assert.Equal(CoverageReason.FolderLeftOut, obj.Reason);
+        Assert.Equal(@"*\bin\obj", obj.Rule);
+        Assert.Equal("D:", obj.Root);
+
+        Assert.True(Coverage(settings, @"C:\Work\Older", drives).Covered);
+
+        // The outermost folder left out is the one named.
+        settings.ExcludeFolders = [@"C:\Work\Old\Deep", @"C:\Work"];
+        Assert.Equal(@"C:\Work", Coverage(settings, @"C:\Work\Old\Deep\x", drives).Rule);
+    }
+
+    [Fact]
+    public void Folder_left_out_by_a_name_names_the_rule()
+    {
+        var settings = new IndexSettings { ExcludeFolders = [@"D:\Backup", "node_modules"], ExcludePatterns = ["*.tmp", "*.bak"] };
+
+        var modules = Coverage(settings, @"C:\src\app\node_modules\pkg", Fixed(@"C:\"));
+        Assert.Equal(CoverageReason.NameLeftOut, modules.Reason);
+        Assert.Equal("node_modules", modules.Rule);
+        Assert.Equal("C:", modules.Root);
+        Assert.Null(modules.Drive);
+
+        var bak = Coverage(settings, @"C:\src\old.bak\x", Fixed(@"C:\"));
+        Assert.Equal(CoverageReason.NameLeftOut, bak.Reason);
+        Assert.Equal("*.bak", bak.Rule);
+
+        Assert.True(Coverage(settings, @"C:\src\app", Fixed(@"C:\")).Covered);
+    }
+
+    [Theory]
+    [InlineData(true, false, FileAttributes.Hidden, CoverageReason.HiddenLeftOut)]
+    [InlineData(false, true, FileAttributes.System, CoverageReason.SystemLeftOut)]
+    [InlineData(true, true, FileAttributes.Hidden | FileAttributes.System, CoverageReason.HiddenLeftOut)]
+    [InlineData(false, true, FileAttributes.Hidden | FileAttributes.System, CoverageReason.SystemLeftOut)]
+    public void Folder_inside_a_left_out_hidden_or_system_folder_says_so(bool hidden, bool system, FileAttributes attributes, CoverageReason reason)
+    {
+        var disk = new Dictionary<string, FileAttributes>
+        {
+            [@"C:\Users"] = Dir,
+            [@"C:\Users\me"] = Dir,
+            [@"C:\Users\me\AppData"] = Dir | attributes,
+            [@"C:\Users\me\AppData\Roaming"] = Dir,
+            [@"C:\Users\me\Desktop"] = Dir,
+        };
+        var settings = new IndexSettings { ExcludeHidden = hidden, ExcludeSystem = system };
+
+        var c = CoverageOn(disk, settings, @"C:\Users\me\AppData\Roaming", Fixed(@"C:\"));
+        Assert.Equal(reason, c.Reason);
+        Assert.Equal("C:", c.Root);
+        Assert.Equal(@"C:\Users\me\AppData\Roaming", c.IndexedAs);
+        Assert.Null(c.Rule);
+        // The folder itself: what is in it is left out with it.
+        Assert.Equal(reason, CoverageOn(disk, settings, @"C:\Users\me\AppData", Fixed(@"C:\")).Reason);
+        Assert.True(CoverageOn(disk, settings, @"C:\Users\me\Desktop", Fixed(@"C:\")).Covered);
+        Assert.True(CoverageOn(disk, new IndexSettings(), @"C:\Users\me\AppData\Roaming", Fixed(@"C:\")).Covered);
+    }
+
+    [Fact]
+    public void Folder_behind_a_junction_says_so()
+    {
+        var disk = new Dictionary<string, FileAttributes>
+        {
+            [@"C:\Users"] = Dir,
+            [@"C:\Users\me"] = Dir,
+            [@"C:\Users\me\Linked"] = Link,
+            [@"C:\Users\me\Linked\Proj"] = Dir,
+        };
+        var c = CoverageOn(disk, new IndexSettings(), @"C:\Users\me\Linked\Proj", Fixed(@"C:\"));
+        Assert.Equal(CoverageReason.BehindLink, c.Reason);
+        Assert.Equal("C:", c.Root);
+        Assert.Equal(@"C:\Users\me\Linked\Proj", c.IndexedAs);
+        Assert.Null(c.Rule);
+        Assert.Null(c.Drive);
+
+        // Listed under Folders, the link is a root of its own, which holds what is below it.
+        var listed = CoverageOn(disk, new IndexSettings { Folders = [@"C:\Users\me\Linked"] }, @"C:\Users\me\Linked\Proj", Fixed(@"C:\"));
+        Assert.True(listed.Covered);
+        Assert.Equal(@"C:\Users\me\Linked", listed.Root);
+
+        // Read nothing: taken as an ordinary folder. The folder's own chain is enough to find the link.
+        Assert.True(IndexPlan.Coverage(new IndexSettings(), [Fixed(@"C:\")], @"C:\Users\me\Linked\Proj", attributesOf: _ => null).Covered);
+        var ci = new Dictionary<string, FileAttributes>(disk, StringComparer.OrdinalIgnoreCase);
+        var chain = IndexPlan.ChainReader([Fixed(@"C:\")], @"C:\Users\me\Linked\Proj", p => ci.TryGetValue(p, out var a) ? a : null);
+        Assert.Equal(c, IndexPlan.Coverage(new IndexSettings(), [Fixed(@"C:\")], @"C:\Users\me\Linked\Proj", attributesOf: chain));
+    }
+
+    [Fact]
+    public void Folder_on_a_mounted_volume_that_is_not_indexed_says_why_the_volume_is_not()
+    {
+        var drives = new[] { Fixed(@"C:\"), Fixed(@"C:\Mount\Data\") };
+        var settings = new IndexSettings { SkipDrives = [@"C:\Mount\Data\"] };
+
+        // The volume's own switch, as it would be on a letter of its own; C: holds only the mount point.
+        var c = Coverage(settings, @"C:\Mount\Data\Projects", drives);
+        Assert.Equal(CoverageReason.DriveTurnedOff, c.Reason);
+        Assert.Equal("C:", c.Root);
+        Assert.Equal(@"C:\Mount\Data\", c.Drive);
+        Assert.Equal(@"C:\Mount\Data\Projects", c.IndexedAs);
+        Assert.Null(c.Rule);
+        Assert.Equal(CoverageReason.DriveTurnedOff, Coverage(settings, @"C:\Mount\Data", drives).Reason);
+        Assert.True(Coverage(settings, @"C:\Mount\Other", drives).Covered);
+
+        // Locked, or of a kind that is off.
+        var locked = Coverage(new IndexSettings(), @"C:\Mount\Locked\Docs", Fixed(@"C:\"), Fixed(@"C:\Mount\Locked\", ready: false));
+        Assert.Equal(CoverageReason.DriveNotReady, locked.Reason);
+        Assert.Equal(@"C:\Mount\Locked\", locked.Drive);
+        var card = Coverage(new IndexSettings { IndexRemovableDrives = false }, @"C:\Mount\Card\DCIM", Fixed(@"C:\"), Removable(@"C:\Mount\Card\"));
+        Assert.Equal(CoverageReason.DriveKindOff, card.Reason);
+        Assert.Equal(@"C:\Mount\Card\", card.Drive);
+
+        // Left out by the folder it is mounted in, which is searched as an added folder: the rule is why the volume is not.
+        var inAdded = Coverage(new IndexSettings { ExcludeFolders = [@"D:\Backup", @"C:\Mount\"], Folders = [@"C:\Mount"] }, @"C:\Mount\Data\x", drives);
+        Assert.Equal(CoverageReason.DriveLeftOut, inAdded.Reason);
+        Assert.Equal(@"C:\Mount\", inAdded.Rule);
+        Assert.Equal(@"C:\Mount\Data\", inAdded.Drive);
+        Assert.Equal(@"C:\Mount", inAdded.Root);
+
+        // With all drives off, only the added folder around it is searched.
+        var all = Coverage(new IndexSettings { IndexNtfsVolumes = false, Folders = [@"C:\Mount"] }, @"C:\Mount\Data\x", drives);
+        Assert.Equal(CoverageReason.AllDrivesOff, all.Reason);
+        Assert.Equal(@"C:\Mount", all.Root);
+
+        // Indexed, the volume holds it.
+        var on = Coverage(new IndexSettings(), @"C:\Mount\Data\Projects", drives);
+        Assert.True(on.Covered);
+        Assert.Equal(@"C:\Mount\Data", on.Root);
+
+        // The drive around it turned off too: then the volume's own switch is why.
+        settings.SkipDrives = [@"C:\", @"C:\Mount\Data\"];
+        var off = Coverage(settings, @"C:\Mount\Data\Projects", drives);
+        Assert.Equal(CoverageReason.DriveTurnedOff, off.Reason);
+        Assert.Equal(@"C:\Mount\Data\", off.Drive);
+        Assert.Null(off.Root);
+    }
+
+    [Fact]
+    public void Folder_on_a_drive_that_is_not_indexed_says_why()
+    {
+        var skipped = Coverage(new IndexSettings { SkipDrives = [@"D:\"] }, @"D:\Games", Fixed(@"C:\"), Fixed(@"D:\"));
+        Assert.Equal(CoverageReason.DriveTurnedOff, skipped.Reason);
+        Assert.Equal(@"D:\", skipped.Drive);
+        Assert.Null(skipped.Root);
+        Assert.Null(skipped.Rule);
+        Assert.Equal(@"D:\Games", skipped.IndexedAs);
+
+        var all = Coverage(new IndexSettings { IndexNtfsVolumes = false, Folders = [@"C:\Users\me\Desktop"] }, @"C:\tbay", Fixed(@"C:\"));
+        Assert.Equal(CoverageReason.AllDrivesOff, all.Reason);
+        Assert.Equal(@"C:\", all.Drive);
+
+        var usb = Coverage(new IndexSettings { IndexRemovableDrives = false }, @"E:\Photos", Fixed(@"C:\"), Removable(@"E:\"));
+        Assert.Equal(CoverageReason.DriveKindOff, usb.Reason);
+        Assert.Equal(@"E:\", usb.Drive);
+
+        var nas = Coverage(new IndexSettings { IndexNetworkDrives = false }, @"Z:\Albums", Network(@"Z:\", @"\\nas\music"));
+        Assert.Equal(CoverageReason.DriveKindOff, nas.Reason);
+        Assert.Equal(@"Z:\", nas.Drive);
+        Assert.Equal(@"Z:\Albums", nas.IndexedAs);
+
+        var locked = Coverage(new IndexSettings(), @"D:\Private", Fixed(@"C:\"), Fixed(@"D:\", ready: false));
+        Assert.Equal(CoverageReason.DriveNotReady, locked.Reason);
+        Assert.Equal(@"D:\", locked.Drive);
+
+        // A volume left out by the folder it is mounted in, with the drive around it turned off.
+        var mounted = Coverage(new IndexSettings { SkipDrives = [@"C:\"], ExcludeFolders = [@"D:\Backup", @"C:\Mount"] }, @"C:\Mount\Data\x",
+            Fixed(@"C:\"), Fixed(@"C:\Mount\Data\"));
+        Assert.Equal(CoverageReason.DriveLeftOut, mounted.Reason);
+        Assert.Equal(@"C:\Mount", mounted.Rule);
+        Assert.Equal(@"C:\Mount\Data\", mounted.Drive);
+
+        // With the drive around it indexed, the folder rule is why.
+        var inside = Coverage(new IndexSettings { ExcludeFolders = [@"C:\Mount"] }, @"C:\Mount\Data\x", Fixed(@"C:\"), Fixed(@"C:\Mount\Data\"));
+        Assert.Equal(CoverageReason.FolderLeftOut, inside.Reason);
+        Assert.Equal(@"C:\Mount", inside.Rule);
+        Assert.Equal("C:", inside.Root);
+    }
+
+    [Fact]
+    public void Volume_left_out_by_a_name_names_it()
+    {
+        // The folder it is mounted in has a name that is left out, and the drive around it is off. A name pattern is a
+        // name left out, as it is with the drive around it on, not a folder on the list of folders to leave out.
+        var drives = new[] { Fixed(@"C:\"), Fixed(@"C:\Mount\Data\") };
+        var patterns = new IndexSettings { SkipDrives = [@"C:\"], ExcludePatterns = ["*.bak", "Mount"] };
+        var pattern = Coverage(patterns, @"C:\Mount\Data\x", drives);
+        Assert.Equal(CoverageReason.NameLeftOut, pattern.Reason);
+        Assert.Equal("Mount", pattern.Rule);
+        Assert.Equal(@"C:\Mount\Data\", pattern.Drive);
+        Assert.Null(pattern.Root);
+        Assert.Equal(CoverageReason.NameLeftOut, Coverage(new IndexSettings { ExcludePatterns = ["Mount"] }, @"C:\Mount\Data\x", drives).Reason);
+        // Inside an added folder around it, too.
+        var added = Coverage(new IndexSettings { SkipDrives = [@"C:\"], ExcludePatterns = ["Mount"], Folders = [@"C:\Mount"] }, @"C:\Mount\Data\x", drives);
+        Assert.Equal(CoverageReason.NameLeftOut, added.Reason);
+        Assert.Equal(@"C:\Mount", added.Root);
+        Assert.Equal(@"C:\Mount\Data\", added.Drive);
+        // Showing it in searches adds it, and it is searched.
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(patterns, @"C:\Mount\Data\x", drives));
+        Assert.Equal([@"C:\Mount\Data\x"], patterns.Folders.ToArray());
+        Assert.Equal(["*.bak", "Mount"], patterns.ExcludePatterns.ToArray());
+        Assert.True(Coverage(patterns, @"C:\Mount\Data\x", drives).Covered);
+
+        // A folder name on the list of folders to leave out is on that list.
+        var name = Coverage(new IndexSettings { SkipDrives = [@"C:\"], ExcludeFolders = ["Mou?t"] }, @"C:\Mount\Data\x", drives);
+        Assert.Equal(CoverageReason.DriveLeftOut, name.Reason);
+        Assert.Equal("Mou?t", name.Rule);
+
+        // An entry on the list of folders to leave out comes first, as Settings finds it.
+        var both = Coverage(new IndexSettings { SkipDrives = [@"C:\"], ExcludeFolders = [@"C:\Mount"], ExcludePatterns = ["Mount"] }, @"C:\Mount\Data\x", drives);
+        Assert.Equal(@"C:\Mount", both.Rule);
+    }
+
+    [Theory]
+    [InlineData("Documents")]
+    [InlineData(@"Work\Proj")]
+    [InlineData(@"\Users\me")]
+    [InlineData(@"C:Users")]
+    [InlineData(@"\\nas")]
+    [InlineData(@"\\nas\")]
+    [InlineData(@"\\")]
+    [InlineData(@"\\?\Volume{0b6e0f3a-0000-0000-0000-100000000000}\Docs")]
+    [InlineData(@"\\.\PhysicalDrive0")]
+    [InlineData(@"\\?\\?\C:\Users")]
+    [InlineData("")]
+    public void Path_that_is_not_a_folder_on_a_drive_or_share_is_not_searched(string path)
+    {
+        var settings = new IndexSettings { ExcludeFolders = [@"C:\"], Folders = [@"D:\Keep"] };
+        var c = Coverage(settings, path, Fixed(@"C:\"), Fixed(@"D:\"));
+        Assert.Equal(CoverageReason.NotSearched, c.Reason);
+        Assert.Equal(path, c.Folder);
+        Assert.Null(c.IndexedAs);
+        Assert.Null(c.Root);
+
+        Assert.Equal(SearchFolderResult.NotAFolder, SearchFolder(settings, path, Fixed(@"C:\"), Fixed(@"D:\")));
+        Assert.Equal([@"C:\"], settings.ExcludeFolders.ToArray());
+        Assert.Equal([@"D:\Keep"], settings.Folders.ToArray());
+        Assert.False(IndexPlan.IsWholeDrive([Fixed(@"C:\")], path));
+    }
+
+    [Theory]
+    [InlineData(@"\\?\C:\Users\me", @"C:\Users\me")]
+    [InlineData(@"\\.\C:\Users\me", @"C:\Users\me")]
+    [InlineData(@"\\?\c:\users\me\", @"c:\users\me")]
+    [InlineData(@"\\?\UNC\nas\docs\letters", @"\\nas\docs\letters")]
+    [InlineData(@"C:\Users\me\Docs\..", @"C:\Users\me")]
+    public void Long_and_device_path_prefixes_come_off(string path, string folder)
+    {
+        var settings = new IndexSettings { ExcludeFolders = [@"C:\"] };
+        var c = Coverage(settings, path, Fixed(@"C:\"));
+        Assert.Equal(folder, c.IndexedAs);
+        Assert.Equal(path, c.Folder);
+
+        // Added under the name the index uses, not a second name for the same folder.
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(settings, path, Fixed(@"C:\")));
+        Assert.Equal([folder], settings.Folders.ToArray());
+        var now = Coverage(settings, path, Fixed(@"C:\"));
+        Assert.True(now.Covered);
+        Assert.Equal(folder, now.Root);
+    }
+
+    [Theory]
+    [InlineData(@"C:\", true)]
+    [InlineData("c:", true)]
+    [InlineData(@" C:/ ", true)]
+    [InlineData(@"C:\.", true)]
+    [InlineData(@"C:\Users\..", true)]
+    [InlineData(@"\\?\C:\", true)]
+    [InlineData(@"Z:\", true)] // a mapped drive is a drive, with switches of its own
+    [InlineData(@"Q:\", true)] // not listed yet
+    [InlineData(@"S:\", false)] // a SUBST drive is a folder of the drive it shows
+    [InlineData("s:", false)]
+    [InlineData(@"C:\Users", false)]
+    [InlineData(@"C:\Mount\Data\", false)]
+    [InlineData(@"\\nas\music", false)]
+    [InlineData("Documents", false)]
+    public void Whole_drive_detection(string path, bool expected)
+    {
+        var drives = new[] { Fixed(@"C:\"), Fixed(@"C:\Mount\Data\"), Network(@"Z:\", @"\\nas\music"), Subst(@"S:\", @"C:\Work") };
+        Assert.Equal(expected, IndexPlan.IsWholeDrive(drives, path));
+    }
+
+    [Fact]
+    public void Folder_on_a_subst_drive_is_covered_as_the_folder_it_shows()
+    {
+        var drives = new[] { Fixed(@"C:\"), Subst(@"S:\", @"C:\Work") };
+
+        var c = Coverage(new IndexSettings(), @"S:\Proj", drives);
+        Assert.True(c.Covered);
+        Assert.Equal("C:", c.Root);
+        Assert.Equal(@"C:\Work\Proj", c.IndexedAs);
+        Assert.Equal(@"S:\Proj", c.Folder);
+        Assert.Equal(@"C:\Work", Coverage(new IndexSettings(), @"S:\", drives).IndexedAs);
+        Assert.Equal(@"C:\", Coverage(new IndexSettings(), @"C:\", drives).IndexedAs);
+
+        // Left out where its files really are.
+        var excluded = Coverage(new IndexSettings { ExcludeFolders = [@"C:\Work\Proj"] }, @"S:\Proj\Sub", drives);
+        Assert.Equal(CoverageReason.FolderLeftOut, excluded.Reason);
+        Assert.Equal(@"C:\Work\Proj", excluded.Rule);
+        Assert.Equal(@"C:\Work\Proj\Sub", excluded.IndexedAs);
+
+        // The drive it shows turned off: that drive is why, not the SUBST letter.
+        var off = Coverage(new IndexSettings { SkipDrives = [@"C:\"] }, @"S:\Proj", drives);
+        Assert.Equal(CoverageReason.DriveTurnedOff, off.Reason);
+        Assert.Equal(@"C:\", off.Drive);
+        Assert.Equal(@"C:\Work\Proj", off.IndexedAs);
+        Assert.Equal(CoverageReason.AllDrivesOff, Coverage(new IndexSettings { IndexNtfsVolumes = false }, @"S:\Proj", drives).Reason);
+    }
+
+    [Fact]
+    public void Folder_on_the_second_letter_of_a_share_is_covered_under_the_first()
+    {
+        var drives = new[] { Network(@"Y:\", @"\\nas\music"), Network(@"Z:\", @"\\nas\music") };
+        var c = Coverage(new IndexSettings(), @"Z:\Albums", drives);
+        Assert.True(c.Covered);
+        Assert.Equal("Y:", c.Root);
+        Assert.Equal(@"Y:\Albums", c.IndexedAs);
+        Assert.Equal(@"Y:\Albums", Coverage(new IndexSettings(), @"\\NAS\Music\Albums", drives).IndexedAs);
+
+        // A rule for the first letter's path leaves it out.
+        var excluded = Coverage(new IndexSettings { ExcludeFolders = [@"Y:\Albums"] }, @"Z:\Albums\Live", drives);
+        Assert.Equal(CoverageReason.FolderLeftOut, excluded.Reason);
+        Assert.Equal(@"Y:\Albums", excluded.Rule);
+        Assert.Equal("Y:", excluded.Root);
+        Assert.Equal(@"Y:\Albums\Live", excluded.IndexedAs);
+    }
+
+    [Fact]
+    public void Folder_on_a_share_is_searched_once_it_is_listed()
+    {
+        var c = Coverage(new IndexSettings(), @"\\nas\docs\letters", Fixed(@"C:\"));
+        Assert.Equal(CoverageReason.NotSearched, c.Reason);
+        Assert.Null(c.Root);
+        Assert.Null(c.Drive);
+        Assert.Null(c.Rule);
+        Assert.Equal(@"\\nas\docs\letters", c.IndexedAs);
+
+        var listed = Coverage(new IndexSettings { Folders = [@"\\nas\docs"] }, @"\\nas\docs\letters", Fixed(@"C:\"));
+        Assert.True(listed.Covered);
+        Assert.Equal(@"\\nas\docs", listed.Root);
+        Assert.Equal(@"\\nas\docs\letters", listed.IndexedAs);
+
+        // A drive that is not listed is not searched either.
+        var unknown = Coverage(new IndexSettings(), @"Q:\x", Fixed(@"C:\"));
+        Assert.Equal(CoverageReason.NotSearched, unknown.Reason);
+        Assert.Null(unknown.Drive);
+    }
+
+    [Fact]
+    public void Every_planned_folder_and_every_folder_inside_a_planned_root_is_covered()
+    {
+        var scenarios = new (IndexSettings Settings, DriveEntry[] Drives)[]
+        {
+            (new() { ExcludeFolders = [@"C:\"], Folders = [@"C:\Users\ROG\Desktop", @"C:\Users\ROG\Downloads\"] }, [Fixed(@"C:\"), Fixed(@"D:\")]),
+            (new() { ExcludeFolders = [@"C:\Users\me\AppData", "node_modules"], Folders = [@"C:\Users\me\AppData\Roaming\Tool", @"C:\src\node_modules\pkg", @"C:\src\app"] },
+                [Fixed(@"C:\")]),
+            (new() { IndexNtfsVolumes = false, Folders = [@"C:\Users\me\Desktop", @"\\nas\docs", @"D:\Work", @"d:\work\Sub"] },
+                [Fixed(@"C:\"), Fixed(@"D:\"), Network(@"Z:\", @"\\nas\music")]),
+            (new() { SkipDrives = [@"C:\Mount\Data\"], Folders = [@"C:\Mount\Data\Projects", @"C:\Mount\Data"] }, [Fixed(@"C:\"), Fixed(@"C:\Mount\Data\")]),
+            (new() { IndexRemovableDrives = false, Folders = [@"C:\Mount\Locked\Docs", @"C:\Mount\Card\DCIM"] },
+                [Fixed(@"C:\"), Fixed(@"C:\Mount\Locked\", ready: false), Removable(@"C:\Mount\Card\")]),
+            (new() { ExcludeFolders = [@"Y:\Albums"], Folders = [@"Z:\Albums", @"\\nas\music\Singles"] }, [Network(@"Y:\", @"\\nas\music"), Network(@"Z:\", @"\\nas\music")]),
+            (new() { ExcludeFolders = [@"C:\Work\Proj"], Folders = [@"S:\Proj\Sub", @"S:\Other"] }, [Fixed(@"C:\"), Subst(@"S:\", @"C:\Work")]),
+            (new() { SkipDrives = [@"C:\"], Folders = [@"S:\Proj", @"C:\Work\Proj\Sub", @"C:\Work\Other"] }, [Fixed(@"C:\"), Subst(@"S:\", @"C:\Work")]),
+            (new() { IndexNetworkDrives = false, Folders = [@"Z:\Albums", @"\\nas\backup\pc"] }, [Network(@"Z:\", @"\\nas\music")]),
+            (new() { IndexNtfsVolumes = false, ExcludeFolders = [@"D:\Work\Keep"], Folders = [@"D:\Work", @"D:\Work\Keep"] }, []),
+            (new() { ExcludeHidden = true, ExcludeSystem = true, Folders = [@"C:\Users\me\AppData"] }, [Fixed(@"C:\"), Optical(@"G:\"), Removable(@"E:\", "exFAT")]),
+        };
+        foreach (var (settings, drives) in scenarios)
+        {
+            foreach (var folder in settings.Folders)
+                Assert.True(Coverage(settings, folder, drives).Covered, folder);
+            foreach (var root in Plan(settings, drives))
+            {
+                Assert.True(Coverage(settings, root.RootPath, drives).Covered, root.RootPath);
+                string inside = Path.Combine(root.RootPath, "Sub", "Inner");
+                var c = Coverage(settings, inside, drives);
+                Assert.True(c.Covered, inside);
+                Assert.Equal(root.Name, c.Root);
+            }
+        }
+    }
+
+    [Fact]
+    public void Every_planned_folder_and_every_folder_inside_a_planned_root_is_covered_when_attributes_are_read()
+    {
+        // Links, hidden and system folders between the roots and the folders: those folders get roots of their own.
+        var disk = new Dictionary<string, FileAttributes>
+        {
+            [@"C:\Users\me\AppData"] = Dir | FileAttributes.Hidden,
+            [@"C:\Users\me\Linked"] = Link,
+            [@"C:\Windows"] = Dir | FileAttributes.System,
+            [@"C:\Work\Proj\.git"] = Dir | FileAttributes.Hidden,
+            [@"S:\Proj\.git"] = Dir | FileAttributes.Hidden, // the same folder by its SUBST name
+            [@"C:\Mount\E"] = Link, // a mount point the drive list does not show
+            [@"D:\Work\.cache"] = Dir | FileAttributes.Hidden | FileAttributes.System,
+        };
+        var scenarios = new (IndexSettings Settings, DriveEntry[] Drives)[]
+        {
+            (new() { ExcludeHidden = true, Folders = [@"C:\Users\me\AppData\Roaming\Code", @"C:\Users\me\Linked\Proj", @"C:\Users\me\Desktop"] }, [Fixed(@"C:\")]),
+            (new() { ExcludeSystem = true, Folders = [@"C:\Windows\Fonts", @"C:\Mount\E\Photos", @"C:\Users\me\AppData"] }, [Fixed(@"C:\")]),
+            (new() { ExcludeHidden = true, ExcludeSystem = true, Folders = [@"S:\Proj\.git\hooks", @"C:\Work\Proj\.git", @"S:\Proj"] }, [Fixed(@"C:\"), Subst(@"S:\", @"C:\Work")]),
+            (new() { ExcludeHidden = true, SkipDrives = [@"C:\"], Folders = [@"S:\Proj", @"C:\Work\Proj\.git\hooks"] }, [Fixed(@"C:\"), Subst(@"S:\", @"C:\Work")]),
+            (new() { IndexNtfsVolumes = false, ExcludeSystem = true, Folders = [@"D:\Work", @"D:\Work\.cache\keep", @"D:\Work\src"] }, [Fixed(@"D:\")]),
+            (new() { ExcludeHidden = true, ExcludeFolders = [@"C:\Users"], Folders = [@"C:\Users\me", @"C:\Users\me\AppData\Local", @"C:\Users\me\Linked"] }, [Fixed(@"C:\")]),
+        };
+        foreach (var (settings, drives) in scenarios)
+        {
+            var plan = PlanOn(disk, settings, drives);
+            Assert.True(plan.Count > 1, string.Join(", ", Names(plan))); // the attributes made some folder a root of its own
+            foreach (var folder in settings.Folders)
+                Assert.True(CoverageOn(disk, settings, folder, drives).Covered, folder);
+            foreach (var root in plan)
+            {
+                Assert.True(CoverageOn(disk, settings, root.RootPath, drives).Covered, root.RootPath);
+                string inside = Path.Combine(root.RootPath, "Sub", "Inner");
+                var c = CoverageOn(disk, settings, inside, drives);
+                Assert.True(c.Covered, inside);
+                Assert.Equal(root.Name, c.Root);
+            }
+        }
+    }
+
+    // ---- making a folder searched ----
+
+    static SearchFolderResult SearchFolder(IndexSettings settings, string folder, params DriveEntry[] drives) =>
+        IndexPlan.SearchFolder(settings, drives, folder, _ => null);
+
+    [Fact]
+    public void Search_folder_leaves_drives_to_the_drive_include()
+    {
+        var settings = new IndexSettings { ExcludeFolders = [@"C:\", @"C:\Mount"], SkipDrives = [@"C:\Mount\Data\"], Folders = [@"C:\Users\me\Desktop"] };
+        var drives = new[] { Fixed(@"C:\"), Fixed(@"C:\Mount\Data\") };
+        foreach (var root in new[] { @"C:\", "c:", @"C:\Mount\Data", @"c:\mount\data\" })
+        {
+            Assert.Equal(SearchFolderResult.DriveRoot, SearchFolder(settings, root, drives));
+            Assert.Equal([@"C:\", @"C:\Mount"], settings.ExcludeFolders.ToArray());
+            Assert.Equal([@"C:\Users\me\Desktop"], settings.Folders.ToArray());
+            Assert.Equal([@"C:\Mount\Data\"], settings.SkipDrives.ToArray());
+        }
+    }
+
+    [Fact]
+    public void Search_folder_takes_only_its_own_entry_off_the_folders_left_out()
+    {
+        var settings = new IndexSettings { ExcludeFolders = [@"D:\Backup", " c:/work/old/ ", "node_modules", @"C:\Work\Old\Deeper"], Folders = [@"D:\Keep"] };
+        var drives = new[] { Fixed(@"C:\"), Fixed(@"D:\") };
+        Assert.Equal(SearchFolderResult.Unexcluded, SearchFolder(settings, @"C:\Work\Old", drives));
+        Assert.Equal([@"D:\Backup", "node_modules", @"C:\Work\Old\Deeper"], settings.ExcludeFolders.ToArray());
+        Assert.Equal([@"D:\Keep"], settings.Folders.ToArray());
+        Assert.True(Coverage(settings, @"C:\Work\Old\2024", drives).Covered);
+    }
+
+    [Fact]
+    public void Search_folder_adds_a_folder_on_a_left_out_drive()
+    {
+        var settings = new IndexSettings { ExcludeFolders = [@"C:\"], Folders = [@"C:\Users\ROG\Desktop"] };
+        var drives = new[] { Fixed(@"C:\"), Fixed(@"D:\") };
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(settings, @"C:\tbay\city-heartbeat\", drives));
+        Assert.Equal([@"C:\Users\ROG\Desktop", @"C:\tbay\city-heartbeat"], settings.Folders.ToArray());
+        Assert.Equal([@"C:\"], settings.ExcludeFolders.ToArray());
+        var now = Coverage(settings, @"C:\tbay\city-heartbeat", drives);
+        Assert.True(now.Covered);
+        Assert.Equal(@"C:\tbay\city-heartbeat", now.Root);
+
+        // Asked again, it is searched already.
+        Assert.Equal(SearchFolderResult.AlreadySearched, SearchFolder(settings, @"c:\tbay\city-heartbeat", drives));
+        Assert.Equal(2, settings.Folders.Count);
+    }
+
+    [Fact]
+    public void Search_folder_adds_a_folder_a_rule_above_it_leaves_out()
+    {
+        // Its own entry comes off; the one above it stays, and the folder is searched as an added folder.
+        var settings = new IndexSettings { ExcludeFolders = [@"C:\Users", @"C:\Users\me\Docs"] };
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(settings, @"C:\Users\me\Docs", Fixed(@"C:\")));
+        Assert.Equal([@"C:\Users"], settings.ExcludeFolders.ToArray());
+        Assert.Equal([@"C:\Users\me\Docs"], settings.Folders.ToArray());
+        Assert.True(Coverage(settings, @"C:\Users\me\Docs\2024", Fixed(@"C:\")).Covered);
+    }
+
+    [Fact]
+    public void Search_folder_adds_hidden_folders_shares_and_folders_on_drives_that_are_off()
+    {
+        var disk = new Dictionary<string, FileAttributes>(StringComparer.OrdinalIgnoreCase) { [@"C:\Users\me\AppData"] = Dir | FileAttributes.Hidden };
+        Func<string, FileAttributes?> read = p => disk.TryGetValue(p, out var a) ? a : null;
+        var hidden = new IndexSettings { ExcludeHidden = true };
+        Assert.Equal(SearchFolderResult.Added, IndexPlan.SearchFolder(hidden, [Fixed(@"C:\")], @"C:\Users\me\AppData\Roaming", read));
+        Assert.Equal([@"C:\Users\me\AppData\Roaming"], hidden.Folders.ToArray());
+        Assert.True(IndexPlan.Coverage(hidden, [Fixed(@"C:\")], @"C:\Users\me\AppData\Roaming", attributesOf: read).Covered);
+
+        var share = new IndexSettings();
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(share, @"\\nas\docs\letters\", Fixed(@"C:\")));
+        Assert.Equal([@"\\nas\docs\letters"], share.Folders.ToArray());
+
+        var off = new IndexSettings { SkipDrives = [@"D:\"], IndexRemovableDrives = false };
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(off, @"D:\Games", Fixed(@"D:\"), Removable(@"E:\")));
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(off, @"E:\Photos", Fixed(@"D:\"), Removable(@"E:\")));
+        Assert.Equal([@"D:\Games", @"E:\Photos"], off.Folders.ToArray());
+        Assert.Equal([@"D:\"], off.SkipDrives.ToArray());
+        Assert.True(Coverage(off, @"E:\Photos\2024", Fixed(@"D:\"), Removable(@"E:\")).Covered);
+    }
+
+    [Fact]
+    public void Search_folder_leaves_a_drive_searched_as_an_added_folder_alone()
+    {
+        // C:\ is on both lists, so C: is searched as an added folder; the bar is about D:, which is off.
+        var settings = new IndexSettings { ExcludeFolders = [@"C:\"], Folders = [@"C:\"], SkipDrives = [@"D:\"] };
+        var drives = new[] { Fixed(@"C:\"), Fixed(@"D:\"), Fixed(@"C:\Mount\Data\") };
+        Assert.True(Coverage(settings, @"C:\", drives).Covered);
+        foreach (var root in new[] { @"C:\", "c:" })
+        {
+            Assert.Equal(SearchFolderResult.AlreadySearched, SearchFolder(settings, root, drives));
+            Assert.Equal([@"C:\"], settings.ExcludeFolders.ToArray());
+            Assert.Equal([@"C:\"], settings.Folders.ToArray());
+        }
+        // A volume mounted in a folder of it is left out with it, and goes through the drive's include, as D: does.
+        Assert.Equal(SearchFolderResult.DriveRoot, SearchFolder(settings, @"C:\Mount\Data", drives));
+        Assert.Equal(SearchFolderResult.DriveRoot, SearchFolder(settings, @"D:\", drives));
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(settings, @"D:\Games", drives));
+        Assert.Equal([@"C:\"], settings.ExcludeFolders.ToArray());
+        Assert.Equal([@"C:\", @"D:\Games"], settings.Folders.ToArray());
+        Assert.Equal([@"D:\"], settings.SkipDrives.ToArray());
+    }
+
+    [Fact]
+    public void Search_folder_changes_nothing_on_a_drive_that_is_not_ready()
+    {
+        // The drive list was taken while the card reader was empty: the card's folders are searched once it is ready.
+        var settings = new IndexSettings { ExcludeFolders = [@"D:\Backup"], Folders = [@"C:\Users\me\Desktop"] };
+        var drives = new[] { Fixed(@"C:\"), Removable(@"E:\", ready: false), Fixed(@"C:\Mount\Locked\", ready: false) };
+        foreach (var folder in new[] { @"E:\DCIM", @"e:\dcim\100CANON\", @"C:\Mount\Locked\Docs" })
+        {
+            Assert.Equal(CoverageReason.DriveNotReady, Coverage(settings, folder, drives).Reason);
+            Assert.Equal(SearchFolderResult.DriveNotReady, SearchFolder(settings, folder, drives));
+            Assert.Equal([@"D:\Backup"], settings.ExcludeFolders.ToArray());
+            Assert.Equal([@"C:\Users\me\Desktop"], settings.Folders.ToArray());
+        }
+        Assert.True(Coverage(settings, @"E:\DCIM", Fixed(@"C:\"), Removable(@"E:\")).Covered);
+        // The drive itself is the drive's include, as before.
+        Assert.Equal(SearchFolderResult.DriveRoot, SearchFolder(settings, @"E:\", drives));
+        Assert.Equal(SearchFolderResult.DriveRoot, SearchFolder(settings, @"C:\Mount\Locked", drives));
+
+        // On the list of folders to leave out too: it stays there until it is asked for again once the drive is ready.
+        var left = new IndexSettings { ExcludeFolders = [@"E:\DCIM"] };
+        Assert.Equal(CoverageReason.DriveNotReady, Coverage(left, @"E:\DCIM", drives).Reason);
+        Assert.Equal(SearchFolderResult.DriveNotReady, SearchFolder(left, @"E:\DCIM", drives));
+        Assert.Equal([@"E:\DCIM"], left.ExcludeFolders.ToArray());
+        var ready = new[] { Fixed(@"C:\"), Removable(@"E:\") };
+        Assert.Equal(CoverageReason.FolderLeftOut, Coverage(left, @"E:\DCIM", ready).Reason);
+        Assert.Equal(SearchFolderResult.Unexcluded, SearchFolder(left, @"E:\DCIM", ready));
+        Assert.Empty(left.ExcludeFolders);
+
+        // A switch that leaves it out is said first, and showing it in searches adds it.
+        var off = new IndexSettings { IndexRemovableDrives = false };
+        Assert.Equal(CoverageReason.DriveKindOff, Coverage(off, @"E:\DCIM", drives).Reason);
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(off, @"E:\DCIM", drives));
+        Assert.Equal([@"E:\DCIM"], off.Folders.ToArray());
+    }
+
+    [Fact]
+    public void Search_folder_changes_nothing_for_a_folder_already_searched()
+    {
+        var settings = new IndexSettings { ExcludeFolders = [@"C:\Users\me\AppData"], Folders = [@"D:\Keep"] };
+        var drives = new[] { Fixed(@"C:\"), Subst(@"S:\", @"C:\Work") };
+        Assert.Equal(SearchFolderResult.AlreadySearched, SearchFolder(settings, @"C:\Users\me\Desktop", drives));
+        Assert.Equal(SearchFolderResult.AlreadySearched, SearchFolder(settings, @"S:\Proj", drives));
+        Assert.Equal(SearchFolderResult.AlreadySearched, SearchFolder(settings, @"D:\Keep\x", drives));
+        Assert.Equal([@"C:\Users\me\AppData"], settings.ExcludeFolders.ToArray());
+        Assert.Equal([@"D:\Keep"], settings.Folders.ToArray());
+    }
+
+    [Theory]
+    [InlineData(@"C:\.")]
+    [InlineData(@"c:\Users\..")]
+    [InlineData(@"C:\Users\me\..\..\")]
+    [InlineData(@"\\?\C:\")]
+    public void Search_folder_knows_a_drive_however_it_is_spelled(string root)
+    {
+        var settings = new IndexSettings { ExcludeFolders = [@"C:\"], Folders = [@"C:\Users\me\Desktop"] };
+        Assert.Equal(SearchFolderResult.DriveRoot, SearchFolder(settings, root, Fixed(@"C:\")));
+        Assert.Equal([@"C:\"], settings.ExcludeFolders.ToArray());
+        Assert.Equal([@"C:\Users\me\Desktop"], settings.Folders.ToArray());
+    }
+
+    [Fact]
+    public void Search_folder_takes_a_subst_drive_root_as_the_folder_it_shows()
+    {
+        // S: has no switch of its own: the folder it shows comes off the list of folders to leave out.
+        var drives = new[] { Fixed(@"C:\"), Subst(@"S:\", @"C:\Work") };
+        var settings = new IndexSettings { ExcludeFolders = [@"C:\Work"] };
+        Assert.Equal(CoverageReason.FolderLeftOut, Coverage(settings, @"S:\", drives).Reason);
+        Assert.Equal(SearchFolderResult.Unexcluded, SearchFolder(settings, @"S:\", drives));
+        Assert.Empty(settings.ExcludeFolders);
+        Assert.Empty(settings.Folders);
+        Assert.True(Coverage(settings, @"S:\", drives).Covered);
+        Assert.True(Coverage(settings, @"S:\Proj", drives).Covered);
+
+        // A SUBST of a share: the share is added.
+        var share = new IndexSettings();
+        var nas = new[] { Fixed(@"C:\"), Subst(@"S:\", @"\\nas\docs") };
+        Assert.Equal(CoverageReason.NotSearched, Coverage(share, "s:", nas).Reason);
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(share, "s:", nas));
+        Assert.Equal([@"\\nas\docs"], share.Folders.ToArray());
+        Assert.True(Coverage(share, @"S:\letters", nas).Covered);
+
+        // A SUBST of a whole drive that is turned off: that drive, added as a folder.
+        var off = new IndexSettings { SkipDrives = [@"D:\"] };
+        var whole = new[] { Fixed(@"C:\"), Fixed(@"D:\"), Subst(@"S:\", @"D:\") };
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(off, @"S:\", whole));
+        Assert.Equal(["D:"], off.Folders.ToArray());
+        Assert.Equal([@"D:\"], off.SkipDrives.ToArray());
+        Assert.True(Coverage(off, @"S:\Games", whole).Covered);
+    }
+
+    [Fact]
+    public void Search_folder_takes_off_the_entry_that_names_it_under_another_name()
+    {
+        // The bar names C:\Work\Proj, the entry that hides S:\Proj: that entry comes off.
+        var drives = new[] { Fixed(@"C:\"), Subst(@"S:\", @"C:\Work") };
+        var settings = new IndexSettings { ExcludeFolders = [@"D:\Backup", @"c:/work/proj/"] };
+        Assert.Equal(@"c:/work/proj/", Coverage(settings, @"S:\Proj", drives).Rule);
+        Assert.Equal(SearchFolderResult.Unexcluded, SearchFolder(settings, @"S:\Proj", drives));
+        Assert.Equal([@"D:\Backup"], settings.ExcludeFolders.ToArray());
+        Assert.Empty(settings.Folders);
+
+        // Two letters on one share: Z:\Albums is Y:\Albums in the index.
+        var nas = new[] { Network(@"Y:\", @"\\nas\music"), Network(@"Z:\", @"\\nas\music") };
+        var albums = new IndexSettings { ExcludeFolders = [@"Y:\Albums"] };
+        Assert.Equal(SearchFolderResult.Unexcluded, SearchFolder(albums, @"Z:\Albums", nas));
+        Assert.Empty(albums.ExcludeFolders);
+        Assert.Empty(albums.Folders);
+        Assert.True(Coverage(albums, @"Z:\Albums\Live", nas).Covered);
+
+        // The folder under its SUBST name, typed through the drive it shows.
+        var typed = new IndexSettings { ExcludeFolders = [@"S:\Proj", @"C:\Work\Proj"] };
+        Assert.Equal(SearchFolderResult.Unexcluded, SearchFolder(typed, @"C:\Work\Proj", drives));
+        Assert.Empty(typed.ExcludeFolders);
+    }
+
+    [Fact]
+    public void Search_folder_adds_the_folder_under_the_name_that_lasts()
+    {
+        // A SUBST letter or a mapped letter may be gone after a restart (or as administrator): the folder it shows stays.
+        var subst = new IndexSettings { SkipDrives = [@"C:\"] };
+        var drives = new[] { Fixed(@"C:\"), Subst(@"S:\", @"C:\Work") };
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(subst, @"S:\Proj\", drives));
+        Assert.Equal([@"C:\Work\Proj"], subst.Folders.ToArray());
+        var now = Coverage(subst, @"S:\Proj", drives);
+        Assert.True(now.Covered);
+        Assert.Equal(@"C:\Work\Proj", now.Root);
+        Assert.True(Coverage(subst, @"C:\Work\Proj\Sub", [Fixed(@"C:\")]).Covered); // with S: gone
+
+        var mapped = new IndexSettings { IndexNetworkDrives = false };
+        var nas = new[] { Network(@"Z:\", @"\\nas\music"), Subst(@"T:\", @"Z:\Albums") };
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(mapped, @"Z:\Albums", nas));
+        Assert.Equal([@"\\nas\music\Albums"], mapped.Folders.ToArray());
+        Assert.True(Coverage(mapped, @"Z:\Albums\Live", nas).Covered);
+        Assert.Equal(SearchFolderResult.AlreadySearched, SearchFolder(mapped, @"T:\Live\2024", nas));
+        Assert.True(Coverage(mapped, @"\\nas\music\Albums\Live", []).Covered); // with Z: gone
+
+        var throughSubst = new IndexSettings { IndexNetworkDrives = false };
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(throughSubst, @"T:\Live\2024", nas)); // a SUBST of a mapped drive
+        Assert.Equal([@"\\nas\music\Albums\Live\2024"], throughSubst.Folders.ToArray());
+
+        // A hidden folder inside a folder added under its SUBST name: added under the name that lasts too.
+        var hidden = new IndexSettings { ExcludeHidden = true, SkipDrives = [@"C:\"], Folders = [@"S:\Proj"] };
+        var disk = new Dictionary<string, FileAttributes>(StringComparer.OrdinalIgnoreCase)
+        {
+            [@"C:\Work\Proj\.cache"] = Dir | FileAttributes.Hidden, [@"S:\Proj\.cache"] = Dir | FileAttributes.Hidden,
+        };
+        Func<string, FileAttributes?> read = p => disk.TryGetValue(p, out var a) ? a : null;
+        Assert.Equal(CoverageReason.HiddenLeftOut, IndexPlan.Coverage(hidden, drives, @"S:\Proj\.cache", attributesOf: read).Reason);
+        Assert.Equal(SearchFolderResult.Added, IndexPlan.SearchFolder(hidden, drives, @"S:\Proj\.cache", read));
+        Assert.Equal([@"S:\Proj", @"C:\Work\Proj\.cache"], hidden.Folders.ToArray());
+        Assert.True(IndexPlan.Coverage(hidden, drives, @"S:\Proj\.cache\x", attributesOf: read).Covered);
+    }
+
+    [Fact]
+    public void Search_folder_leaves_every_folder_searched_or_changes_nothing()
+    {
+        // The settings and folders of the tests above, every way round.
+        var drives = new[]
+        {
+            Fixed(@"C:\"), Fixed(@"D:\", "exFAT"), Fixed(@"C:\Mount\Data\"), Removable(@"E:\"), Removable(@"F:\", ready: false),
+            Network(@"Y:\", @"\\nas\music"), Network(@"Z:\", @"\\nas\music"), Subst(@"S:\", @"C:\Work"), Subst(@"T:\", @"Z:\Albums"), Subst(@"U:\", @"D:\"),
+        };
+        var disk = new Dictionary<string, FileAttributes>(StringComparer.OrdinalIgnoreCase)
+        {
+            [@"C:\Users\me\AppData"] = Dir | FileAttributes.Hidden, [@"C:\Work\Linked"] = Link, [@"S:\Linked"] = Link, [@"C:\Sys"] = Dir | FileAttributes.System,
+            [@"C:\Games"] = Link, [@"C:\NAS"] = Link, [@"C:\Users\me\Pics"] = Link, [@"C:\Mount\Data"] = Link, [@"C:\Mount\Gone"] = Link,
+        };
+        // Links to another drive, to a share and to a folder beside it (relative); C:\Work\Linked's target can't be read.
+        // C:\Mount\Data and C:\Mount\Gone are volumes mounted there, with their targets as .NET gives them; the drive list
+        // has only the first.
+        var links = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [@"C:\Games"] = @"D:\Games", [@"C:\NAS"] = @"\\nas\docs", [@"C:\Users\me\Pics"] = @"..\Shared\Pics",
+            [@"C:\Mount\Data"] = @"Volume{0b6e0f3a-0000-0000-0000-100000000001}\", [@"C:\Mount\Gone"] = @"Volume{0b6e0f3a-0000-0000-0000-100000000002}\",
+        };
+        Func<string, FileAttributes?> read = p => disk.TryGetValue(p, out var a) ? a : null;
+        Func<string, string?> linkOf = p => links.GetValueOrDefault(p);
+        var folders = new[]
+        {
+            @"C:\", @"C:\Work", @"S:\", @"S:\Proj", @"C:\Work\Proj\Sub", @"S:\Linked\x", @"C:\Users\me\AppData\Roaming", @"C:\Sys\x", @"C:\Mount\Data",
+            @"C:\Mount\Data\Docs", @"D:\Games", @"U:\", @"U:\Games", @"E:\Photos", @"Y:\Albums", @"Z:\Albums\Live", @"T:\x", @"\\nas\docs", @"Q:\x", "Documents",
+            @"F:\DCIM", @"C:\Games\Saves", @"C:\NAS\letters", @"C:\Users\me\Pics\2024", @"C:\Mount\Gone\x", @"C:\Mount\Gone",
+        };
+        var settingsList = new Func<IndexSettings>[]
+        {
+            () => new() { ExcludeFolders = [@"C:\"] },
+            () => new() { ExcludeFolders = [@"C:\Work", @"Y:\Albums", @"C:\Mount", "Proj"], ExcludePatterns = ["Games"] },
+            () => new() { SkipDrives = [@"C:\", @"D:\", @"C:\Mount\Data\"], IndexNetworkDrives = false, IndexRemovableDrives = false },
+            () => new() { IndexNtfsVolumes = false, Folders = [@"C:\Work", @"\\nas\music"], ExcludeHidden = true, ExcludeSystem = true },
+            () => new() { ExcludeFolders = [@"S:\Proj", @"Z:\Albums\", @"U:\Games"], ExcludeHidden = true, Folders = [@"C:\Users\me"] },
+            () => new() { ExcludeFolders = [@"C:\"], Folders = [@"C:\"], SkipDrives = [@"D:\"] },
+        };
+        foreach (var make in settingsList)
+        {
+            foreach (var folder in folders)
+            {
+                var settings = make();
+                var before = settings.Clone();
+                var result = IndexPlan.SearchFolder(settings, drives, folder, read, linkOf);
+                var after = IndexPlan.Coverage(settings, drives, folder, attributesOf: read, linkTargetOf: linkOf);
+                if (result is SearchFolderResult.DriveRoot or SearchFolderResult.NotAFolder or SearchFolderResult.AlreadySearched or SearchFolderResult.DriveNotReady)
+                {
+                    Assert.Equal(before.ExcludeFolders, settings.ExcludeFolders);
+                    Assert.Equal(before.Folders, settings.Folders);
+                }
+                // Never a second way to the same files: no link is added.
+                Assert.DoesNotContain(settings.Folders, f => new[] { @"C:\Games", @"C:\NAS", @"C:\Users\me\Pics" }.Any(link => f.StartsWith(link, StringComparison.OrdinalIgnoreCase)));
+                // Nor a made-up folder for a volume by its id.
+                Assert.DoesNotContain(settings.Folders, f => f.Contains("Volume{", StringComparison.OrdinalIgnoreCase));
+                if (result is SearchFolderResult.DriveRoot or SearchFolderResult.NotAFolder or SearchFolderResult.DriveNotReady) continue;
+                Assert.True(after.Covered, $"{folder}: {result}, {after.Reason}");
+                Assert.Equal(before.SkipDrives, settings.SkipDrives);
+                Assert.Equal(before.IndexNtfsVolumes, settings.IndexNtfsVolumes);
+            }
+        }
+    }
 }

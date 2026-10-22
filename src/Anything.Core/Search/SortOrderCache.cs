@@ -12,6 +12,9 @@ internal sealed class SortOrderCache(SortKey key)
 {
     public SortKey Key { get; } = key;
 
+    // The index the order was built from: one engine can search several, and ids mean nothing in another one,
+    // even one at the same generation and change log position. Weak, so a closed tab's index isn't kept alive by it.
+    WeakReference<FileIndex>? _index;
     long _generation = -1;
     long _sequence;
     long _runSequence = -1; // run history change log position (Run Count / Date Run orders)
@@ -28,7 +31,8 @@ internal sealed class SortOrderCache(SortKey key)
         _touched.Clear();
         // Run counts live outside the index: their changes come from the run history's own log.
         var runs = IsRunKey ? ctx.Runs : null;
-        if (_generation == index.Generation && index.TryGetChangesSince(_sequence, _touched)
+        if (_index != null && _index.TryGetTarget(out var built) && ReferenceEquals(built, index)
+            && _generation == index.Generation && index.TryGetChangesSince(_sequence, _touched)
             && (runs == null || runs.Sequence <= _runSequence || runs.TryGetChangesSince(_runSequence, _touched)))
         {
             if (_touched.Count == 0) return;
@@ -59,6 +63,7 @@ internal sealed class SortOrderCache(SortKey key)
         ResultSorter.Sort(index, ctx, ids, Key, descending: false, ct);
         _order = ids;
         BuildRank(n);
+        _index = new WeakReference<FileIndex>(index);
         _generation = index.Generation;
         _sequence = index.ChangeSequence;
         _runSequence = ctx.Runs?.Sequence ?? -1;

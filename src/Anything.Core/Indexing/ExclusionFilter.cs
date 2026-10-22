@@ -11,6 +11,11 @@ public sealed class ExclusionFilter
     readonly Wildcard[] _folderPathWildcards;
     readonly Wildcard[] _folderNameWildcards;
     readonly Wildcard[] _namePatterns;
+    // Each rule as written in the settings, at the same index as its compiled form: what RuleHiding names.
+    readonly string[] _folderPrefixRules;
+    readonly string[] _folderPathWildcardRules;
+    readonly string[] _folderNameWildcardRules;
+    readonly string[] _namePatternRules;
     readonly FileAttributes _attrMask;
 
     public static ExclusionFilter None { get; } = new(null);
@@ -20,35 +25,47 @@ public sealed class ExclusionFilter
         var prefixes = new List<string>();
         var pathWild = new List<Wildcard>();
         var nameWild = new List<Wildcard>();
+        var prefixRules = new List<string>();
+        var pathWildRules = new List<string>();
+        var nameWildRules = new List<string>();
         foreach (var raw in settings?.ExcludeFolders ?? [])
         {
             var f = raw?.Trim().Trim('"');
             if (string.IsNullOrEmpty(f)) continue;
             bool wild = f.IndexOfAny(['*', '?']) >= 0;
-            if (f.Contains('\\') || f.Contains('/'))
+            if (IsPathRule(f))
             {
                 f = f.Replace('/', '\\').TrimEnd('\\');
-                if (wild) pathWild.Add(new Wildcard(f));
-                else prefixes.Add(f);
+                if (wild) { pathWild.Add(new Wildcard(f)); pathWildRules.Add(raw!); }
+                else { prefixes.Add(f); prefixRules.Add(raw!); }
             }
-            else nameWild.Add(new Wildcard(f));
+            else { nameWild.Add(new Wildcard(f)); nameWildRules.Add(raw!); }
         }
         _folderPrefixes = [.. prefixes];
         _folderPathWildcards = [.. pathWild];
         _folderNameWildcards = [.. nameWild];
-        _namePatterns = [.. (settings?.ExcludePatterns ?? []).Select(p => p?.Trim() ?? "").Where(p => p.Length > 0).Select(p => new Wildcard(p))];
+        _folderPrefixRules = [.. prefixRules];
+        _folderPathWildcardRules = [.. pathWildRules];
+        _folderNameWildcardRules = [.. nameWildRules];
+        _namePatternRules = [.. (settings?.ExcludePatterns ?? []).Where(p => !string.IsNullOrWhiteSpace(p))];
+        _namePatterns = [.. _namePatternRules.Select(p => new Wildcard(p.Trim()))];
         if (settings?.ExcludeHidden == true) _attrMask |= FileAttributes.Hidden;
         if (settings?.ExcludeSystem == true) _attrMask |= FileAttributes.System;
         NeedsFolderPaths = _folderPrefixes.Length + _folderPathWildcards.Length > 0;
         IsEmpty = !NeedsFolderPaths && _folderNameWildcards.Length == 0 && _namePatterns.Length == 0 && _attrMask == 0;
     }
 
-    ExclusionFilter(ExclusionFilter from, string[] prefixes, Wildcard[] pathWildcards)
+    /// <summary>The rules of <paramref name="from"/>, keeping only the path rules at the given indexes.</summary>
+    ExclusionFilter(ExclusionFilter from, int[] prefixes, int[] pathWildcards)
     {
-        _folderPrefixes = prefixes;
-        _folderPathWildcards = pathWildcards;
+        _folderPrefixes = [.. prefixes.Select(i => from._folderPrefixes[i])];
+        _folderPrefixRules = [.. prefixes.Select(i => from._folderPrefixRules[i])];
+        _folderPathWildcards = [.. pathWildcards.Select(i => from._folderPathWildcards[i])];
+        _folderPathWildcardRules = [.. pathWildcards.Select(i => from._folderPathWildcardRules[i])];
         _folderNameWildcards = from._folderNameWildcards;
+        _folderNameWildcardRules = from._folderNameWildcardRules;
         _namePatterns = from._namePatterns;
+        _namePatternRules = from._namePatternRules;
         _attrMask = from._attrMask;
         NeedsFolderPaths = _folderPrefixes.Length + _folderPathWildcards.Length > 0;
         IsEmpty = !NeedsFolderPaths && _folderNameWildcards.Length == 0 && _namePatterns.Length == 0 && _attrMask == 0;
@@ -65,9 +82,10 @@ public sealed class ExclusionFilter
         if (root.Length == 0 || !NeedsFolderPaths) return this;
         var self = new List<string> { root };
         for (int i = root.LastIndexOf('\\'); i > 0; i = root.LastIndexOf('\\', i - 1)) self.Add(root[..i]);
-        var prefixes = _folderPrefixes.Where(p => !(root.Equals(p, StringComparison.OrdinalIgnoreCase)
-            || (root.Length > p.Length && root.StartsWith(p, StringComparison.OrdinalIgnoreCase) && root[p.Length] == '\\'))).ToArray();
-        var wild = _folderPathWildcards.Where(w => !self.Exists(a => w.IsMatch(a))).ToArray();
+        bool AtOrAbove(string p) => root.Equals(p, StringComparison.OrdinalIgnoreCase)
+            || (root.Length > p.Length && root.StartsWith(p, StringComparison.OrdinalIgnoreCase) && root[p.Length] == '\\');
+        var prefixes = Enumerable.Range(0, _folderPrefixes.Length).Where(i => !AtOrAbove(_folderPrefixes[i])).ToArray();
+        var wild = Enumerable.Range(0, _folderPathWildcards.Length).Where(i => !self.Exists(a => _folderPathWildcards[i].IsMatch(a))).ToArray();
         return prefixes.Length == _folderPrefixes.Length && wild.Length == _folderPathWildcards.Length ? this : new ExclusionFilter(this, prefixes, wild);
     }
 
@@ -104,28 +122,35 @@ public sealed class ExclusionFilter
 
     public bool ExcludesAttributes(FileAttributes attributes) => (attributes & _attrMask) != 0;
 
-    public bool ExcludesName(string name)
+    public bool ExcludesName(string name) => NameRule(name) != null;
+
+    /// <summary>The name pattern that leaves out <paramref name="name"/>, as written, or null.</summary>
+    string? NameRule(string name)
     {
-        foreach (var p in _namePatterns)
-            if (p.IsMatch(name)) return true;
-        return false;
+        for (int i = 0; i < _namePatterns.Length; i++)
+            if (_namePatterns[i].IsMatch(name)) return _namePatternRules[i];
+        return null;
     }
 
     /// <summary>Folder rules only (path prefix / path wildcard / folder-name wildcard). <paramref name="fullPath"/> may be null if <see cref="NeedsFolderPaths"/> is false.</summary>
-    public bool ExcludesFolder(string? fullPath, string name)
+    public bool ExcludesFolder(string? fullPath, string name) => FolderRule(fullPath, name) != null;
+
+    /// <summary>The folder rule that leaves out this folder, as written, or null.</summary>
+    string? FolderRule(string? fullPath, string name)
     {
-        foreach (var p in _folderNameWildcards)
-            if (p.IsMatch(name)) return true;
-        if (fullPath is null) return false;
+        for (int i = 0; i < _folderNameWildcards.Length; i++)
+            if (_folderNameWildcards[i].IsMatch(name)) return _folderNameWildcardRules[i];
+        if (fullPath is null) return null;
         var path = fullPath.AsSpan().TrimEnd('\\');
-        foreach (var p in _folderPrefixes)
+        for (int i = 0; i < _folderPrefixes.Length; i++)
         {
+            var p = _folderPrefixes[i];
             if (path.Length < p.Length || !path.StartsWith(p, StringComparison.OrdinalIgnoreCase)) continue;
-            if (path.Length == p.Length || path[p.Length] == '\\') return true;
+            if (path.Length == p.Length || path[p.Length] == '\\') return _folderPrefixRules[i];
         }
-        foreach (var p in _folderPathWildcards)
-            if (p.IsMatch(path)) return true;
-        return false;
+        for (int i = 0; i < _folderPathWildcards.Length; i++)
+            if (_folderPathWildcards[i].IsMatch(path)) return _folderPathWildcardRules[i];
+        return null;
     }
 
     /// <summary>Full check for one entry. <paramref name="fullPath"/> is only consulted for folders.</summary>
@@ -137,19 +162,29 @@ public sealed class ExclusionFilter
     }
 
     /// <summary>True if <paramref name="fullPath"/> or any of its ancestors (below <paramref name="rootPath"/>) is an excluded folder.</summary>
-    public bool ExcludesPathOrAncestor(string rootPath, string fullPath)
+    public bool ExcludesPathOrAncestor(string rootPath, string fullPath) => RuleHiding(rootPath, fullPath) != null;
+
+    /// <summary>
+    /// The rule that leaves out <paramref name="fullPath"/> or a folder between <paramref name="rootPath"/> and it, as
+    /// written in the settings: a path, a path wildcard, a folder name or a name pattern. Null when none does. Leaving
+    /// out hidden or system folders is not a rule here: that depends on each folder's attributes.
+    /// </summary>
+    public string? RuleHiding(string rootPath, string fullPath)
     {
-        if (IsEmpty) return false;
+        if (IsEmpty) return null;
         string root = rootPath.TrimEnd('\\');
         var rel = fullPath.Length > root.Length ? fullPath[(root.Length + 1)..] : "";
         string cur = root;
         foreach (var part in rel.Split('\\', StringSplitOptions.RemoveEmptyEntries))
         {
             cur = cur + "\\" + part;
-            if (ExcludesName(part) || ExcludesFolder(cur, part)) return true;
+            if ((NameRule(part) ?? FolderRule(cur, part)) is { } rule) return rule;
         }
-        return false;
+        return null;
     }
+
+    /// <summary>An exclude entry with a backslash (or a slash) is a path; one without is a folder name.</summary>
+    internal static bool IsPathRule(string rule) => rule.Contains('\\') || rule.Contains('/');
 
     public static string Join(string parentPath, string name)
         => parentPath.EndsWith('\\') ? parentPath + name : parentPath + "\\" + name;

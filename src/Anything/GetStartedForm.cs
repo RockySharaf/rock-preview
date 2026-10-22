@@ -46,7 +46,7 @@ internal sealed class GetStartedForm : Form
             new(GettingStarted.Thumbnails, "Open a folder, then click Thumbnails", "Every file in it and its subfolders, as pictures"),
             new(GettingStarted.Subfolders, "Click the arrow next to Thumbnails", "Include subfolders, or show this folder only"),
             new(GettingStarted.Sort, "Click Sort to put them in order", "For example by date, newest first"),
-            new(GettingStarted.Folders, "Open ... › Settings › Folders", "Search more folders, or leave some out"),
+            new(GettingStarted.Folders, "Click the gear, then Folders", "Search more folders, or leave some out"),
         ];
         _stepRects = new Rectangle[_steps.Length];
         Text = "Get started";

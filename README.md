@@ -121,6 +121,16 @@ Press **Thumbnails** (or `Ctrl+Shift+X`) to see files as pictures:
 
 The arrow next to it shows the same files as a list instead (`Ctrl+Shift+Z`), or only the folder's own files.
 
+**Everyday files** (next to Thumbnails while every file shows) keeps it to what people look at: pictures (camera raw
+too), videos, music, documents and PDFs, e-books, design and 3D files, fonts and ZIP/RAR/7z archives. Code, settings,
+logs, program and system files are left out. It's on until you turn it off; turn it off to see every file.
+
+A folder the index doesn't have (left out in **Settings › Folders**, on a drive that's turned off, or not read yet)
+is read straight from the disk instead, and kept up to date while it shows. A bar says why its files don't show up in
+searches, with **Show them in searches** to add them. While a folder is still being read, the view says so instead of
+looking empty. The first few times a folder stays open for a few seconds, the Thumbnails button glows briefly, until you
+use Thumbnails (10 times at most).
+
 <div align="center">
 <img src="docs/images/search.png" alt="Instant search results with highlighted matches" width="900">
 </div>
@@ -136,7 +146,8 @@ takes over:
 Inside Ultimate File Explorer, folders open in the same window, and folders opened from Windows open as a new tab in
 the window you used last (or in a new window: **Settings › General › Open folders in tabs**). Untick the box (or
 uninstall) and File Explorer comes back exactly as it was: Ultimate File Explorer keeps a copy of everything it changes
-and puts it back. Only your own Windows account is affected. **⋯ › Open in File Explorer** always opens the real File Explorer.
+and puts it back. Only your own Windows account is affected. **Settings ⌄ › Open in File Explorer** (the arrow next to
+the gear) always opens the real File Explorer.
 
 One thing Windows doesn't allow: folders **double-clicked on the desktop** still open in File Explorer. The desktop is
 part of File Explorer and opens them itself, without asking the settings other apps use (tested on Windows 11), and
@@ -193,7 +204,7 @@ checks right away. Turn the daily check off in Setup or **Settings › General**
 | `Ctrl+I` `Ctrl+B` `Ctrl+U` `Ctrl+R` | Match case / whole word / path / regex |
 | `Ctrl+1` … `Ctrl+8`, `Ctrl+9` | Sort by Name, Path, Size, Extension, Type, Date Modified, Date Created, Attributes; Date Recently Changed |
 | `Ctrl+D` | Bookmark the current search |
-| `Ctrl+P` | Settings (also at the top of the **⋯** menu) |
+| `Ctrl+P` | Settings (also the gear on the command bar; its arrow has the rest of Explorer's **⋯** menu) |
 | `Ctrl+N` | New window |
 | `Esc` | Clear the search / back to the folder |
 | `F1` | Search syntax help |

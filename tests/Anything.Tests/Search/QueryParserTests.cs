@@ -118,6 +118,38 @@ public class QueryParserTests
         Assert.Equal("AND(regex:'^s',audio:)", regexNode.ToString());
     }
 
+    static IEnumerable<TermFlags> FlagsOf(QueryNode node) => node switch
+    {
+        AndNode a => a.Children.SelectMany(FlagsOf),
+        OrNode o => o.Children.SelectMany(FlagsOf),
+        NotNode n => FlagsOf(n.Child),
+        TextNode t => [t.Flags],
+        FunctionNode f => [f.Flags],
+        _ => [],
+    };
+
+    [Fact]
+    public void Filter_is_read_with_plain_options_and_the_query_with_the_windows()
+    {
+        var window = new SearchOptions
+        {
+            MatchCase = true, MatchWholeWord = true, MatchPath = true,
+            Filter = @"file: <""C:\a\"" | ""d:\B\""> parent:""C:\x""",
+        };
+        var node = Assert.IsType<AndNode>(QueryParser.ParseWithFilter("song", window));
+        Assert.Equal(@"AND(case:ww:path:'song',file:,OR(diacritics:'C:\a\',diacritics:'d:\B\'),parent:C:\x)", node.ToString());
+        Assert.Equal(new TermFlags(MatchCase: true, MatchDiacritics: false, WholeWord: true, PathMode.Path, Regex: false, Wildcards: true),
+            Assert.IsType<TextNode>(node.Children[0]).Flags);
+        var filter = node.Children.Skip(1).SelectMany(FlagsOf).ToList();
+        Assert.Equal(4, filter.Count);
+        Assert.All(filter, f => Assert.Equal(
+            new TermFlags(MatchCase: false, MatchDiacritics: true, WholeWord: false, PathMode.Auto, Regex: false, Wildcards: true), f));
+
+        // Regex on: the query is one regex, the filter stays plain text.
+        var regex = QueryParser.ParseWithFilter("^s", window with { Regex = true, Filter = "ext:mp3 x" });
+        Assert.Equal("AND(case:ww:path:regex:'^s',ext:mp3,diacritics:'x')", regex.ToString());
+    }
+
     [Fact]
     public void Function_nodes_expose_operator_and_value()
     {

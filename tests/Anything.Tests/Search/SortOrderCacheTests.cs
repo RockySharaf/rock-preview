@@ -138,6 +138,39 @@ public class SortOrderCacheTests
     }
 
     [Fact]
+    public void Two_indexes_at_the_same_generation_never_share_an_order()
+    {
+        // Same generation and change log position, different entries: the order built for one must not serve the other.
+        var a = new FileIndex();
+        int rootA = a.AddRoot("C:");
+        for (int i = 0; i < 31; i++) a.Add($"a{i:00}.txt", rootA, FileAttributes.Archive, i, i + 1, i + 1);
+        var b = new FileIndex();
+        int rootB = b.AddRoot("D:");
+        for (int i = 0; i < 30; i++) b.Add($"b{29 - i:00}.txt", rootB, FileAttributes.Archive, 100 - i, 1, 1);
+        b.Remove(b.Count - 1);
+        Assert.Equal(0, a.Generation);
+        Assert.Equal(0, b.Generation);
+        Assert.Equal(a.ChangeSequence, b.ChangeSequence);
+
+        var engine = new SearchEngine { SortCacheThreshold = 0 };
+        foreach (var key in new[] { SortKey.Name, SortKey.Size, SortKey.Path })
+            for (int round = 0; round < 3; round++)
+                foreach (var (index, label) in new[] { (a, "C:"), (b, "D:") })
+                    foreach (var q in new[] { "", "txt", "!a00" })
+                    {
+                        var expected = Classic(index, q, key, false);
+                        var actual = engine.Search(index, q, new SearchOptions(), key, false, CancellationToken.None).Ids;
+                        Assert.True(expected.SequenceEqual(actual), $"round {round}: {key} '{q}' on {label} differs");
+                        Assert.All(actual, id => Assert.True(id < index.Count && index.IsAlive(id), $"{label} got id {id}"));
+                    }
+
+        // Straight after C:'s order: D:'s files were added in reverse name order, and its last one (b00) removed.
+        engine.Search(a, "", new SearchOptions(), SortKey.Name, false, CancellationToken.None);
+        int[] byName = [rootB, .. Enumerable.Range(1, 29).Reverse()];
+        Assert.Equal(byName, engine.Search(b, "", new SearchOptions(), SortKey.Name, false, CancellationToken.None).Ids);
+    }
+
+    [Fact]
     public void Compaction_invalidates_and_rebuilds_the_order()
     {
         var index = BuildIndex(4);
