@@ -25,12 +25,11 @@ public enum ServiceFor { NotThisUser, OnlyThisUser, ThisUserAndOthers }
 public static class UninstallRules
 {
     /// <summary>
-    /// Said when Remove from this PC leaves the instant-indexing service because other accounts use it too, with how to
-    /// remove it later: once this copy is deleted, no copy or Settings › Apps entry is left to offer it. Only the user can
-    /// tell that the others no longer use it, so it is never advised outright.
+    /// Said when Remove from this PC leaves the instant-indexing service because other accounts use it too. Never with how
+    /// to delete it: this user can't see the other accounts' copies, so it would invite breaking their instant indexing,
+    /// which only an administrator can turn back on.
     /// </summary>
-    public const string ServiceStays = "The instant-indexing service stays: other accounts on this PC use it too. If none of them " +
-        "uses Ultimate File Explorer any more, remove it by running \"sc delete RockPreviewService\" in a command prompt opened as administrator.";
+    public const string ServiceStays = "The instant-indexing service stays: other accounts on this PC use it too.";
 
     /// <summary>
     /// Whether a copy running in session <paramref name="copySession"/> stops a caller in <paramref name="callerSession"/>:

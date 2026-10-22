@@ -146,10 +146,10 @@ public sealed class UninstallRulesTests
     }
 
     [Fact]
-    public void AServiceThatStaysSaysHowToRemoveItOnceNobodyElseUsesIt()
-        // Once this copy is deleted nothing in the app is left to offer it, but other accounts may still need it.
-        => Assert.Contains("If none of them uses Ultimate File Explorer any more, remove it by running \"sc delete RockPreviewService\"",
-            UninstallRules.ServiceStays);
+    public void AServiceThatStaysIsNeverSaidHowToDelete()
+        // Another account's copy, which this user can't see, may still need it: deleting it would break that copy's
+        // instant indexing.
+        => Assert.DoesNotContain("sc delete", UninstallRules.ServiceStays);
 
     // ---- an installed copy, from another copy ---------------------------------------------------
 

@@ -227,9 +227,8 @@ The portable version has no Settings › Apps entry. If it set Windows up for it
 Explorer*, *Start when Windows starts* or instant indexing), **Settings › About › Remove from this PC** turns all of that
 off, with the same question about your settings and search index, and keeps the program file (`RockPreview.exe`, or
 whatever you renamed it to): delete it afterwards. The instant-indexing service is one for the whole PC, so it stays if
-other accounts on this PC use it too (not a local account deleted from this PC); if none of them uses it any more,
-`sc delete RockPreviewService` in a command prompt opened as administrator removes it. If the copy set nothing up,
-deleting its file is all there is to do.
+other accounts on this PC use it too (not a local account deleted from this PC). If the copy set nothing up, deleting
+its file is all there is to do.
 
 > **Windows SmartScreen** may say "Windows protected your PC" because the download isn't code-signed yet.
 > Click **More info › Run anyway**.
