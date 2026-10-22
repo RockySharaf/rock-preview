@@ -177,17 +177,53 @@ internal sealed partial class MainForm
         catch (ArgumentException) { return; } // no folder left to read: the index answers
         // Searches of the listing look inside files too, through the main index's text index (mapped by path): a folder
         // the index knows by another name (a SUBST letter, a link, a mapped letter above a folder searched by its share)
-        // under that name. CoverageOf remembers the fresh look ChooseZapSource took, so nothing is read again here.
-        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var r in roots)
-            if (_app.CoverageOf(r) is { IndexedAs: { } indexedAs }) aliases[r] = indexedAs;
-        Anything.Core.Content.ContentServices.ShareWith(_app.IndexManager.Index, listing.Index, aliases);
+        // under that name.
+        var names = ListingNames(roots);
+        Anything.Core.Content.ContentServices.ShareWith(_app.IndexManager.Index, listing.Index, names);
         tab.Listing = listing;
+        tab.ListingNames = names;
         tab.ZapSearchRoots = roots;
         listing.Changed += () => _app.Post(() => OnListingChanged(tab, listing));
         listing.StateChanged += () => _app.Post(() => OnListingStateChanged(tab, listing));
         listing.Start();
     }
+
+    /// <summary>
+    /// The names a listing of these folders finds their files' words under: each folder's name in the index first
+    /// (IndexedAs), then every other name it has, so roots spelled either way are reached (Z:\Music picked in Settings,
+    /// \\nas\share\Docs shown in searches by its share). For a new listing, CoverageOf remembers the fresh look
+    /// ChooseZapSource took, names and all, so nothing is read again here.
+    /// </summary>
+    Dictionary<string, IReadOnlyList<string>> ListingNames(List<string> roots)
+    {
+        var names = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in roots)
+            if (_app.CoverageOf(r) is { IndexedAs: { } indexedAs }) names[r] = [indexedAs, .. _app.NamesOf(r)];
+        return names;
+    }
+
+    /// <summary>
+    /// What the index holds changed (settings applied, the drives listed again): a tab reading "every file in" from the
+    /// disk looks for its files' words under the names its folders have in the index now (a folder just shown in searches
+    /// is named where its link points), and searches again: now when it shows, else when it does.
+    /// </summary>
+    internal void RefreshListingNames()
+    {
+        if (!_loaded) return;
+        foreach (var t in _tabs)
+        {
+            if (t.Listing is not { } listing) continue;
+            var names = ListingNames(t.ZapSearchRoots);
+            if (t.ListingNames is { } shared && SameNames(shared, names)) continue;
+            Anything.Core.Content.ContentServices.ShareWith(_app.IndexManager.Index, listing.Index, names);
+            t.ListingNames = names;
+            if (t == _tab && Visible) RunSearch(SearchReason.IndexChanged);
+            else t.Stale = true;
+        }
+    }
+
+    static bool SameNames(Dictionary<string, IReadOnlyList<string>> a, Dictionary<string, IReadOnlyList<string>> b) =>
+        a.Count == b.Count && a.All(p => b.TryGetValue(p.Key, out var other) && p.Value.SequenceEqual(other, StringComparer.OrdinalIgnoreCase));
 
     /// <summary>Stops a tab's listing. Its index stays, so the ids on screen can be read until new results replace them.</summary>
     static void DisposeListing(FolderTab tab)

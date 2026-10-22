@@ -150,6 +150,13 @@ public sealed class NotSearchedByNameTests
         Assert.True(Held(@"S:\Proj", new IndexSettings { SkipDrives = [@"C:\"], Folders = [@"S:\Proj"] }));
         // A SUBST that shows itself ends: the plan holds nothing on it.
         Assert.False(Held(@"L:\Proj", new IndexSettings()));
+        // Setup lists it where the name index's rules see its paths: under the folder it shows, or as searched by name.
+        static string Path(string folder, IndexSettings names) => ContentEstimator.NameIndexRules(folder, names, [], _ => DriveKind.Fixed, Subst).Path;
+        Assert.Equal(@"C:\Work\Proj", Path(@"S:\Proj", listed));
+        Assert.Equal(@"C:\Work", Path(@"S:\", listed));
+        Assert.Equal(@"C:\Work\Deep\Notes", Path(@"T:\Notes", listed));
+        Assert.Equal(@"S:\Proj", Path(@"S:\Proj", new IndexSettings { SkipDrives = [@"C:\"], Folders = [@"S:\Proj"] }));
+        Assert.Equal(@"D:\Projects", Path(@"D:\Projects", listed));
     }
 
     [Fact]
@@ -190,6 +197,29 @@ public sealed class NotSearchedByNameTests
         Assert.True(ContentEstimator.HeldByName(null)); // the demo
         Assert.False(ContentEstimator.HeldByName(new FolderCoverage(@"E:\Work", CoverageReason.DriveKindOff, null, @"E:\Work", null, @"E:\")));
         Assert.False(ContentEstimator.HeldByName(new FolderCoverage(@"\\nas\jobs", CoverageReason.NotSearched, null, @"\\nas\jobs", null, null)));
+    }
+
+    [Fact]
+    public void A_folder_added_on_a_drive_that_is_not_plugged_in_is_searched_by_name_too()
+    {
+        // E:\Photos typed while its USB disk is unplugged: the app takes a letter it doesn't know as a ready drive of no
+        // kind, which every switch lets in, so the plan calls the folder held.
+        List<DriveEntry> drives =
+        [
+            new(@"C:\", DriveKind.Fixed, "NTFS", "", true, null, null),
+            new(@"E:\", DriveKind.Unknown, "", "", true, null, null),
+        ];
+        var names = new IndexSettings { IndexRemovableDrives = false };
+        var coverage = IndexPlan.Coverage(names, drives, @"E:\Photos", attributesOf: _ => null, linkTargetOf: _ => null);
+        Assert.True(coverage.Covered);
+        static bool Known(string root) => string.Equals(root, @"C:\", StringComparison.OrdinalIgnoreCase);
+        // Plugged in, it may be a USB drive with USB drives off: added to the folders searched by name, it is searched anyway.
+        Assert.False(ContentEstimator.HeldByName(@"E:\Photos", coverage, Known));
+        // A drive the list or Windows knows goes by the plan; so does a share, and the demo (no answer).
+        var onC = IndexPlan.Coverage(names, drives, @"C:\Work", attributesOf: _ => null, linkTargetOf: _ => null);
+        Assert.True(ContentEstimator.HeldByName(@"C:\Work", onC, Known));
+        Assert.False(ContentEstimator.HeldByName(@"\\nas\jobs", new FolderCoverage(@"\\nas\jobs", CoverageReason.NotSearched, null, @"\\nas\jobs", null, null), Known));
+        Assert.True(ContentEstimator.HeldByName(@"E:\Photos", null, Known));
     }
 
     // ---- the words ---------------------------------------------------------------------------------

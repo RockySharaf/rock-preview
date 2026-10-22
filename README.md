@@ -167,7 +167,10 @@ logs, program and system files are left out. It's on until you turn it off; turn
 
 A folder the index doesn't have (left out in **Settings › Folders**, on a drive that's turned off, or not read yet)
 is read straight from the disk instead, and kept up to date while it shows. A bar says why its files don't show up in
-searches, with **Show them in searches** to add them. While a folder is still being read, the view says so instead of
+searches, with **Show them in searches** to add them. With [search inside files](#search-inside-files) on, searching
+there finds words inside the files the text index has read, under any name the folder goes by (a SUBST letter's
+folder, a mapped drive's letter or its share, where a link points), and from the moment you click **Show them in
+searches**, without opening the folder again. While a folder is still being read, the view says so instead of
 looking empty. The first few times a folder stays open for a few seconds, the Thumbnails button glows briefly, until you
 use Thumbnails (10 times at most).
 

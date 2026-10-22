@@ -290,4 +290,19 @@ public sealed class IndexPlanLinkTests
             Assert.Equal(SearchFolderResult.Added, SearchFolder(none.Clone(), drives, folder, loops));
         }
     }
+
+    [Fact]
+    public void A_folders_names_are_its_own_its_drives_and_where_its_links_point()
+    {
+        var drives = new[] { Fixed(@"C:\"), Fixed(@"D:\"), Network(@"Z:\", @"\\nas\share"), Subst(@"S:\", @"Z:\Work") };
+        var disk = On((@"C:\Games\Big", @"D:\Games\Big"));
+        // Through a junction, read with the chain readers the app uses: nothing else is read.
+        var (chain, links) = IndexPlan.ChainReaders(drives, @"C:\Games\Big\Saves", disk.Attributes, disk.Target);
+        Assert.Equal([@"C:\Games\Big\Saves", @"D:\Games\Big\Saves"], IndexPlan.Names(drives, @"C:\Games\Big\Saves", chain, links));
+        // A mapped letter is its share too, and a SUBST of it shows a folder there, which has the share's name as well.
+        Assert.Equal([@"Z:\", @"\\nas\share"], IndexPlan.Names(drives, @"Z:\", disk.Attributes, disk.Target));
+        Assert.Equal([@"S:\Proj", @"Z:\Work\Proj", @"\\nas\share\Work\Proj"], IndexPlan.Names(drives, @"S:\Proj", disk.Attributes, disk.Target));
+        Assert.Equal([@"D:\Data"], IndexPlan.Names(drives, @"D:\Data\", disk.Attributes, disk.Target));
+        Assert.Empty(IndexPlan.Names(drives, @"relative\path", disk.Attributes, disk.Target));
+    }
 }

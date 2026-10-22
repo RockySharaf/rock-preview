@@ -8,11 +8,12 @@ namespace Anything.Core.Content.Indexing;
 /// <summary>
 /// Ids of another FileIndex's entries (folder listings through ShareWith, the CLI's loaded database) mapped on demand. Maps
 /// live in a ConditionalWeakTable keyed by the index, so a closed listing's index is never kept alive: no Compacted
-/// subscription is needed. A map is built again when the index's Generation or PathVersion, or the view's commit, moves;
-/// when only entries changed (a download landed, a file was saved), just the touched ids are mapped again. Building walks
-/// the index's live files (keys chained per folder, roots resolved by the caller); a listing much smaller than the store
-/// is bound by key lookups (binary searches), a large one by a merge-join with the view's key-ordered rows. Called under
-/// that index's read lock (MapFor's contract).
+/// subscription is needed. A map is built again when the index's Generation or PathVersion, the view's commit, or the
+/// names its folders are resolved under (a listing shared again) moves; when only entries changed (a download landed, a
+/// file was saved), just the touched ids are mapped again. Building walks the index's live files (keys chained per
+/// folder, roots resolved by the caller); a listing much smaller than the store is bound by key lookups (binary
+/// searches), a large one by a merge-join with the view's key-ordered rows. Called under that index's read lock (MapFor's
+/// contract).
 /// </summary>
 /// <param name="sameStampOnly">
 /// A file is bound only to a document read at its size and date (the follower's SameStamp rule): a listing's folders
@@ -28,9 +29,12 @@ internal sealed class OnDemandMap(bool sameStampOnly = true)
     /// <summary>Listings up to this many bound files keep their bindings, so a change can be patched.</summary>
     const int MaxTracked = 65_536;
 
-    sealed class Entry(long generation, long pathVersion, long sequence, long commit, DocIdMap map, Dictionary<int, (uint Segment, int Doc)>? bound)
+    sealed class Entry(long generation, long pathVersion, long sequence, long commit, object? names, DocIdMap map,
+        Dictionary<int, (uint Segment, int Doc)>? bound)
     {
         public readonly long Generation = generation, PathVersion = pathVersion, Sequence = sequence, Commit = commit;
+        /// <summary>What the folders were resolved through (For's names).</summary>
+        public readonly object? Names = names;
         public readonly DocIdMap Map = map;
         /// <summary>The document bound to each id (what a patch unbinds); null = built again on any change.</summary>
         public readonly Dictionary<int, (uint Segment, int Doc)>? Bound = bound;
@@ -49,13 +53,16 @@ internal sealed class OnDemandMap(bool sameStampOnly = true)
     /// its volume key and the path below the volume; null when no root holds it. A root entry it can't resolve maps
     /// nothing, unless <paramref name="holdsRootBelow"/> says a root lies below it (a listing of E: while the text index
     /// has E:\Data): its folders are then resolved by their full paths, each once, and a branch no root is at or below
-    /// is skipped whole.
+    /// is skipped whole. <paramref name="names"/> is what the two delegates resolve through (a listing's RootAliases): a map
+    /// made through other ones, before the listing was shared again under the names its folders have now, is built again.
     /// </summary>
-    public DocIdMap For(FileIndex index, ContentView view, Func<string, (string Key, string Prefix)?> resolve, Func<string, bool>? holdsRootBelow = null)
+    public DocIdMap For(FileIndex index, ContentView view, Func<string, (string Key, string Prefix)?> resolve, Func<string, bool>? holdsRootBelow = null,
+        object? names = null)
     {
         var roots = new Roots(resolve, holdsRootBelow);
         long generation = index.Generation, pathVersion = index.PathVersion, sequence = index.ChangeSequence, commit = view.Store.CommitGeneration;
-        if (_maps.TryGetValue(index, out var e) && e.Generation == generation && e.PathVersion == pathVersion && e.Commit == commit)
+        if (_maps.TryGetValue(index, out var e) && e.Generation == generation && e.PathVersion == pathVersion && e.Commit == commit
+            && ReferenceEquals(e.Names, names))
         {
             if (e.Sequence == sequence) return e.Map;
             if (e.Bound != null && Patch(index, view.Store, roots, e, sequence, sameStampOnly) is { } patched)
@@ -65,7 +72,7 @@ internal sealed class OnDemandMap(bool sameStampOnly = true)
                 return patched.Map;
             }
         }
-        var built = Build(index, view.Store, roots, generation, pathVersion, sequence, commit, sameStampOnly);
+        var built = Build(index, view.Store, roots, generation, pathVersion, sequence, commit, names, sameStampOnly);
         _maps.AddOrUpdate(index, built);
         Builds++;
         return built.Map;
@@ -83,7 +90,7 @@ internal sealed class OnDemandMap(bool sameStampOnly = true)
     /// <summary>The map made from scratch (lookups for a small listing, a merge-join for a large one).</summary>
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     static Entry Build(FileIndex index, IStoreView store, Roots roots, long generation, long pathVersion, long sequence, long commit,
-        bool sameStampOnly)
+        object? names, bool sameStampOnly)
     {
         var builder = DocIdMap.Empty(generation).ToBuilder();
         long storeDocs = 0;
@@ -130,7 +137,7 @@ internal sealed class OnDemandMap(bool sameStampOnly = true)
                 bound?.TryAdd(keys[i].Id, (seg, doc.Doc));
             }
         }
-        return new Entry(generation, pathVersion, sequence, commit, builder.Build(generation), bound);
+        return new Entry(generation, pathVersion, sequence, commit, names, builder.Build(generation), bound);
     }
 
     /// <summary>The map moved along for the ids touched since it was made (unbound, then bound by key again); null = build it again.</summary>
@@ -160,7 +167,7 @@ internal sealed class OnDemandMap(bool sameStampOnly = true)
             bound[id] = (seg, doc.Doc);
         }
         if (bound.Count > MaxTracked) return null;
-        return new Entry(e.Generation, e.PathVersion, sequence, e.Commit, builder.Build(e.Generation), bound);
+        return new Entry(e.Generation, e.PathVersion, sequence, e.Commit, e.Names, builder.Build(e.Generation), bound);
     }
 
     /// <summary>The document was read at the entry's size and date (the follower's SameStamp): an unknown date never is.</summary>
@@ -209,34 +216,74 @@ internal sealed class OnDemandMap(bool sameStampOnly = true)
 }
 
 /// <summary>
-/// A listing's folders under the names the main index knows them by (FolderCoverage.IndexedAs): "S:" is "C:\Work" when
-/// S: is a SUBST of it, a junction is the folder it points to. Only strings: safe under any lock, on any thread.
+/// A listing's folders under every name the main index may know them by, the one to try first first
+/// (FolderCoverage.IndexedAs, then the folder's other names): "S:" is "C:\Work" when S: is a SUBST of it, a junction is
+/// the folder it points to, and a mapped letter is itself and its share, so roots spelled either way (Z:\Music picked in
+/// Settings, \\nas\share\Docs shown in searches by its share) are both reached from a listing of Z:. Only strings: safe
+/// under any lock, on any thread.
 /// </summary>
 internal sealed class RootAliases
 {
-    readonly (string From, string To)[] _pairs;
+    readonly (string From, string[] To)[] _pairs;
 
     /// <summary>No aliases: every path stays as it is.</summary>
-    public static RootAliases None { get; } = new(new Dictionary<string, string>());
+    public static RootAliases None { get; } = new(new Dictionary<string, IReadOnlyList<string>>());
 
-    /// <summary>Listing folder → its indexed name, both normalized as root names; pairs that name the same folder twice are dropped.</summary>
-    public RootAliases(IReadOnlyDictionary<string, string> aliases) => _pairs =
+    /// <summary>
+    /// Listing folder → its names, all normalized as root names, in order and each once; a folder whose only name is its
+    /// own is dropped.
+    /// </summary>
+    public RootAliases(IReadOnlyDictionary<string, IReadOnlyList<string>> names) => _pairs =
     [
-        .. aliases.Select(p => (From: RootIndexer.NormalizeRootName(p.Key), To: RootIndexer.NormalizeRootName(p.Value)))
-            .Where(p => p.From.Length > 0 && p.To.Length > 0 && !string.Equals(p.From, p.To, StringComparison.OrdinalIgnoreCase))
+        .. names.Select(p => (From: RootIndexer.NormalizeRootName(p.Key),
+                To: p.Value.Select(RootIndexer.NormalizeRootName).Where(t => t.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()))
+            .Where(p => p.From.Length > 0 && p.To.Length > 0 && !(p.To.Length == 1 && string.Equals(p.From, p.To[0], StringComparison.OrdinalIgnoreCase)))
             .OrderByDescending(p => p.From.Length),
     ];
 
     /// <summary>Aliases kept.</summary>
     public int Count => _pairs.Length;
 
-    /// <summary>The path under its indexed name; as given when no alias holds it.</summary>
-    public string Indexed(string path)
+    /// <summary>The path under each of its folder's names, the one to try first first; only the path when no alias holds it.</summary>
+    public string[] Names(string path)
     {
         foreach (var (from, to) in _pairs)
-            if (path.StartsWith(from, StringComparison.OrdinalIgnoreCase) && (path.Length == from.Length || path[from.Length] == '\\'))
-                return to + path[from.Length..];
-        return path;
+        {
+            if (!path.StartsWith(from, StringComparison.OrdinalIgnoreCase) || (path.Length != from.Length && path[from.Length] != '\\')) continue;
+            var names = new string[to.Length];
+            for (int i = 0; i < to.Length; i++) names[i] = to[i] + path[from.Length..];
+            return names;
+        }
+        return [path];
+    }
+
+    /// <summary>
+    /// The path under the first of its names a root holds (<paramref name="held"/>), else under the first; as given when no
+    /// alias holds it.
+    /// </summary>
+    public string Indexed(string path, Func<string, bool>? held = null)
+    {
+        var names = Names(path);
+        if (held != null)
+            foreach (var name in names)
+                if (held(name)) return name;
+        return names[0];
+    }
+
+    /// <summary>The path placed under the first of its names <paramref name="resolve"/> places; null when it places none.</summary>
+    public (string Key, string Prefix)? Resolve(string path, Func<string, (string Key, string Prefix)?> resolve)
+    {
+        foreach (var name in Names(path))
+            if (resolve(name) is { } r) return r;
+        return null;
+    }
+
+    /// <summary>Whether a root lies below the path under any of its names.</summary>
+    public bool HoldsRootBelow(string path, Func<string, bool> holdsRootBelow)
+    {
+        foreach (var name in Names(path))
+            if (holdsRootBelow(name)) return true;
+        return false;
     }
 }
 
@@ -251,6 +298,9 @@ internal sealed class SharedContentSource(FileIndex from, RootAliases aliases) :
 
     /// <summary>The listing's folders the main index knows by other names (a SUBST letter's).</summary>
     public RootAliases Aliases => aliases;
+
+    /// <summary>A listed file's path in the main index's text index: under the first of its names a root there holds.</summary>
+    public string IndexedPath(string fullPath) => aliases.Indexed(fullPath, from.Content is { } c and not SharedContentSource ? c.Holds : null);
 
     internal override ContentMode Mode => from.Content is { } c and not SharedContentSource ? c.Mode : ContentMode.NamesOnly;
     internal override ContentView? AcquireView() => from.Content is { } c and not SharedContentSource ? c.AcquireView() : null;

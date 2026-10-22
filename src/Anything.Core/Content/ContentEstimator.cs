@@ -477,8 +477,9 @@ public static class ContentEstimator
     /// the content rules (deny-lists, content_exclude_folders) plus the name index's own (its excluded folders, patterns,
     /// hidden or system files). Inside an "also search these folders" root, rules leaving out that root or a folder above
     /// it don't apply (ExclusionFilter.WithoutAncestorsOf), as in the name index. A folder on a SUBST drive is held when the
-    /// folder the drive shows is, as the plan finds it there. Without a drive list (setup), whether it or a folder above it
-    /// is hidden or system, a link or a volume mounted in a folder isn't looked at: the app asks
+    /// folder the drive shows is, as the plan finds it there; Path is then the folder under that name, which the name
+    /// index's path rules see (a listing goes there), else the folder as given. Without a drive list (setup), whether it or
+    /// a folder above it is hidden or system, a link or a volume mounted in a folder isn't looked at: the app asks
     /// <see cref="IndexPlan.Coverage"/>, which knows (<see cref="FoldersNotSearchedByName"/>).
     /// </summary>
     /// <param name="kindOf">The kind of a drive ("D:\"), read without touching it; <see cref="Drives.KindOf"/> when null (tests pass their own).</param>
@@ -486,11 +487,11 @@ public static class ContentEstimator
     /// The folder a SUBST drive ("S:\") shows, null for a real one, read without touching it; <see cref="Drives.SubstTargetOf"/>
     /// when null (tests pass their own).
     /// </param>
-    internal static (bool Held, ExclusionFilter Filter) NameIndexRules(string folder, IndexSettings names, IReadOnlyList<string> contentRules,
+    internal static (bool Held, ExclusionFilter Filter, string Path) NameIndexRules(string folder, IndexSettings names, IReadOnlyList<string> contentRules,
         Func<string, DriveKind>? kindOf = null, Func<string, string?>? substOf = null)
         => NameIndexRules(folder, names, contentRules, kindOf ?? Drives.KindOf, substOf ?? Drives.SubstTargetOf, hops: 0);
 
-    static (bool Held, ExclusionFilter Filter) NameIndexRules(string folder, IndexSettings names, IReadOnlyList<string> contentRules,
+    static (bool Held, ExclusionFilter Filter, string Path) NameIndexRules(string folder, IndexSettings names, IReadOnlyList<string> contentRules,
         Func<string, DriveKind> kindOf, Func<string, string?> substOf, int hops)
     {
         string path = folder.Trim().TrimEnd('\\');
@@ -511,11 +512,11 @@ public static class ContentEstimator
         {
             ExcludeFolders = [.. contentRules, .. nameRules], ExcludePatterns = names.ExcludePatterns, ExcludeHidden = names.ExcludeHidden, ExcludeSystem = names.ExcludeSystem,
         });
-        if (root != null) return (!nameOnly.ExcludesPathOrAncestor(root, path), filter);
+        if (root != null) return (!nameOnly.ExcludesPathOrAncestor(root, path), filter, folder);
         // A share (\\server\share) is searched by name only as an "also search" folder (Settings adds one there too). One
         // mapped to an indexed letter is held under that letter, which isn't known without asking Windows; adding it there
         // anyway is harmless: the name index skips a folder a root it plans already holds.
-        if (IndexPlan.IsUnc(path)) return (false, filter);
+        if (IndexPlan.IsUnc(path)) return (false, filter, folder);
         // Not below an "also search" folder: only a whole indexed drive holds it, by the plan's own rule for the drive (its
         // switch, its kind's switch, the folders left out). Taken as ready: one that isn't is searched once it is.
         bool letter = path.Length >= 2 && path[1] == ':' && char.IsAsciiLetter(path[0]);
@@ -524,11 +525,23 @@ public static class ContentEstimator
         // off): its files are searched under the folder it shows, so that name decides, as in IndexPlan.Coverage. A SUBST
         // of a SUBST takes more than one step; the cap stops a loop, and the plan holds nothing on the drive then.
         string? target = letter ? substOf(drive + "\\") : null;
-        if (target != null && hops < 4) return NameIndexRules(target.TrimEnd('\\') + path[2..], names, contentRules, kindOf, substOf, hops + 1);
+        if (target != null && hops < 4)
+        {
+            string shown = target.TrimEnd('\\');
+            // Content rules are resolved by volume in the text index, whichever name they're written with: one spelled
+            // with the SUBST letter applies under the folder it shows too.
+            var rules = new List<string>(contentRules);
+            foreach (var rule in contentRules)
+                if (rule?.Trim().Trim('"').Replace('/', '\\') is { Length: >= 2 } r && r[1] == ':' && char.ToUpperInvariant(r[0]) == char.ToUpperInvariant(drive[0])
+                    && (r.Length == 2 || r[2] == '\\'))
+                    rules.Add(shown + r[2..]);
+            string under = shown + path[2..];
+            return NameIndexRules(under.Length == 2 ? under + "\\" : under, names, rules, kindOf, substOf, hops + 1);
+        }
         var kind = letter ? kindOf(drive + "\\") : DriveKind.Unknown;
         var entry = new DriveEntry(drive + "\\", kind, "", "", IsReady: true, NetworkPath: null, SubstTarget: target);
-        if (IndexPlan.ForDrive(names, entry, nameOnly) != DriveIndexing.Indexed || nameOnly.ExcludesPathOrAncestor(drive, path)) return (false, filter);
-        return (true, filter);
+        if (IndexPlan.ForDrive(names, entry, nameOnly) != DriveIndexing.Indexed || nameOnly.ExcludesPathOrAncestor(drive, path)) return (false, filter, folder);
+        return (true, filter, folder);
     }
 
     /// <summary>
@@ -567,6 +580,21 @@ public static class ContentEstimator
     /// </summary>
     public static bool HeldByName(FolderCoverage? coverage) =>
         coverage is not { } c || c.Covered || c.Reason == CoverageReason.DriveNotReady;
+
+    /// <summary>
+    /// <see cref="HeldByName(FolderCoverage?)"/> for a folder just added to the folders searched inside (a path typed while
+    /// its drive is away): one on a drive letter that neither the drive list nor Windows knows (a USB disk unplugged) isn't
+    /// held, whatever the plan says of a drive it takes as ready, since the kind it turns out to be, and so its switches,
+    /// can't be judged yet. Added to the folders searched by name too, it is searched whatever they say; that is harmless
+    /// when the drive turns out to be indexed, as the plan skips an added folder a planned root holds.
+    /// </summary>
+    /// <param name="driveKnown">Whether the drive list or Windows knows a drive ("E:\").</param>
+    public static bool HeldByName(string folder, FolderCoverage? coverage, Func<string, bool> driveKnown)
+    {
+        string f = folder.Trim();
+        if (coverage != null && f.Length >= 2 && f[1] == ':' && char.IsAsciiLetter(f[0]) && !driveKnown(char.ToUpperInvariant(f[0]) + @":\")) return false;
+        return HeldByName(coverage);
+    }
 
     sealed class Tallies
     {
@@ -670,14 +698,17 @@ public static class ContentEstimator
             bool network = FileByteSource.IsNetworkPath(folder);
             var random = new Random(StringComparer.OrdinalIgnoreCase.GetHashCode(folder));
             var filter = contentFilter;
+            string scan = folder;
             if (names != null)
             {
-                (bool held, filter) = NameIndexRules(folder, names, contentRules, kindOf, substOf);
+                // Listed where the name index finds it (a SUBST drive's folder under the folder it shows): the same files,
+                // under the paths its rules see.
+                (bool held, filter, scan) = NameIndexRules(folder, names, contentRules, kindOf, substOf);
                 if (!held) return; // the name index doesn't hold it: nothing in it is ever read inside
             }
             try
             {
-                FolderScanner.Scan(folder, filter, timeout.Token, onScanned: dir =>
+                FolderScanner.Scan(scan, filter, timeout.Token, onScanned: dir =>
                 {
                     // Everything listed counts towards what was gone through (a count cut short is scaled up by it).
                     long listed = 0;

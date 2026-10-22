@@ -59,6 +59,8 @@ internal sealed partial class MainForm
         public FileIndex? ResultIndex;
         /// <summary>"Every file in" folders the index doesn't have, read straight from the disk for this tab.</summary>
         public FolderListing? Listing;
+        /// <summary>The names <see cref="Listing"/>'s folders were shared with the text index under (its words are looked for there).</summary>
+        public Dictionary<string, IReadOnlyList<string>>? ListingNames;
         /// <summary>The folders' names in the index for the "every file in" search (a SUBST drive's folder under its target).</summary>
         public List<string> ZapSearchRoots = [];
         /// <summary>The folders on screen when the folder bar was dismissed: it stays away while they are the ones on screen.</summary>

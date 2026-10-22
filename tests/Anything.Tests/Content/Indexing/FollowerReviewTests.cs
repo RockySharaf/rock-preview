@@ -495,17 +495,53 @@ public class FollowerReviewTests
         {
             for (int i = 0; i < 3; i++) File.WriteAllBytes(Path.Combine(dir.FullName, $"d{i}.pdf"), new byte[100]);
             var settings = new ContentSettings { UseMyFolders = false };
-            // The folder's drive is a SUBST of Q:\Work (R:\Work when the folder is on Q:), and Windows calls it fixed.
+            // Q: (R: when the folder is on Q:) is a SUBST of the folder, and Windows calls it fixed: it is listed where its files are.
             char own = char.ToUpperInvariant(dir.FullName[0]);
-            string shown = own == 'Q' ? "R:" : "Q:";
-            string? Subst(string root) => char.ToUpperInvariant(root[0]) == own ? shown + @"\Work" : null;
+            string letter = own == 'Q' ? "R:" : "Q:";
+            string? Subst(string root) => string.Equals(root, letter + @"\", StringComparison.OrdinalIgnoreCase) ? dir.FullName : null;
             async Task<int> Pdfs(IndexSettings names)
-                => (await ContentEstimator.CountFoldersAsync([dir.FullName], settings, TimeSpan.FromSeconds(20), null, CancellationToken.None, names,
+                => (await ContentEstimator.CountFoldersAsync([letter + @"\"], settings, TimeSpan.FromSeconds(20), null, CancellationToken.None, names,
                     _ => DriveKind.Fixed, Subst)).Kinds.GetValueOrDefault(ContentKind.Pdf).Files;
 
             // 1.4.0's list of drives names the drive it shows, not the SUBST letter: its files are searched there.
-            Assert.Equal(3, await Pdfs(new IndexSettings { Volumes = [shown + @"\"] }));
-            Assert.Equal(0, await Pdfs(new IndexSettings { SkipDrives = [shown + @"\"] }));
+            Assert.Equal(3, await Pdfs(new IndexSettings { Volumes = [own + @":\"] }));
+            Assert.Equal(0, await Pdfs(new IndexSettings { Volumes = [letter + @"\"] }));
+            Assert.Equal(0, await Pdfs(new IndexSettings { SkipDrives = [own + @":\"] }));
+        }
+        finally { dir.Delete(true); }
+    }
+
+    [Fact]
+    public async Task Setups_count_of_a_subst_folder_follows_the_rules_where_the_folder_it_shows_is()
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "names-subst-rules-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            void Put(string rel)
+            {
+                string p = Path.Combine(dir.FullName, rel);
+                Directory.CreateDirectory(Path.GetDirectoryName(p)!);
+                File.WriteAllBytes(p, new byte[100]);
+            }
+            for (int i = 0; i < 3; i++) Put($@"Proj\d{i}.pdf");
+            for (int i = 0; i < 4; i++) Put($@"Proj\Archive\a{i}.pdf");
+            // Q: (R: when the folder is on Q:) is a SUBST of the folder, and a folder on it is searched inside.
+            char own = char.ToUpperInvariant(dir.FullName[0]);
+            string letter = own == 'Q' ? "R:" : "Q:";
+            string? Subst(string root) => string.Equals(root, letter + @"\", StringComparison.OrdinalIgnoreCase) ? dir.FullName : null;
+            async Task<int> Pdfs(ContentSettings settings, IndexSettings names)
+                => (await ContentEstimator.CountFoldersAsync([letter + @"\Proj"], settings, TimeSpan.FromSeconds(20), null, CancellationToken.None, names,
+                    _ => DriveKind.Fixed, Subst)).Kinds.GetValueOrDefault(ContentKind.Pdf).Files;
+            string archive = Path.Combine(dir.FullName, "Proj", "Archive");
+            var inside = new ContentSettings { UseMyFolders = false };
+
+            // The name index leaves the archive out by the paths it builds, under the folder the SUBST shows.
+            Assert.Equal(3, await Pdfs(inside, new IndexSettings { ExcludeFolders = [archive] }));
+            // A rule spelled with the SUBST letter matches none of those paths: the name index holds the archive.
+            Assert.Equal(7, await Pdfs(inside, new IndexSettings { ExcludeFolders = [letter + @"\Proj\Archive"] }));
+            // Search inside files' own rules are resolved by volume: spelled either way, they leave the archive out.
+            Assert.Equal(3, await Pdfs(new ContentSettings { UseMyFolders = false, ExcludeFolders = [letter + @"\Proj\Archive"] }, new IndexSettings()));
+            Assert.Equal(3, await Pdfs(new ContentSettings { UseMyFolders = false, ExcludeFolders = [archive] }, new IndexSettings()));
         }
         finally { dir.Delete(true); }
     }

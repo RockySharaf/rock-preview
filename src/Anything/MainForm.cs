@@ -1066,10 +1066,13 @@ internal sealed partial class MainForm : Form
     void UpdateStatusRight()
     {
         var im = _app.IndexManager;
+        // The folder view shows no search: an error or hint left from results no longer on screen isn't about it.
+        bool folderView = ExplorerShown;
+        string? searchError = folderView ? null : _searchError;
         string? listingLine = null;
         if (_zapActive && _listing is { State: ListingState.Reading } reading)
             listingLine = $"Reading {_zapLabel} ({reading.Found:N0} objects)"; // every file and folder read, before any filter
-        else if (_zapActive && _listing is { Problem: { } problem } listing && string.IsNullOrEmpty(_searchError))
+        else if (_zapActive && _listing is { Problem: { } problem } listing && string.IsNullOrEmpty(searchError))
             // Said even with files on screen: read before a drive was removed or a share went away, they may be gone.
             // Not over a search's own error (a bad regex, say), which nothing else would say.
             listingLine = listing.State == ListingState.Unavailable ? $"{_zapLabel} can't be read: {problem}" : $"Some of the folders can't be read: {problem}";
@@ -1078,8 +1081,8 @@ internal sealed partial class MainForm : Form
             right = listingLine;
         else if (im.State is IndexState.Loading or IndexState.Scanning or IndexState.Error && !string.IsNullOrEmpty(im.StatusText))
             right = im.StatusText;
-        else if (!string.IsNullOrEmpty(_searchError))
-            right = _searchError;
+        else if (!string.IsNullOrEmpty(searchError))
+            right = searchError;
         else
         {
             var parts = new List<string>();
@@ -1090,10 +1093,10 @@ internal sealed partial class MainForm : Form
             if (_regex) parts.Add("REGEX");
             if (_filterIndex > 0) parts.Add(Filters.All[_filterIndex].Name);
             if (_app.HotkeyError is { } he) parts.Add(he);
-            ContentStatusParts(parts);
+            ContentStatusParts(parts, folderView);
             right = string.Join("   ", parts);
         }
-        right = ContentStatusRight(right, listingLine != null);
+        if (!folderView) right = ContentStatusRight(right, listingLine != null);
         _statusRight.Text = right;
         _statusRight.ToolTipText = right;
     }

@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Anything.Core;
 using Anything.Core.Content;
+using Anything.Core.Indexing;
 
 namespace Anything;
 
@@ -758,9 +759,10 @@ internal sealed partial class SettingsForm
     /// <summary>
     /// Whether the name index holds the folder already under the settings as they are now, by the plan's own answer: in a
     /// folder searched by name, or a drive searched whole, and not left out there (as hidden, behind a link, on a volume
-    /// mounted in a folder).
+    /// mounted in a folder). Not on a drive that isn't plugged in, whose switches can't be judged yet.
     /// </summary>
-    bool SearchedByName(string path) => ContentEstimator.HeldByName(_app.CoverageNow(path));
+    bool SearchedByName(string path) => ContentEstimator.HeldByName(path, _app.CoverageNow(path),
+        root => _app.KnownDrives.Any(d => AppSettings.SamePath(d.Root, root)) || Drives.KindOf(root) != DriveKind.Unknown);
 
     /// <summary>
     /// What the added folder costs, counted live: from the name index when it holds it (again once its root is ready, if

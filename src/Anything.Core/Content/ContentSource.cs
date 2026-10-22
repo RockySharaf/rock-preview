@@ -24,6 +24,12 @@ public abstract class ContentSource
     internal virtual DocIdMap? MapFor(FileIndex index, ContentView view, Indexing.RootAliases aliases) => MapFor(index, view);
 
     /// <summary>
+    /// Whether a root of this text index holds a full path, so its document can be looked up by it (a listing's file under
+    /// one of its folder's names); false when the source can't tell without asking Windows.
+    /// </summary>
+    internal virtual bool Holds(string fullPath) => false;
+
+    /// <summary>
     /// Document sets kept across keystrokes and the lookups still running, shared by every engine and tab: resolved sets
     /// per (term key, segment id), and in-flight lookups keyed by term key that later searches join.
     /// </summary>

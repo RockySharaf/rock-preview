@@ -224,13 +224,18 @@ internal sealed partial class MainForm
         ApplyContentColumn();
     }
 
-    /// <summary>The status bar's parts for search inside files, after the toggles.</summary>
-    void ContentStatusParts(List<string> parts)
+    /// <summary>
+    /// The status bar's parts for search inside files, after the toggles. In the folder view (<paramref name="folderView"/>)
+    /// no results are on screen: what the last ones said (the split, how much of them is read) is left out.
+    /// </summary>
+    void ContentStatusParts(List<string> parts, bool folderView)
     {
         var tc = ContentTab();
         var status = _app.ContentOn ? _app.Content.Status : null;
-        parts.AddRange(ContentPresentation.StatusParts(_app.ContentMode, PlainWordsLookInside(tc), tc.NameMatches, _ids.Length, status, tc.UsesContent,
-            HasExplicitContent(tc)));
+        parts.AddRange(folderView
+            ? ContentPresentation.StatusParts(_app.ContentMode, PlainWordsLookInside(tc), -1, 0, status, resultsUseContent: false)
+            : ContentPresentation.StatusParts(_app.ContentMode, PlainWordsLookInside(tc), tc.NameMatches, _ids.Length, status, tc.UsesContent,
+                HasExplicitContent(tc)));
     }
 
     /// <summary>

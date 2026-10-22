@@ -68,7 +68,7 @@ public static class ContentServices
     /// Shares from's text index with another index (folder listings); ids are mapped on demand, kept in a
     /// ConditionalWeakTable&lt;FileIndex, OnDemandMap&gt; keyed by the other index's Generation (no Compacted subscription).
     /// </summary>
-    public static void ShareWith(FileIndex from, FileIndex to) => ShareWith(from, to, null);
+    public static void ShareWith(FileIndex from, FileIndex to) => ShareWith(from, to, (IReadOnlyDictionary<string, IReadOnlyList<string>>?)null);
 
     /// <summary>
     /// ShareWith for a listing whose folders from's index knows by other names (each listed folder → its name there, as
@@ -76,18 +76,31 @@ public static class ContentServices
     /// to): their files are matched under those names. Pairs that name the same folder twice are ignored.
     /// </summary>
     public static void ShareWith(FileIndex from, FileIndex to, IReadOnlyDictionary<string, string>? aliases)
+        => ShareWith(from, to, aliases?.ToDictionary(p => p.Key, IReadOnlyList<string> (p) => [p.Value], StringComparer.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// ShareWith for a listing whose folders have several names (each listed folder → its names, the one to try first
+    /// first: FolderCoverage.IndexedAs, then IndexPlan.Names): each folder's files are matched under the first of its
+    /// names a root of from's text index holds, and a folder no root holds is looked into when a root lies below it under
+    /// any of them (Z:\ while Z:\Music and \\nas\share\Docs are roots). Sharing again, with the names the folders have
+    /// now, maps the listing again. A folder whose only name is its own is ignored.
+    /// </summary>
+    public static void ShareWith(FileIndex from, FileIndex to, IReadOnlyDictionary<string, IReadOnlyList<string>>? names)
     {
         if (ReferenceEquals(from, to)) return;
-        // Forwarded, not copied: the listing follows the main index's text index as it is turned on, off or rebuilt.
-        to.Content = new SharedContentSource(from, aliases is { Count: > 0 } ? new RootAliases(aliases) : RootAliases.None);
+        var aliases = names is { Count: > 0 } ? new RootAliases(names) : null;
+        // Forwarded, not copied: the listing follows the main index's text index as it is turned on, off or rebuilt. No
+        // names left is always None, so sharing again without any keeps the listing's map.
+        to.Content = new SharedContentSource(from, aliases is { Count: > 0 } ? aliases : RootAliases.None);
     }
 
     /// <summary>
-    /// The path a listing's file has in the text index it shares (ShareWith): under its folder's indexed name when it has
-    /// one (a SUBST letter's), else as given. GetSnippet and GetStatus take it for the listing's rows.
+    /// The path a listing's file has in the text index it shares (ShareWith): under the first of its folder's names a root
+    /// there holds (a SUBST letter's folder, a mapped letter's share), else under the first, else as given. GetSnippet and
+    /// GetStatus take it for the listing's rows.
     /// </summary>
     public static string IndexedPath(FileIndex index, string fullPath)
-        => index.Content is SharedContentSource shared ? shared.Aliases.Indexed(fullPath) : fullPath;
+        => index.Content is SharedContentSource shared ? shared.IndexedPath(fullPath) : fullPath;
 
     /// <summary>Stops sharing with an index (FolderListing.Dispose): clears to.Content.</summary>
     public static void Unshare(FileIndex to) => to.Content = null;

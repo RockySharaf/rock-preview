@@ -189,6 +189,87 @@ public class FacadeTests
         Assert.Equal(@"S:\a.pdf", ContentServices.IndexedPath(plain, @"S:\a.pdf"));
     }
 
+    [Fact]
+    public void A_listing_above_folders_searched_by_a_letter_and_by_its_share_finds_the_documents_of_both()
+    {
+        // Z: maps \\nas\share with network drives off: Z:\Music was picked in Settings, Z:\Docs shown in searches by its share.
+        var settings = Harness.DefaultSettings();
+        settings.Folders = [@"C:\Users\Me", @"Z:\Music", @"\\nas\share\Docs"];
+        using var h = new Harness(settings);
+        h.Folder(@"C:\Users\Me");
+        h.Root(@"Z:\Music");
+        h.Root(@"\\nas\share\Docs");
+        h.File(@"Z:\Music\a.pdf", "the budget for the year");
+        h.File(@"\\nas\share\Docs\b.pdf", "the budget for next year");
+        h.Start();
+        h.Settle();
+        Assert.NotNull(h.Row(@"Z:\Music\a.pdf"));
+        Assert.NotNull(h.Row(@"\\nas\share\Docs\b.pdf"));
+        // The listing tab of Z:\ names its folder as StartListing does: its name in the index, then every name it has.
+        var drives = new[] { new DriveEntry(@"Z:\", DriveKind.Network, "NTFS", "", true, @"\\nas\share", null) };
+        var coverage = IndexPlan.Coverage(new IndexSettings { IndexNetworkDrives = false, Folders = [@"Z:\Music", @"\\nas\share\Docs"] }, drives, @"Z:\",
+            attributesOf: _ => null, linkTargetOf: _ => null);
+        Assert.Equal(@"Z:\", coverage.IndexedAs);
+        var listing = new FileIndex();
+        int z = listing.AddRoot("Z:");
+        int a = Listed(h, listing, listing.Add("Music", z, FileAttributes.Directory, -1, 0, 0), @"Z:\Music\a.pdf");
+        int b = Listed(h, listing, listing.Add("Docs", z, FileAttributes.Directory, -1, 0, 0), @"\\nas\share\Docs\b.pdf");
+        ContentServices.ShareWith(h.Index, listing, new Dictionary<string, IReadOnlyList<string>>
+        {
+            [@"Z:\"] = [coverage.IndexedAs!, .. IndexPlan.Names(drives, @"Z:\", _ => null, _ => null)],
+        });
+        Assert.Equal(a, BoundIn(listing, @"Z:\Music\a.pdf"));
+        Assert.Equal(b, BoundIn(listing, @"\\nas\share\Docs\b.pdf"));
+        // Their Matching text is looked up under the name a root holds.
+        Assert.Equal(@"Z:\Music\a.pdf", ContentServices.IndexedPath(listing, @"Z:\Music\a.pdf"));
+        Assert.Equal(@"\\nas\share\Docs\b.pdf", ContentServices.IndexedPath(listing, @"Z:\Docs\b.pdf"));
+        var highlighter = ContentHighlighter.Create("content:budget", new SearchOptions())!;
+        Assert.NotNull(h.Content.GetSnippet(ContentServices.IndexedPath(listing, @"Z:\Music\a.pdf"), highlighter));
+        Assert.NotNull(h.Content.GetSnippet(ContentServices.IndexedPath(listing, @"Z:\Docs\b.pdf"), highlighter));
+        // Under its name in the index alone (the letter), the folder searched by its share is missed.
+        var one = new FileIndex();
+        int oneZ = one.AddRoot("Z:");
+        Listed(h, one, one.Add("Music", oneZ, FileAttributes.Directory, -1, 0, 0), @"Z:\Music\a.pdf");
+        Listed(h, one, one.Add("Docs", oneZ, FileAttributes.Directory, -1, 0, 0), @"\\nas\share\Docs\b.pdf");
+        ContentServices.ShareWith(h.Index, one, new Dictionary<string, string> { [@"Z:\"] = coverage.IndexedAs! });
+        Assert.Equal(-1, BoundIn(one, @"\\nas\share\Docs\b.pdf"));
+    }
+
+    [Fact]
+    public void A_listing_shared_again_under_the_names_its_folder_has_now_is_mapped_again()
+    {
+        // C:\Games\Big is a junction to D:\Games\Big, D: is off, and the folder bar's "Show them in searches" added D:\Games\Big.
+        var settings = Harness.DefaultSettings();
+        settings.Folders = [@"C:\Users\Me", @"D:\Games\Big"];
+        using var h = new Harness(settings);
+        h.File(@"C:\Users\Me\notes.pdf", "the notes");
+        h.Root(@"D:\Games\Big");
+        h.File(@"D:\Games\Big\save.pdf", "the budget for the year");
+        h.Start();
+        h.Settle();
+        Assert.NotNull(h.Row(@"C:\Users\Me\notes.pdf")); // C: is a root the text index has
+        Assert.NotNull(h.Row(@"D:\Games\Big\save.pdf"));
+        var drives = new[] { new DriveEntry(@"C:\", DriveKind.Fixed, "NTFS", "", true, null, null), new DriveEntry(@"D:\", DriveKind.Fixed, "NTFS", "", true, null, null) };
+        static bool IsLink(string p) => string.Equals(p.TrimEnd('\\'), @"C:\Games\Big", StringComparison.OrdinalIgnoreCase);
+        FileAttributes? Attributes(string p) => IsLink(p) ? FileAttributes.Directory | FileAttributes.ReparsePoint : FileAttributes.Directory;
+        string? Target(string p) => IsLink(p) ? @"D:\Games\Big" : null;
+        // The names StartListing and RefreshListingNames give the listing under these settings.
+        Dictionary<string, IReadOnlyList<string>> NamesUnder(IndexSettings names)
+        {
+            var c = IndexPlan.Coverage(names, drives, @"C:\Games\Big", attributesOf: Attributes, linkTargetOf: Target);
+            return new(StringComparer.OrdinalIgnoreCase) { [@"C:\Games\Big"] = [c.IndexedAs!, .. IndexPlan.Names(drives, @"C:\Games\Big", Attributes, Target)] };
+        }
+        var listing = new FileIndex();
+        int save = Listed(h, listing, listing.AddRoot(@"C:\Games\Big"), @"D:\Games\Big\save.pdf");
+        // Read from the disk before the click: named first as C: has it, whose index doesn't go through the junction.
+        ContentServices.ShareWith(h.Index, listing, NamesUnder(new IndexSettings { SkipDrives = [@"D:\"] }));
+        Assert.Equal(-1, BoundIn(listing, @"D:\Games\Big\save.pdf"));
+        // Shared again with the names it has now: mapped again at once, though the listing and the store haven't moved.
+        ContentServices.ShareWith(h.Index, listing, NamesUnder(new IndexSettings { SkipDrives = [@"D:\"], Folders = [@"D:\Games\Big"] }));
+        Assert.Equal(save, BoundIn(listing, @"D:\Games\Big\save.pdf"));
+        Assert.Equal(@"D:\Games\Big\save.pdf", ContentServices.IndexedPath(listing, @"C:\Games\Big\save.pdf"));
+    }
+
     [Theory]
     [InlineData(0)] // a store about the listing's size: bound by a merge-join with its rows
     [InlineData(2000)] // a store much larger than the listing: bound by lookups

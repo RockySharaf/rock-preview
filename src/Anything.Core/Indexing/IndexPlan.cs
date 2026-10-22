@@ -196,6 +196,25 @@ public static class IndexPlan
     }
 
     /// <summary>
+    /// Every name <paramref name="folder"/> has, each once: its own, what its drive letter shows (a SUBST drive's folder, a
+    /// mapped drive's share), then where the links on its way point, with their drives' names too. Roots can be spelled
+    /// any of these ways (Z:\Music picked in Settings, \\nas\share\Docs shown in searches by its share), so a folder
+    /// listing of it looks for its files in the text index under each. Empty when it is not a folder on a drive or a share.
+    /// </summary>
+    /// <param name="attributesOf">As for <see cref="Coverage"/>; the same readers read nothing again.</param>
+    /// <param name="linkTargetOf">As for <see cref="Coverage"/>.</param>
+    public static List<string> Names(IReadOnlyList<DriveEntry> drives, string folder, Func<string, FileAttributes?>? attributesOf = null,
+        Func<string, string?>? linkTargetOf = null)
+    {
+        if (FolderName(folder) is not { } name) return [];
+        var names = new List<string>();
+        foreach (var path in ThroughLinks(drives, name, attributesOf ?? ReadAttributes, LinkReader(attributesOf, linkTargetOf)))
+            foreach (var form in Aliases(drives, path))
+                if (!names.Exists(n => Same(n, form))) names.Add(AsPath(form));
+        return names;
+    }
+
+    /// <summary>
     /// Whether a planned root holds <paramref name="folder"/>, looked for as <paramref name="name"/> and the other names
     /// its drive gives it, and if not, why.
     /// </summary>

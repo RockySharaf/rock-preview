@@ -74,12 +74,15 @@ internal sealed class ContentIndex : ContentSource, IContentIndex, IFollowerHost
         }
         // Another index (a folder listing, through ShareWith): ids mapped on demand, per generation. Its folders are placed
         // through the follower's snapshot of the roots only (VolumeKeys would call Win32 under the listing's read lock):
-        // under their indexed names (a SUBST letter's listing), and folder by folder below a listed folder that no root
-        // holds but one is in (a listing of E: while E:\Data is the root).
+        // under the first of their names a root holds (a SUBST letter's listing under the folder it shows, a mapped letter
+        // under itself or its share), and folder by folder below a listed folder that no root holds but one is in under
+        // any of its names (a listing of E: while E:\Data is the root).
         var roots = Follower?.Roots ?? RootSnapshot.Empty;
-        if (aliases.Count == 0) return _onDemand.For(index, view, roots.Resolve, roots.HoldsRootBelow);
-        return _onDemand.For(index, view, path => roots.Resolve(aliases.Indexed(path)), path => roots.HoldsRootBelow(aliases.Indexed(path)));
+        if (aliases.Count == 0) return _onDemand.For(index, view, roots.Resolve, roots.HoldsRootBelow, aliases);
+        return _onDemand.For(index, view, path => aliases.Resolve(path, roots.Resolve), path => aliases.HoldsRootBelow(path, roots.HoldsRootBelow), aliases);
     }
+
+    internal override bool Holds(string fullPath) => Follower is { } f && f.Roots.Resolve(fullPath) != null;
 
     internal override DocSetCache Cache => _cache;
 
