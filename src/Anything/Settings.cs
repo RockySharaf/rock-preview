@@ -502,7 +502,9 @@ internal sealed partial class AppSettings
         {
             bool on = ExplorerReplacement.IsEnabled();
             if (UseInsteadOfExplorer && !on && Environment.ProcessPath is { } exe) ExplorerReplacement.Enable(exe);
-            else if (!UseInsteadOfExplorer && on) ExplorerReplacement.Disable();
+            // Off also cleans what's left when another file manager took folders after this app (its verbs and Win+E):
+            // an uninstall for everyone waits for that.
+            else if (!UseInsteadOfExplorer && (on || ExplorerReplacement.HasLeftovers())) ExplorerReplacement.Disable();
         }
         catch (Exception) { }
         UseInsteadOfExplorer = ExplorerReplacement.IsEnabled();

@@ -212,7 +212,9 @@ Ultimate File Explorer doesn't patch File Explorer to change that.
 Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall in one click from the app's
 **Settings › About › Uninstall** (or from Windows' **Settings › Apps**): the program, its shortcuts, start with Windows
 and the instant-indexing service go, folders and Win+E go back to File Explorer, and your settings and search index stay
-unless you tick *Also delete my settings and search index*.
+unless you tick *Also delete my Ultimate File Explorer settings and search index*. Windows may also ask for permission (to
+remove the service, or an install for everyone). If another account on this PC still uses it in place of File Explorer,
+it says so and removes nothing until that account turns it off.
 
 > **Windows SmartScreen** may say "Windows protected your PC" because the download isn't code-signed yet.
 > Click **More info › Run anyway**.
@@ -334,7 +336,8 @@ you may open), never by the Ultimate File Explorer Service; while it runs as adm
 Keys, certificates, password stores, password-manager and browser exports, recovery and backup codes, `.env` files and
 app data folders are never read (they are known by their names), files Windows marks "don't index contents" are left
 out (their words leave the index as soon as the mark is set), and files encrypted by Windows only if you allow it. Choosing **Search files by name**
-again deletes the text index at once; *Also delete my settings and search index* when uninstalling deletes it too.
+again deletes the text index at once; *Also delete my Ultimate File Explorer settings and search index* when uninstalling
+deletes it too.
 `rockpreview-cli` can read the text index (as it reads the name index), and a CSV exported with the **Matching text**
 column contains document text.
 
