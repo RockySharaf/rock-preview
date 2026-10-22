@@ -501,7 +501,10 @@ internal static partial class Setup
         if (!keepProgram)
         {
             bool self = SamePath(Environment.ProcessPath ?? "", exe);
-            if (File.Exists(exe) && !self) TryDelete(exe);
+            if (File.Exists(exe) && !self) // the copy closed just now can still hold its file for a moment
+            {
+                try { FileRetry.Delete(exe); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
             if (File.Exists(exe) && !self) warnings.Add($"{exe} is in use, so it couldn't be deleted. Close it, then delete that folder.");
             deleteLater = self && File.Exists(exe);
             if (!File.Exists(exe))
@@ -757,13 +760,8 @@ internal static partial class Setup
         finally { CloseHandle(h); }
     }
 
-    static void CopyWithRetry(string from, string to)
-    {
-        // The old copy, just closed, can still hold its file for a moment: a sharing violation, or access denied.
-        string tmp = to + ".new";
-        try { FileRetry.Run(() => { File.Copy(from, tmp, overwrite: true); File.Move(tmp, to, overwrite: true); }); }
-        catch (Exception) { TryDelete(tmp); throw; }
-    }
+    // The old copy, just closed, can still hold its file for a moment: access denied, or a sharing violation.
+    static void CopyWithRetry(string from, string to) => FileRetry.Replace(from, to);
 
     /// <summary>Two paths name the same file or folder, compared as full paths (case and a trailing backslash don't matter).</summary>
     internal static bool SamePath(string a, string b)

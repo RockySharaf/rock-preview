@@ -426,7 +426,10 @@ internal sealed class SetupForm : Form
         }
         catch (Exception ex)
         {
-            _status.Text = ex is UnauthorizedAccessException
+            // An update can't change the folder: there, access denied means the closed copy still holds its file.
+            _status.Text = ex is UnauthorizedAccessException && _existing is not null
+                ? "The copy that was running hasn't let go of its program file yet. Wait a moment, then click Update again."
+                : ex is UnauthorizedAccessException
                 ? "Windows didn't allow setup to write there. Choose another folder or \"Everyone\" (administrator)."
                 : ex.Message;
         }

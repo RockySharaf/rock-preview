@@ -78,6 +78,80 @@ public sealed class FileRetryTests : IDisposable
         Assert.Equal("new", File.ReadAllText(exe));
     }
 
+    // ---- Replace and Delete: what Setup does with the program file ---------------------------------------------
+
+    [Fact]
+    public void AnUpdateCopiesTheProgramOnceWhileTheOldFileIsStillHeld()
+    {
+        string setup = Path.Combine(_dir, "RockPreview-Setup.exe"), exe = Path.Combine(_dir, "RockPreview.exe");
+        File.WriteAllText(setup, "1.7.2");
+        File.WriteAllText(exe, "1.7.1");
+        var held = new FileStream(exe, FileMode.Open, FileAccess.Read, FileShare.None);
+        int sleeps = 0;
+        // Were it copied again on each try, the change made to the source during the wait would be what lands.
+        try { FileRetry.Replace(setup, exe, sleep: () => { if (++sleeps == 1) File.WriteAllText(setup, "copied twice"); else held.Dispose(); }); }
+        finally { held.Dispose(); }
+        Assert.Equal(2, sleeps);
+        Assert.Equal("1.7.2", File.ReadAllText(exe));
+        Assert.False(File.Exists(exe + ".new"));
+    }
+
+    [Fact]
+    public void AnUpdateThatStillCantReplaceTheFileLeavesTheOldOneAndNoNewFile()
+    {
+        string setup = Path.Combine(_dir, "RockPreview-Setup.exe"), exe = Path.Combine(_dir, "RockPreview.exe");
+        File.WriteAllText(setup, "1.7.2");
+        File.WriteAllText(exe, "1.7.1");
+        int sleeps = 0;
+        using (new FileStream(exe, FileMode.Open, FileAccess.Read, FileShare.None))
+            Assert.Throws<UnauthorizedAccessException>(() => FileRetry.Replace(setup, exe, attempts: 3, sleep: () => sleeps++));
+        Assert.Equal(2, sleeps);
+        Assert.Equal("1.7.1", File.ReadAllText(exe));
+        Assert.False(File.Exists(exe + ".new"));
+    }
+
+    [Fact]
+    public void ReadOnlyFilesDontStopAnUpdateAndTheProgramIsntLeftReadOnly()
+    {
+        // Setup run off a disc or a share is read-only, and so is a program file an earlier copy of that setup put in place.
+        string setup = Path.Combine(_dir, "RockPreview-Setup.exe"), exe = Path.Combine(_dir, "RockPreview.exe");
+        File.WriteAllText(setup, "1.7.2");
+        File.WriteAllText(exe, "1.7.1");
+        File.WriteAllText(exe + ".new", "left by a failed update");
+        foreach (var f in new[] { setup, exe, exe + ".new" }) File.SetAttributes(f, FileAttributes.ReadOnly);
+        FileRetry.Replace(setup, exe, sleep: () => throw new InvalidOperationException("nothing should be busy"));
+        Assert.Equal("1.7.2", File.ReadAllText(exe));
+        Assert.False(File.GetAttributes(exe).HasFlag(FileAttributes.ReadOnly));
+        Assert.False(File.Exists(exe + ".new"));
+    }
+
+    [Fact]
+    public void ANewFileTakenAwayBetweenTriesIsCopiedAgain()
+    {
+        string setup = Path.Combine(_dir, "RockPreview-Setup.exe"), exe = Path.Combine(_dir, "RockPreview.exe");
+        File.WriteAllText(setup, "1.7.2");
+        File.WriteAllText(exe, "1.7.1");
+        var held = new FileStream(exe, FileMode.Open, FileAccess.Read, FileShare.None);
+        try { FileRetry.Replace(setup, exe, sleep: () => { File.Delete(exe + ".new"); held.Dispose(); }); }
+        finally { held.Dispose(); }
+        Assert.Equal("1.7.2", File.ReadAllText(exe));
+    }
+
+    [Fact]
+    public void AnUninstallDeletesTheProgramOnceTheClosedCopyLetsGoOfIt()
+    {
+        string exe = Path.Combine(_dir, "RockPreview.exe");
+        File.WriteAllText(exe, "1.7.1");
+        File.SetAttributes(exe, FileAttributes.ReadOnly);
+        var held = new FileStream(exe, FileMode.Open, FileAccess.Read, FileShare.None);
+        int sleeps = 0;
+        try { FileRetry.Delete(exe, sleep: () => { sleeps++; held.Dispose(); }); }
+        finally { held.Dispose(); }
+        Assert.Equal(1, sleeps);
+        Assert.False(File.Exists(exe));
+        FileRetry.Delete(exe, sleep: () => throw new InvalidOperationException("a missing file isn't busy"));
+    }
+
     /// <summary>Replaces <paramref name="to"/>, noting the type of each failure.</summary>
     static void Move(string from, string to, List<Type> seen)
     {
