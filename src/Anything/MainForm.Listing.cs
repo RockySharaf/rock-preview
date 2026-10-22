@@ -307,6 +307,8 @@ internal sealed partial class MainForm
     void UpdateEmptyText()
     {
         string text = "";
+        // Words inside files can say better why a search found nothing (a choice that is off), or that it may yet find some.
+        string? content = _search.TextLength > 0 ? ContentEmptyText() : null;
         if (_zapActive)
         {
             string where = _zapLabel;
@@ -318,9 +320,10 @@ internal sealed partial class MainForm
             else if (_searchPending && _search.TextLength > 0) return;
             // Until the first results come in, what the list holds is from before.
             else if (_searchPending && _pendingNewQuery) text = $"Looking for files in {where}...";
-            // The Everyday files filter applies to a search too, and is the likelier reason it finds nothing.
+            // The Everyday files filter applies to a search too, and is the likelier reason it finds nothing (after words
+            // inside files: a choice that is off matches nothing whatever the filter).
             else if (_search.TextLength > 0 || _filterIndex > 0)
-                text = "No items match your search." + (everyday ? " Turn off Everyday files to see every file." : "");
+                text = content ?? "No items match your search." + (everyday ? " Turn off Everyday files to see every file." : "");
             else
             {
                 string files = everyday ? "pictures, videos, music, documents or design files" : "files";
@@ -334,7 +337,7 @@ internal sealed partial class MainForm
             if (_searchPending) return; // as above
             var folders = CoverageFolders();
             var gaps = FolderGaps(folders);
-            text = gaps.Count > 0 ? $"Files in {GapLabel(folders, gaps)} don't show up in searches." : "No items match your search.";
+            text = content ?? (gaps.Count > 0 ? $"Files in {GapLabel(folders, gaps)} don't show up in searches." : "No items match your search.");
         }
         _list.EmptyText = text;
         _grid.EmptyText = text;

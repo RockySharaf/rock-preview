@@ -313,6 +313,44 @@ public sealed class ContentPresentationTests
     }
 
     [Fact]
+    public void The_hint_goes_after_a_listing_line_and_over_the_rest()
+    {
+        string hint = ContentPresentation.ModeHint(ContentMode.Documents);
+        // Over the name index's progress and the toggles, as an error would be.
+        Assert.Equal(hint, ContentPresentation.StatusRight("CASE   PATH", hint, listingLine: false));
+        Assert.Equal(ContentPresentation.LookingInside, ContentPresentation.StatusRight("Scanning C:", ContentPresentation.LookingInside, false));
+        // Never over the disk listing's reading progress or why it can't be read: after it.
+        Assert.Equal("Reading Photos (12,345 objects)   Looking inside files…",
+            ContentPresentation.StatusRight("Reading Photos (12,345 objects)", ContentPresentation.LookingInside, listingLine: true));
+        Assert.Equal("Photos can't be read: The device is not ready.   " + hint,
+            ContentPresentation.StatusRight("Photos can't be read: The device is not ready.", hint, true));
+        // No hint (the window passes none over a search's own error): the line as it was.
+        Assert.Equal("Reading Photos (12,345 objects)", ContentPresentation.StatusRight("Reading Photos (12,345 objects)", null, true));
+        Assert.Equal("Bad regex", ContentPresentation.StatusRight("Bad regex", null, false));
+        Assert.Equal("CASE", ContentPresentation.StatusRight("CASE", "", false));
+    }
+
+    [Fact]
+    public void The_empty_list_says_what_words_inside_files_know()
+    {
+        // content:invoice with search inside files off: the choice it needs, not "Turn off Everyday files", which can't help.
+        var needs = ContentHighlighter.Create("content:invoice", new SearchOptions())!.NeedsMode;
+        string text = ContentPresentation.EmptyListText(needs, ContentMode.NamesOnly, lookingInside: false)!;
+        Assert.Equal("No items match your search. " + ContentPresentation.ModeHint(ContentMode.Documents) + ".", text);
+        Assert.EndsWith("(Settings › Indexing).", text);
+        Assert.Contains("Picture details need", ContentPresentation.EmptyListText(ContentMode.DocumentsAndPictures, ContentMode.Documents, false));
+        // Lookups still running: matches may yet come in, so it doesn't say none do.
+        Assert.Equal(ContentPresentation.LookingInside, ContentPresentation.EmptyListText(ContentMode.NamesOnly, ContentMode.Documents, lookingInside: true));
+        // A choice that is off goes first: waiting can't bring matches then.
+        Assert.StartsWith("No items match your search. Picture details", ContentPresentation.EmptyListText(ContentMode.DocumentsAndPictures, ContentMode.Documents, true));
+        // Nothing more to say (the choice is on, or plain words, which still match names): the list says what it would.
+        Assert.Null(ContentPresentation.EmptyListText(ContentMode.Documents, ContentMode.Documents, false));
+        Assert.Null(ContentPresentation.EmptyListText(ContentMode.Documents, ContentMode.DocumentsAndPictures, false));
+        var plain = ContentHighlighter.Create("invoice", new SearchOptions { MatchContent = true })!.NeedsMode;
+        Assert.Null(ContentPresentation.EmptyListText(plain, ContentMode.NamesOnly, false));
+    }
+
+    [Fact]
     public void The_matching_text_column_follows_the_mode_and_the_toggle_only()
     {
         Assert.True(ContentPresentation.ShowsMatchingText(true, ContentMode.Documents, true));

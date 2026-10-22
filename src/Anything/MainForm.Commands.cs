@@ -739,10 +739,14 @@ internal sealed partial class MainForm
         // The ids are read in the index they came from; renumbered meanwhile (a compaction), there is nothing to write yet.
         var ids = ResultsCurrent ? _ids : [];
         var index = _resultIndex ?? _app.IndexManager.Index;
+        // No results to read (a listing's were let go of when the folder view showed again): their generation and Matching
+        // text belong to the listing, not to the main index written instead, and would only fail the check with no row to write.
+        bool dropped = _resultIndex is null;
         Cursor = Cursors.WaitCursor;
         try
         {
-            await ResultExporter.ExportAsync(dlg.FileName, (ExportFormat)type, index, ids, columns, ContentExportText(), _resultGeneration);
+            await ResultExporter.ExportAsync(dlg.FileName, (ExportFormat)type, index, ids, columns, dropped ? null : ContentExportText(),
+                dropped ? null : _resultGeneration);
         }
         catch (Exception ex)
         {

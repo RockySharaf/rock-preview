@@ -333,6 +333,14 @@ public static class ContentPresentation
     }
 
     /// <summary>
+    /// The status bar's right side with a tab's <paramref name="hint"/> (the choice a query needs, <see cref="LookingInside"/>):
+    /// in place of <paramref name="right"/>, as an error would be, but after a disk listing's own line
+    /// (<paramref name="listingLine"/>: its reading progress, or why it can't be read), which it must not hide.
+    /// </summary>
+    public static string StatusRight(string right, string? hint, bool listingLine)
+        => hint is not { Length: > 0 } ? right : listingLine ? $"{right}   {hint}" : hint;
+
+    /// <summary>
     /// Whether a tab's plain words look inside files: its Match inside files on, and neither Match path nor Regex on (path
     /// terms and regular expressions match names only). What the status bar (NAMES ONLY) and the Matching text column go by.
     /// </summary>
@@ -428,6 +436,15 @@ public static class ContentPresentation
         ContentMode.DocumentsAndPictures => $"Picture details need “{OptionTitle(ContentMode.DocumentsAndPictures)}” (Settings › Indexing)",
         _ => "",
     };
+
+    /// <summary>
+    /// What an empty list says after a search when search inside files knows why it is empty: the choice the query needs
+    /// (<paramref name="needs"/> above <paramref name="mode"/>: it can't match, whatever else is set), else
+    /// <see cref="LookingInside"/> while lookups still run (matches may yet come in); null when it knows nothing more.
+    /// </summary>
+    public static string? EmptyListText(ContentMode needs, ContentMode mode, bool lookingInside)
+        => needs > mode && ModeHint(needs) is { Length: > 0 } hint ? $"No items match your search. {hint}."
+            : lookingInside ? LookingInside : null;
 
     /// <summary>
     /// Whether a window offers search inside files: never answered, no mode chosen (or names only), not the demo, and the

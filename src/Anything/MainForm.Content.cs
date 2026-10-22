@@ -235,10 +235,22 @@ internal sealed partial class MainForm
 
     /// <summary>
     /// The status bar's right side with the tab's hint (the choice a query needs, "Looking inside files…") over the name
-    /// index's progress and the toggles, as an error would be; a real search error keeps its place.
+    /// index's progress and the toggles, as an error would be, but after the disk listing's own line (<paramref name="listingLine"/>:
+    /// its reading progress, or why it can't be read); a real search error keeps its place.
     /// </summary>
-    string ContentStatusRight(string right)
-        => string.IsNullOrEmpty(_searchError) && ContentTab().Hint is { Length: > 0 } hint ? hint : right;
+    string ContentStatusRight(string right, bool listingLine)
+        => ContentPresentation.StatusRight(right, string.IsNullOrEmpty(_searchError) ? ContentTab().Hint : null, listingLine);
+
+    /// <summary>
+    /// What the empty list says instead of "No items match your search." when the results' words inside files explain it
+    /// (the choice the query needs, "Looking inside files…"); null otherwise.
+    /// </summary>
+    string? ContentEmptyText()
+    {
+        var tc = ContentTab();
+        return ContentPresentation.EmptyListText(tc.Highlighter?.NeedsMode ?? ContentMode.NamesOnly, _app.ContentMode,
+            tc.Hint == ContentPresentation.LookingInside);
+    }
 
     // ---- the offer ---------------------------------------------------------------------------------
 

@@ -1066,13 +1066,16 @@ internal sealed partial class MainForm : Form
     void UpdateStatusRight()
     {
         var im = _app.IndexManager;
-        string right;
+        string? listingLine = null;
         if (_zapActive && _listing is { State: ListingState.Reading } reading)
-            right = $"Reading {_zapLabel} ({reading.Found:N0} objects)"; // every file and folder read, before any filter
+            listingLine = $"Reading {_zapLabel} ({reading.Found:N0} objects)"; // every file and folder read, before any filter
         else if (_zapActive && _listing is { Problem: { } problem } listing && string.IsNullOrEmpty(_searchError))
             // Said even with files on screen: read before a drive was removed or a share went away, they may be gone.
             // Not over a search's own error (a bad regex, say), which nothing else would say.
-            right = listing.State == ListingState.Unavailable ? $"{_zapLabel} can't be read: {problem}" : $"Some of the folders can't be read: {problem}";
+            listingLine = listing.State == ListingState.Unavailable ? $"{_zapLabel} can't be read: {problem}" : $"Some of the folders can't be read: {problem}";
+        string right;
+        if (listingLine != null)
+            right = listingLine;
         else if (im.State is IndexState.Loading or IndexState.Scanning or IndexState.Error && !string.IsNullOrEmpty(im.StatusText))
             right = im.StatusText;
         else if (!string.IsNullOrEmpty(_searchError))
@@ -1090,7 +1093,7 @@ internal sealed partial class MainForm : Form
             ContentStatusParts(parts);
             right = string.Join("   ", parts);
         }
-        right = ContentStatusRight(right);
+        right = ContentStatusRight(right, listingLine != null);
         _statusRight.Text = right;
         _statusRight.ToolTipText = right;
     }
