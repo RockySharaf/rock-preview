@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using Anything.Core;
 
 namespace Anything.Explorer;
 
@@ -24,6 +25,8 @@ internal sealed class ExplorerHost : Control
     readonly System.Windows.Forms.Timer _themeTimer = new() { Interval = 400 };
     string? _lastSelection;
     int _lastSelectionCount = -1;
+    int _lastFocused = -1;
+    bool _selectionReported;            // the view said the selection changed (CDBOSC_SELCHANGE) since the last poll
     int _itemCount, _lastItemCount = -1;
     bool _renameAfterSelect;
     bool _navPane = true;
@@ -385,22 +388,21 @@ internal sealed class ExplorerHost : Control
             try
             {
                 if (fv.ItemCount(0x2 /* SVGIO_ALLVIEW */, out int all) == ShellNative.S_OK) _itemCount = all;
-                if (fv.GetSelection(false, out var items) == ShellNative.S_OK && items != null)
+                // The count and the focused item are cheap; the selection array copies every selected item, so a big
+                // selection (Ctrl+A among 100,000 files) is read again only when one of them changes or the view says
+                // the selection did (CDBOSC_SELCHANGE). Which item comes first, and so is previewed, stays the array's.
+                int selected = fv.ItemCount(0x1 /* SVGIO_SELECTION */, out int s) == ShellNative.S_OK ? s : -1;
+                int focused = fv.GetFocusedItem(out int f) == ShellNative.S_OK ? f : -1;
+                bool reported = _selectionReported;
+                _selectionReported = false;
+                if (selected != 0)
                 {
-                    try
-                    {
-                        if (items.GetCount(out uint n) == ShellNative.S_OK && n > 0)
-                        {
-                            count = (int)n;
-                            if (items.GetItemAt(0, out var item) == ShellNative.S_OK && item != null)
-                            {
-                                first = ShellNative.NameOf(item, SIGDN.FileSysPath);
-                                Marshal.ReleaseComObject(item);
-                            }
-                        }
-                    }
-                    finally { Marshal.ReleaseComObject(items); }
+                    if (ShellSelection.CanKeepFirst(selected, focused, reported, _lastSelectionCount, _lastFocused))
+                        (count, first) = (selected, _lastSelection);
+                    else
+                        (count, first) = ReadSelection(fv);
                 }
+                _lastFocused = focused;
             }
             catch (COMException) { }
             finally { Marshal.ReleaseComObject(fv); }
@@ -410,6 +412,24 @@ internal sealed class ExplorerHost : Control
         _lastSelection = first;
         _lastSelectionCount = count;
         SelectionChanged?.Invoke();
+    }
+
+    /// <summary>How many items are selected and the first one's file-system path, from the view's selection array.</summary>
+    static (int Count, string? First) ReadSelection(IFolderView2 fv)
+    {
+        if (fv.GetSelection(false, out var items) != ShellNative.S_OK || items == null) return (0, null);
+        try
+        {
+            if (items.GetCount(out uint n) != ShellNative.S_OK || n == 0) return (0, null);
+            string? first = null;
+            if (items.GetItemAt(0, out var item) == ShellNative.S_OK && item != null)
+            {
+                first = ShellNative.NameOf(item, SIGDN.FileSysPath);
+                Marshal.ReleaseComObject(item);
+            }
+            return ((int)n, first);
+        }
+        finally { Marshal.ReleaseComObject(items); }
     }
 
     /// <summary>
@@ -435,6 +455,43 @@ internal sealed class ExplorerHost : Control
     }
 
     const string ThisPcParsingName = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+
+    /// <summary>
+    /// File-system paths of the selected items when all of them are folders on disk (not zips, which the shell also
+    /// calls folders) and there are at most <paramref name="max"/>; otherwise none. Decided from the attributes the
+    /// view already holds, so folders selected on a slow network share never wait on the network.
+    /// </summary>
+    public List<string> GetSelectedFolders(int max)
+    {
+        var fv = GetView<IFolderView2>(ShellNative.IID_IFolderView2);
+        if (fv == null) return [];
+        try
+        {
+            if (fv.GetSelection(false, out var items) != ShellNative.S_OK || items == null) return [];
+            try
+            {
+                if (items.GetCount(out uint n) != ShellNative.S_OK || n == 0 || n > max) return [];
+                if (items.GetAttributes(ShellNative.SIATTRIBFLAGS_AND, ShellSelection.SfgaoFolder | ShellSelection.SfgaoFileSystem, out uint all) < 0
+                    || items.GetAttributes(ShellNative.SIATTRIBFLAGS_OR, ShellSelection.SfgaoStream, out uint any) < 0
+                    || !ShellSelection.AreFolders(all, any)) return [];
+                var paths = new List<string>((int)n);
+                for (uint i = 0; i < n; i++)
+                {
+                    if (items.GetItemAt(i, out var item) != ShellNative.S_OK || item == null) return [];
+                    try
+                    {
+                        if (ShellNative.NameOf(item, SIGDN.FileSysPath) is not { } p) return []; // all of them, or the search would look in part
+                        paths.Add(p);
+                    }
+                    finally { Marshal.ReleaseComObject(item); }
+                }
+                return paths;
+            }
+            finally { Marshal.ReleaseComObject(items); }
+        }
+        catch (COMException) { return []; }
+        finally { Marshal.ReleaseComObject(fv); }
+    }
 
     /// <summary>Names of the selected items (by default file-system paths; virtual items are skipped), at most <paramref name="max"/>.</summary>
     public List<string> GetSelectedPaths(int max, SIGDN name = SIGDN.FileSysPath)
@@ -761,6 +818,8 @@ internal sealed class ExplorerHost : Control
             {
                 if (uChange == ShellNative.CDBOSC_SETFOCUS && host.IsHandleCreated && !host.IsDisposed)
                     host.BeginInvoke(host.SyncActiveControl); // not inside the view's own focus change
+                else if (uChange == ShellNative.CDBOSC_SELCHANGE)
+                    host._selectionReported = true; // the next poll reads a big selection again; the view calls on the UI thread
             }
             catch (Exception) { }
             return ShellNative.S_OK;

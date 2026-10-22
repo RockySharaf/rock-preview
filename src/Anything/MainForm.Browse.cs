@@ -277,15 +277,14 @@ internal sealed partial class MainForm
 
     /// <summary>
     /// The folders selected in the Explorer view when only folders are, at most <see cref="MaxScopeFolders"/>; none when
-    /// nothing, a file or more are selected, so a search after Ctrl+A is never limited to part of what was selected.
+    /// nothing, a file (a zip too) or more are selected, so a search after Ctrl+A is never limited to part of what was
+    /// selected. The placeholder asks at every selection change, so the view's attributes decide, never the disk: on a
+    /// slow network share each check was a round trip that froze the window while the selection grew.
     /// </summary>
     List<string> SelectedFolders()
     {
-        if (!_browsing || _explorer.SelectedCount == 0) return [];
-        var selected = _explorer.GetSelectedPaths(MaxScopeFolders + 1);
-        if (selected.Count > MaxScopeFolders) return [];
-        foreach (var p in selected) if (!Directory.Exists(p)) return [];
-        return selected;
+        if (!_browsing || _explorer.SelectedCount is 0 or > MaxScopeFolders) return [];
+        return _explorer.GetSelectedFolders(MaxScopeFolders);
     }
 
     const int MaxScopeFolders = 64;

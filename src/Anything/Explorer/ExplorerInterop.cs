@@ -233,7 +233,8 @@ internal static class ShellNative
     public const int S_OK = 0, S_FALSE = 1;
     public const int E_NOINTERFACE = unchecked((int)0x80004002);
     public const uint CDB2GVF_NOSELECTVERB = 0x8, CDB2GVF_NOINCLUDEITEM = 0x10;
-    public const uint CDBOSC_SETFOCUS = 0;
+    public const uint CDBOSC_SETFOCUS = 0, CDBOSC_SELCHANGE = 2;
+    public const int SIATTRIBFLAGS_AND = 0x1, SIATTRIBFLAGS_OR = 0x2;
 
     public const uint SBSP_ABSOLUTE = 0x0;
     public const uint SBSP_PARENT = 0x2000;
