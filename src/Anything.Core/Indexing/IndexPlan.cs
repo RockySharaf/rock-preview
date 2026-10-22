@@ -70,7 +70,8 @@ public enum CoverageReason
 /// <param name="IndexedAs">
 /// The folder as the index names it: S:\Proj is C:\Work\Proj when S: is a SUBST of C:\Work, a folder on the second
 /// letter mapped to a share is under the first, and C:\Games\Big is D:\Games\Big when it is a junction to that folder and
-/// D:\Games\Big is searched. Otherwise the folder itself; null when it is not a folder on a drive or a share.
+/// D:\Games\Big is searched. A folder no root holds but one is below is named as that root spells it: Z:\ is \\nas\share
+/// while \\nas\share\Docs is searched. Otherwise the folder itself; null when it is not a folder on a drive or a share.
 /// </param>
 /// <param name="Rule">The entry on the list of folders to leave out (or the name pattern) that hides it, as written.</param>
 /// <param name="Drive">The drive or mounted volume that is not indexed, as the drive list names it ("D:\", "C:\Mount\Data\").</param>
@@ -222,16 +223,38 @@ public static class IndexPlan
         }
         if (stopped != null) return stopped;
 
-        // No planned root contains it: its drive, or the volume mounted in a folder around it, is not indexed.
+        // No planned root contains it: its drive, or the volume mounted in a folder around it, is not indexed. A root can
+        // still lie below it, under another of its names (Z:\ while \\nas\share\Docs, added by its share, is searched).
+        string? above = NameAboveRoot(drives, roots, forms);
         foreach (var form in forms)
         {
             var drive = VolumeOf(drives, form);
             if (drive == null || drive.SubstTarget != null) continue; // a SUBST drive's files are under the next name
             var (reason, rule) = WhyNotIndexed(settings, drive, filter);
             if (reason == CoverageReason.NotSearched) continue;
-            return new(folder, reason, null, AsPath(form), rule, drive.Root);
+            return new(folder, reason, null, AsPath(above ?? form), rule, drive.Root);
         }
-        return new(folder, CoverageReason.NotSearched, null, AsPath(forms[0]), null, null);
+        return new(folder, CoverageReason.NotSearched, null, AsPath(above ?? forms[0]), null, null);
+    }
+
+    /// <summary>
+    /// The first of <paramref name="forms"/> that a planned root lies below, spelled as that root's name spells it:
+    /// "\\nas\share" for Z: while \\nas\share\Docs is searched, "Z:" while Z:\Docs is (picked in Settings), "Y:" while
+    /// Y:\Docs is and both letters map one share. A folder listing of it finds those files under that name. Null when no
+    /// root is below any of them.
+    /// </summary>
+    static string? NameAboveRoot(IReadOnlyList<DriveEntry> drives, List<PlannedRoot> roots, List<string> forms)
+    {
+        foreach (var form in forms)
+            foreach (var r in roots)
+                foreach (var below in Aliases(drives, r.Name))
+                {
+                    if (below.Length <= form.Length || !Under(below, form)) continue;
+                    // Another name of a root differs from its own only in front: the root's name less the same end is the folder.
+                    string tail = below[form.TrimEnd('\\').Length..];
+                    if (r.Name.Length > tail.Length && r.Name.EndsWith(tail, StringComparison.OrdinalIgnoreCase)) return r.Name[..^tail.Length];
+                }
+        return null;
     }
 
     /// <summary>

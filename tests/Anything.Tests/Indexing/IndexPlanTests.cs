@@ -1076,6 +1076,34 @@ public sealed class IndexPlanTests
     }
 
     [Fact]
+    public void Folder_above_a_searched_folder_is_named_as_that_folders_root_spells_it()
+    {
+        // Network drives off, Z:\Docs shown in searches: it goes on Also search these folders by its share.
+        var z = Network(@"Z:\", @"\\nas\share");
+        var settings = new IndexSettings { IndexNetworkDrives = false };
+        Assert.Equal(SearchFolderResult.Added, SearchFolder(settings, @"Z:\Docs", z));
+        Assert.Equal([@"\\nas\share\Docs"], settings.Folders.ToArray());
+        // Z:\ itself isn't searched, but a folder listing of it finds Docs' files under the share's name.
+        var above = Coverage(settings, @"Z:\", z);
+        Assert.Equal(CoverageReason.DriveKindOff, above.Reason);
+        Assert.Null(above.Root);
+        Assert.Equal(@"\\nas\share", above.IndexedAs);
+        Assert.Equal(@"\\nas\share\Docs", Coverage(settings, @"Z:\Docs", z).IndexedAs);
+
+        // Picked in Settings › Folders, the root keeps the letter: so does the folder above it.
+        Assert.Equal(@"Z:\", Coverage(new IndexSettings { IndexNetworkDrives = false, Folders = [@"Z:\Docs"] }, @"Z:\", z).IndexedAs);
+        // Under another letter of the same share, that letter.
+        var y = Network(@"Y:\", @"\\nas\share");
+        Assert.Equal(@"Y:\", Coverage(new IndexSettings { IndexNetworkDrives = false, Folders = [@"Y:\Docs"] }, @"Z:\", y, z).IndexedAs);
+        // A SUBST letter above a folder added by that letter, its drive turned off: the letter, not the folder it shows.
+        var subst = new[] { Fixed(@"C:\"), Subst(@"S:\", @"C:\Work") };
+        Assert.Equal(@"S:\", Coverage(new IndexSettings { SkipDrives = [@"C:\"], Folders = [@"S:\Proj"] }, @"S:\", subst).IndexedAs);
+        Assert.Equal(@"C:\Work", Coverage(new IndexSettings { SkipDrives = [@"C:\"], Folders = [@"C:\Work\Proj"] }, @"S:\", subst).IndexedAs);
+        // With no root below, the folder itself, as before.
+        Assert.Equal(@"Z:\", Coverage(new IndexSettings { IndexNetworkDrives = false }, @"Z:\", z).IndexedAs);
+    }
+
+    [Fact]
     public void Folder_on_a_share_is_searched_once_it_is_listed()
     {
         var c = Coverage(new IndexSettings(), @"\\nas\docs\letters", Fixed(@"C:\"));

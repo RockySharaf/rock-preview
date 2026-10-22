@@ -2,6 +2,7 @@ using Anything.Core;
 using Anything.Core.Content;
 using Anything.Core.Content.Indexing;
 using Anything.Core.Content.Store;
+using Anything.Core.Indexing;
 
 namespace Anything.Tests.Content.Indexing;
 
@@ -133,6 +134,37 @@ public class FacadeTests
         listing.Add("b.pdf", other, FileAttributes.Archive, 10, 1, 0);
         ContentServices.ShareWith(h.Index, listing);
         Assert.Equal(a, BoundIn(listing, @"D:\Data\Jobs\a.pdf"));
+    }
+
+    [Fact]
+    public void A_listing_of_a_mapped_letter_finds_the_documents_of_a_folder_searched_by_its_share()
+    {
+        // Z: maps \\nas\share with network drives off; Z:\Docs was shown in searches, so the index's root is its share.
+        var settings = Harness.DefaultSettings();
+        settings.Folders = [@"C:\Users\Me", @"\\nas\share\Docs"];
+        using var h = new Harness(settings);
+        h.Folder(@"C:\Users\Me");
+        h.Root(@"\\nas\share\Docs");
+        h.File(@"\\nas\share\Docs\a.pdf", "the budget for the year");
+        h.Start();
+        h.Settle();
+        Assert.NotNull(h.Row(@"\\nas\share\Docs\a.pdf"));
+        // The listing tab of Z:\ names its folders as StartListing does, from Z:\'s coverage (the drive list only).
+        var drives = new[] { new DriveEntry(@"Z:\", DriveKind.Network, "NTFS", "", true, @"\\nas\share", null) };
+        var coverage = IndexPlan.Coverage(new IndexSettings { IndexNetworkDrives = false, Folders = [@"\\nas\share\Docs"] }, drives, @"Z:\",
+            attributesOf: _ => null, linkTargetOf: _ => null);
+        Assert.Equal(@"\\nas\share", coverage.IndexedAs);
+        var listing = new FileIndex();
+        int docs = listing.Add("Docs", listing.AddRoot("Z:"), FileAttributes.Directory, -1, 0, 0);
+        int a = Listed(h, listing, docs, @"\\nas\share\Docs\a.pdf");
+        ContentServices.ShareWith(h.Index, listing, new Dictionary<string, string> { [@"Z:\"] = coverage.IndexedAs! });
+        Assert.Equal(a, BoundIn(listing, @"\\nas\share\Docs\a.pdf"));
+        Assert.Equal(@"\\nas\share\Docs\a.pdf", ContentServices.IndexedPath(listing, @"Z:\Docs\a.pdf"));
+        // By the letter alone, no root is at or below Z:: nothing is bound.
+        var plain = new FileIndex();
+        Listed(h, plain, plain.Add("Docs", plain.AddRoot("Z:"), FileAttributes.Directory, -1, 0, 0), @"\\nas\share\Docs\a.pdf");
+        ContentServices.ShareWith(h.Index, plain);
+        Assert.Equal(-1, BoundIn(plain, @"\\nas\share\Docs\a.pdf"));
     }
 
     [Fact]
