@@ -175,14 +175,8 @@ internal static class IndexService
         return list;
     }
 
-    static void CopyWithRetry(string from, string to)
-    {
-        for (int i = 0; ; i++)
-        {
-            try { File.Copy(from, to, overwrite: true); return; }
-            catch (IOException) when (i < 40) { Thread.Sleep(250); } // the stopping service may still hold the file
-        }
-    }
+    // The stopping service may still hold its file for a moment: a sharing violation, or access denied.
+    static void CopyWithRetry(string from, string to) => Anything.Core.FileRetry.Run(() => File.Copy(from, to, overwrite: true));
 
     static void Stop(IntPtr svc)
     {

@@ -759,17 +759,10 @@ internal static partial class Setup
 
     static void CopyWithRetry(string from, string to)
     {
-        for (int attempt = 0; ; attempt++)
-        {
-            try
-            {
-                string tmp = to + ".new";
-                File.Copy(from, tmp, overwrite: true);
-                File.Move(tmp, to, overwrite: true);
-                return;
-            }
-            catch (IOException) when (attempt < 40) { Thread.Sleep(250); } // the old copy is still letting go of the file
-        }
+        // The old copy, just closed, can still hold its file for a moment: a sharing violation, or access denied.
+        string tmp = to + ".new";
+        try { FileRetry.Run(() => { File.Copy(from, tmp, overwrite: true); File.Move(tmp, to, overwrite: true); }); }
+        catch (Exception) { TryDelete(tmp); throw; }
     }
 
     /// <summary>Two paths name the same file or folder, compared as full paths (case and a trailing backslash don't matter).</summary>
