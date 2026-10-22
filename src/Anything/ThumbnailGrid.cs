@@ -113,8 +113,10 @@ internal sealed class ThumbnailGrid : Control
         if (reset) { _anchor = -1; _offset = 0; _wheelPixels = 0; _ensurePending = -1; }
         long before = _offset;
         UpdateScroll();
-        // More or fewer results with the view where it was: the item it keeps at the top stays the same one.
+        // More or fewer results with the view where it was: the item it keeps at the top stays the same one, but
+        // whether that's the end is measured again (more results: it no longer is).
         if (reset || _offset != before) Remember();
+        else _atEnd = _offset > 0 && _offset >= MaxOffset;
         Invalidate();
     }
 
@@ -228,10 +230,10 @@ internal sealed class ThumbnailGrid : Control
     protected override void OnVisibleChanged(EventArgs e)
     {
         base.OnVisibleChanged(e);
-        if (!Visible) return;
-        // Laid out while hidden (another width without the bar): measured again now.
-        Relayout();
-        if (_ensurePending >= 0) EnsureVisible(_ensurePending);
+        // An item to bring into view: only once the parent has laid the grid out at its new size (it isn't yet while
+        // this runs; a size that changed meanwhile comes as a resize, which handles it first).
+        if (Visible && _ensurePending >= 0 && IsHandleCreated)
+            BeginInvoke(() => { if (Visible && _ensurePending >= 0) EnsureVisible(_ensurePending); });
     }
 
     Rectangle CellRect(int index)

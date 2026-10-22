@@ -247,7 +247,12 @@ internal sealed partial class MainForm
             _suppress = false;
         }
         _list.Invalidate();
-        if (ThumbnailMode) _grid.SetCount(_ids.Length, reset: true);
+        if (ThumbnailMode)
+        {
+            _grid.SetCount(_ids.Length, reset: true);
+            // The tab's focused result, as the list shows it (the grid may stay shown across the switch).
+            if (FocusedIndex() is int focus and >= 0) _grid.EnsureVisible(focus);
+        }
     }
 
     /// <summary>Selects the results with these ids and focuses <paramref name="focusedId"/>'s; returns its index, or -1.</summary>
