@@ -62,7 +62,9 @@ static class Program
             ApplicationConfiguration.Initialize();
             AppSettings.MigrateFromAnything(cmd.Demo); // the app used to be called "Anything"
             // Theme must be chosen before any window exists; the full settings load happens in AnythingApp.Create.
-            Application.SetColorMode(AppSettings.ColorModeFor(AppSettings.Load(AppSettings.DefaultPath(cmd.Demo)).Theme));
+            string theme = AppSettings.Load(AppSettings.DefaultPath(cmd.Demo)).Theme;
+            Application.SetColorMode(AppSettings.ColorModeFor(theme));
+            SetShellColorMode(theme);
             ToolStripManager.Renderer = new ExplorerRenderer(); // command bar, status bar and every menu look like File Explorer's
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += (_, e) => ReportError(e.Exception, fatal: false);
@@ -251,4 +253,19 @@ static class Program
     static extern uint SetErrorMode(uint mode);
     [DllImport("kernel32.dll")]
     static extern uint GetErrorMode();
+
+    /// <summary>
+    /// Windows' own parts of the app (the folder view, its context menus and scroll bars) follow the app's theme, as
+    /// File Explorer's do. Without it the folder view stayed white with the app and Windows both dark. A theme change
+    /// restarts the app, so once at start is enough. SetPreferredAppMode is uxtheme's undocumented ordinal 135
+    /// (Windows 10 1903 and later); without it nothing changes.
+    /// </summary>
+    static void SetShellColorMode(string theme)
+    {
+        try { SetPreferredAppMode(theme switch { "dark" => 2 /* ForceDark */, "system" => 1 /* AllowDark */, _ => 3 /* ForceLight */ }); }
+        catch (EntryPointNotFoundException) { }
+    }
+
+    [DllImport("uxtheme.dll", EntryPoint = "#135")]
+    static extern int SetPreferredAppMode(int mode);
 }

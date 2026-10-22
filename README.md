@@ -120,8 +120,10 @@ documents; the first pass takes about 2 minutes in the background"):
 - A pixel-faithful Windows 11 frame: tabs, breadcrumb address bar, command bar with Explorer's own icons
   (New, Cut, Copy, Paste, Rename, Share, Delete, Sort, View), search box, status bar and view switcher.
   Sizes, colours and behaviour were measured from Explorer itself, not guessed.
+- **This PC** opens as Explorer shows it: drive tiles with a storage bar (red when nearly full) and "X GB free of
+  Y GB", locked BitLocker drives with their lock. Other folders open in Details; **View** switches either.
 - The real shell **New** menu, the Windows **Share** sheet, Properties, Select all / none / invert.
-- Light and dark themes.
+- Light and dark themes, the file view included.
 
 ### Tabs
 Like Windows 11 File Explorer, one window holds several folders and searches as tabs along the top:

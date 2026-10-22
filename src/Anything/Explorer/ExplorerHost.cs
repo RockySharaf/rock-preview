@@ -27,6 +27,7 @@ internal sealed class ExplorerHost : Control
     int _itemCount, _lastItemCount = -1;
     bool _renameAfterSelect;
     bool _navPane = true;
+    bool _thisPcPending;                // the view being created shows This PC
 
     /// <summary>Show ExplorerBrowser's own navigation pane. Rock Preview hosts a separate tree, so this is off.</summary>
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -319,6 +320,24 @@ internal sealed class ExplorerHost : Control
         ApplyViewTheme();
         Navigated?.Invoke();
         SelectionChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Each new view, before it is shown: column headers only in Details, as in File Explorer (the view otherwise puts
+    /// them above tiles and icons too). This PC opens as File Explorer shows it: drive tiles with a storage bar (red
+    /// when nearly full) and "X GB free of Y GB". Every other folder opens in Details, as before; the View menu still
+    /// switches either until you leave.
+    /// </summary>
+    void OnViewCreated(IntPtr psv)
+    {
+        if (psv == IntPtr.Zero || Marshal.GetObjectForIUnknown(psv) is not IFolderView2 fv) return;
+        try
+        {
+            fv.SetCurrentFolderFlags(ShellNative.FWF_NOHEADERINALLVIEWS, ShellNative.FWF_NOHEADERINALLVIEWS);
+            if (_thisPcPending) fv.SetViewModeAndIconSize(ShellNative.FVM_TILE, 48);
+        }
+        catch (COMException) { }
+        finally { Marshal.ReleaseComObject(fv); }
     }
 
     /// <summary>
@@ -701,8 +720,16 @@ internal sealed class ExplorerHost : Control
     [ComVisible(true)]
     sealed class Callbacks(ExplorerHost host) : IExplorerBrowserEvents, IServiceProvider, IExplorerPaneVisibility, ICommDlgBrowser, ICommDlgBrowser2
     {
-        public int OnNavigationPending(IntPtr pidlFolder) => ShellNative.S_OK;
-        public int OnViewCreated(IntPtr psv) => ShellNative.S_OK;
+        public int OnNavigationPending(IntPtr pidlFolder)
+        {
+            host._thisPcPending = string.Equals(ShellNative.NameOf(pidlFolder, SIGDN.DesktopAbsoluteParsing), ThisPcParsingName, StringComparison.OrdinalIgnoreCase);
+            return ShellNative.S_OK;
+        }
+        public int OnViewCreated(IntPtr psv)
+        {
+            try { host.OnViewCreated(psv); } catch (Exception) { }
+            return ShellNative.S_OK;
+        }
         public int OnNavigationComplete(IntPtr pidlFolder) { host.OnNavigationComplete(pidlFolder); return ShellNative.S_OK; }
         public int OnNavigationFailed(IntPtr pidlFolder) { host.OnNavigationFailedInternal(pidlFolder); return ShellNative.S_OK; }
 
