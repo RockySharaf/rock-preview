@@ -153,6 +153,46 @@ internal sealed class ResultListView : ListView
 
     public int RowsPerPage => IsHandleCreated ? (int)Native.SendMessage(Handle, Native.LVM_GETCOUNTPERPAGE, IntPtr.Zero, IntPtr.Zero) : 0;
 
+    string _emptyText = "";
+
+    /// <summary>Gray text shown below the column headers while the list has no items, as Explorer does; empty for none.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public string EmptyText
+    {
+        get => _emptyText;
+        set
+        {
+            if (value == _emptyText) return;
+            _emptyText = value;
+            if (VirtualListSize == 0) Invalidate();
+        }
+    }
+
+    [DllImport("user32.dll")]
+    static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+    [DllImport("user32.dll")]
+    static extern bool GetUpdateRect(IntPtr hWnd, out RECT rect, bool erase);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct RECT { public int Left, Top, Right, Bottom; }
+
+    /// <summary>
+    /// Draws <see cref="EmptyText"/> over the part of the (empty) list just painted: the owner-drawn list draws nothing
+    /// there itself, and drawing outside it would draw the text twice over.
+    /// </summary>
+    void DrawEmptyText(Rectangle painted)
+    {
+        int top = 0;
+        if (HeaderHandle is var header && header != IntPtr.Zero && GetWindowRect(header, out var hr)) top = hr.Bottom - hr.Top;
+        int pad = LogicalToDeviceUnits(16);
+        var r = new Rectangle(pad, top + LogicalToDeviceUnits(20), Math.Max(0, ClientSize.Width - 2 * pad), LogicalToDeviceUnits(80));
+        using var g = CreateGraphics();
+        g.SetClip(painted);
+        TextRenderer.DrawText(g, _emptyText, Font, r, ExplorerTheme.SecondaryText,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+    }
+
     protected override void WndProc(ref Message m)
     {
         if (ShellContextMenu.HandleMenuMessage(ref m)) return;
@@ -162,6 +202,12 @@ internal sealed class ResultListView : ListView
             Point pt = lp == -1 ? new Point(-1, -1) : new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
             if (m.WParam == HeaderHandle && HeaderHandle != IntPtr.Zero) HeaderContextMenu?.Invoke(pt);
             else ItemContextMenu?.Invoke(pt);
+            return;
+        }
+        if (m.Msg == 0x000F /* WM_PAINT */ && _emptyText.Length > 0 && VirtualListSize == 0 && GetUpdateRect(Handle, out var dirty, false))
+        {
+            base.WndProc(ref m);
+            DrawEmptyText(Rectangle.FromLTRB(dirty.Left, dirty.Top, dirty.Right, dirty.Bottom));
             return;
         }
         base.WndProc(ref m);

@@ -3,12 +3,14 @@ using System.Globalization;
 using SortKey = Anything.Core.SortKey;
 using System.Text.RegularExpressions;
 using Anything.Core;
+using Anything.Core.Search;
 
 namespace Anything.Demo;
 
 /// <summary>
 /// Trivial search engine for --demo: space = AND, | = OR, ! = NOT, "quotes", * and ? wildcards,
 /// ext:a;b, file:, folder:, and the filter macros (audio:, zip:, doc:, exe:, pic:, video:).
+/// The filter is read with <see cref="QueryParser.FilterOptions"/>, like the real engine reads it.
 /// </summary>
 internal sealed class DemoSearchEngine : ISearchEngine
 {
@@ -37,6 +39,8 @@ internal sealed class DemoSearchEngine : ISearchEngine
         public Regex? Wildcard;
         public HashSet<string>? Extensions;
         public bool? Folder;
+        public CompareOptions Compare;
+        public bool WholeWord;
     }
 
     public SearchResults Search(FileIndex index, string query, SearchOptions options, SortKey sort, bool descending, CancellationToken cancellationToken)
@@ -49,12 +53,14 @@ internal sealed class DemoSearchEngine : ISearchEngine
             if (options.Regex && !string.IsNullOrWhiteSpace(query))
             {
                 regex = new Regex(query, RegexOptions.CultureInvariant | (options.MatchCase ? 0 : RegexOptions.IgnoreCase));
-                terms = Parse(options.Filter ?? "", options);
+                terms = [];
             }
             else
             {
-                terms = Parse(query + " " + (options.Filter ?? ""), options);
+                terms = Parse(query ?? "", options);
             }
+            // The app builds the filter (macros, folder scopes): Match whole words or Match case must not empty it.
+            terms.AddRange(Parse(options.Filter ?? "", QueryParser.FilterOptions));
         }
         catch (ArgumentException ex)
         {
@@ -62,7 +68,6 @@ internal sealed class DemoSearchEngine : ISearchEngine
         }
 
         var compare = CultureInfo.InvariantCulture.CompareInfo;
-        var cmp = (options.MatchCase ? CompareOptions.None : CompareOptions.IgnoreCase) | (options.MatchDiacritics ? 0 : CompareOptions.IgnoreNonSpace);
 
         index.Lock.EnterReadLock();
         try
@@ -88,7 +93,7 @@ internal sealed class DemoSearchEngine : ISearchEngine
                         {
                             string hay = a.UsePath ? (full ??= index.GetFullPath(id)) : name;
                             if (a.Wildcard is not null) { if (!a.Wildcard.IsMatch(hay)) continue; }
-                            else if (!Contains(compare, hay, a.Text, cmp, options.MatchWholeWord)) continue;
+                            else if (!Contains(compare, hay, a.Text, a.Compare, a.WholeWord)) continue;
                         }
                         any = true;
                         break;
@@ -124,6 +129,7 @@ internal sealed class DemoSearchEngine : ISearchEngine
     static List<Term> Parse(string text, SearchOptions o)
     {
         var terms = new List<Term>();
+        var cmp = (o.MatchCase ? CompareOptions.None : CompareOptions.IgnoreCase) | (o.MatchDiacritics ? 0 : CompareOptions.IgnoreNonSpace);
         foreach (var token in Tokenize(text))
         {
             var t = new Term();
@@ -132,7 +138,7 @@ internal sealed class DemoSearchEngine : ISearchEngine
             foreach (var part in tok.Split('|'))
             {
                 string p = part.Replace("\"", "");
-                var alt = new Alt();
+                var alt = new Alt { Compare = cmp, WholeWord = o.MatchWholeWord };
                 int colon = p.IndexOf(':');
                 if (colon > 0 && colon < 12 && p.IndexOf('\\') < 0)
                 {

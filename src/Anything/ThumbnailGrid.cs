@@ -20,6 +20,21 @@ internal sealed class ThumbnailGrid : Control
     readonly HashSet<string> _none = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, CancellationTokenSource> _pending = new(StringComparer.OrdinalIgnoreCase);
     int _count, _thumbSize = 160, _anchor = -1;
+    string _emptyText = "";
+
+    /// <summary>Gray text shown while there are no items ("No files in Downloads..."), as Explorer does; empty for none.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public string EmptyText
+    {
+        get => _emptyText;
+        set
+        {
+            if (value == _emptyText) return;
+            _emptyText = value;
+            if (_count == 0) Invalidate();
+        }
+    }
+
     Point _downAt;
     int _downIndex = -1;
 
@@ -141,7 +156,15 @@ internal sealed class ThumbnailGrid : Control
         var g = e.Graphics;
         g.Clear(BackColor);
         g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-        if (_count == 0) return;
+        if (_count == 0)
+        {
+            if (_emptyText.Length == 0) return;
+            int pad = LogicalToDeviceUnits(16);
+            var r = new Rectangle(pad, LogicalToDeviceUnits(24), Math.Max(0, ClientSize.Width - 2 * pad), Math.Max(0, ClientSize.Height / 2));
+            TextRenderer.DrawText(g, _emptyText, Font, r, ExplorerTheme.SecondaryText,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+            return;
+        }
 
         int cols = Columns, first = _scroll.Value * cols, last = Math.Min(_count - 1, (_scroll.Value + VisibleRows + 1) * cols - 1);
         int focused = FocusedIndex();

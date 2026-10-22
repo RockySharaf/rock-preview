@@ -1,4 +1,5 @@
 using Anything.Core;
+using Anything.Core.Indexing;
 using Anything.Explorer;
 
 namespace Anything;
@@ -21,6 +22,8 @@ internal sealed partial class MainForm
     ExplorerHost _explorer => _tab.Explorer;
     int[] _ids { get => _tab.Ids; set => _tab.Ids = value; }
     long _resultGeneration { get => _tab.ResultGeneration; set => _tab.ResultGeneration = value; }
+    FileIndex? _resultIndex { get => _tab.ResultIndex; set => _tab.ResultIndex = value; }
+    FolderListing? _listing => _tab.Listing;
     string _resultQuery { get => _tab.ResultQuery; set => _tab.ResultQuery = value; }
     SearchOptions _resultOptions { get => _tab.ResultOptions; set => _tab.ResultOptions = value; }
     string? _searchError { get => _tab.SearchError; set => _tab.SearchError = value; }
@@ -52,6 +55,20 @@ internal sealed partial class MainForm
         public string SearchText = "";
         public int[] Ids = [];
         public long ResultGeneration;
+        /// <summary>The index the Ids came from (the app's, or <see cref="Listing"/>'s): ids mean nothing in another one.</summary>
+        public FileIndex? ResultIndex;
+        /// <summary>"Every file in" folders the index doesn't have, read straight from the disk for this tab.</summary>
+        public FolderListing? Listing;
+        /// <summary>The folders' names in the index for the "every file in" search (a SUBST drive's folder under its target).</summary>
+        public List<string> ZapSearchRoots = [];
+        /// <summary>The folders on screen when the folder bar was dismissed: it stays away while they are the ones on screen.</summary>
+        public List<string>? FolderBarDismissedFor;
+        /// <summary>The disk is being checked because the index found nothing where it should have files.</summary>
+        public bool CheckingDisk;
+        /// <summary>That check ran for this "every file in" (once each, so an empty folder doesn't loop).</summary>
+        public bool DiskChecked;
+        /// <summary>Counts the checks started and forgotten: a check that finishes after a newer one started, or after a reset, is ignored.</summary>
+        public int DiskCheck;
         public string ResultQuery = "";
         public SearchOptions ResultOptions = new();
         public string? SearchError;
@@ -154,8 +171,12 @@ internal sealed partial class MainForm
         _cts?.Cancel();
         _searchSeq++;
         _searchPending = _pendingNewQuery = false;
-        if (ExplorerShown && old.Ids.Length > 0) { old.Ids = []; old.Stale = true; }
+        // Its listing changed and was about to be searched again: that is done when it comes back instead.
+        if (_listingTimer.Enabled) { _listingTimer.Stop(); old.Stale = true; }
+        // The results let go of include the index they came from (a listing's can be a whole drive).
+        if (ExplorerShown && old.Ids.Length > 0) { old.Ids = []; old.ResultIndex = null; old.Stale = true; }
         old.Explorer.Visible = false;
+        _hintDelay.Stop(); // the folder that was to stay open 3 seconds isn't the one showing now
 
         _tab = t;
         _rows.Clear();
@@ -172,7 +193,7 @@ internal sealed partial class MainForm
         SyncAddress();
         SyncNavTree();
         ApplyViewMode();
-        UpdateLeftView();
+        UpdateLeftView(); // and the folder bar and the empty text
         _tabStrip.SelectedIndex = _tabs.IndexOf(t);
         if (t.Stale && _loaded)
         {
@@ -262,6 +283,7 @@ internal sealed partial class MainForm
         if (_tabs.Count == 1) { Close(); return; }
         if (t == _tab) SelectTab(_tabs[i + 1 < _tabs.Count ? i + 1 : i - 1]);
         _tabs.RemoveAt(i);
+        DisposeListing(t);
         _tabStrip.SelectedIndex = _tabs.IndexOf(_tab);
         _tabStrip.TabsChanged();
         t.Explorer.Visible = false;

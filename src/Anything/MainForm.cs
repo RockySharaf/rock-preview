@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Anything.Core;
+using Anything.Core.Indexing;
 
 namespace Anything;
 
@@ -20,6 +21,12 @@ internal sealed partial class MainForm : Form
     readonly Label _leftOutText = new() { AutoSize = true, UseMnemonic = false, Margin = new Padding(0, 2, 6, 2) };
     readonly LinkLabel _leftOutInclude = new() { AutoSize = true, UseMnemonic = false, Margin = new Padding(0, 2, 12, 2) };
     readonly LinkLabel _leftOutKeep = new() { AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
+    readonly FlowLayoutPanel _folderBar = new(); // the files shown don't show up in searches, and why
+    readonly Label _folderText = new() { AutoSize = true, UseMnemonic = false, Margin = new Padding(0, 2, 6, 2) };
+    readonly LinkLabel _folderInclude = new() { AutoSize = true, UseMnemonic = false, Text = "Show them in searches", Margin = new Padding(0, 2, 12, 2) };
+    readonly LinkLabel _folderDrive = new() { AutoSize = true, UseMnemonic = false, Margin = new Padding(0, 2, 12, 2) };
+    readonly LinkLabel _folderSettings = new() { AutoSize = true, Text = "Settings", Margin = new Padding(0, 2, 12, 2) };
+    readonly System.Windows.Forms.Timer _listingTimer = new() { Interval = 150 };
     readonly ResultListView _list = new();
     readonly ThumbnailGrid _grid = new();
     readonly SplitContainer _split = new();
@@ -93,14 +100,17 @@ internal sealed partial class MainForm : Form
         BuildInfoBar();
         BuildUpdateBar();
         BuildLeftOutBar();
+        BuildFolderBar();
+        BuildThumbnailsHint();
         BuildList();
         BuildStatusBar();
 
         // Dock order (the Fill control first): address row on top, then the command bar, like Windows 11 File Explorer.
-        // There is no menu bar: its menus live in the command bar's "See more" (...) button, as in Explorer.
+        // There is no menu bar: its menus live under the arrow of the command bar's Settings gear (Explorer's "See more").
         BackColor = ExplorerTheme.Content;
         Controls.Add(_body);
         Controls.Add(_infoBar);
+        Controls.Add(_folderBar);
         Controls.Add(_leftOutBar);
         Controls.Add(_updateBar);
         Controls.Add(_commands);
@@ -115,6 +125,13 @@ internal sealed partial class MainForm : Form
         {
             _changeTimer.Stop();
             if (Visible && WindowState != FormWindowState.Minimized) RunSearch(SearchReason.IndexChanged);
+            else _staleWhileHidden = true;
+        };
+        _listingTimer.Tick += (_, _) =>
+        {
+            _listingTimer.Stop();
+            if (_listing == null) return;
+            if (Visible) RunSearch(SearchReason.IndexChanged);
             else _staleWhileHidden = true;
         };
         _iconTimer.Tick += (_, _) =>
@@ -247,7 +264,7 @@ internal sealed partial class MainForm : Form
     internal void UpdateLeftOutBar()
     {
         var roots = _app.LeftOutDrives;
-        bool show = roots.Count > 0;
+        bool show = roots.Count > 0 && !_folderBarShown && !FolderBarDismissedForLeftOutDrive();
         if (show)
         {
             var s = _app.Settings;
@@ -329,7 +346,7 @@ internal sealed partial class MainForm : Form
         _grid.PathAt = i => (uint)i < (uint)_ids.Length ? PathOf(_ids[i]) : null;
         _grid.NameAt = i =>
         {
-            try { return ResultsCurrent && (uint)i < (uint)_ids.Length ? _app.IndexManager.Index.Name(_ids[i]) : ""; }
+            try { return ResultsCurrent && (uint)i < (uint)_ids.Length ? _resultIndex!.Name(_ids[i]) : ""; }
             catch (IndexOutOfRangeException) { return ""; }
         };
         _grid.IsSelected = i => _list.IsItemSelected(i);
@@ -352,12 +369,16 @@ internal sealed partial class MainForm : Form
     string? PathOf(int id)
     {
         if (!ResultsCurrent) return null;
-        try { return _app.IndexManager.Index.IsAlive(id) ? _app.IndexManager.Index.GetFullPath(id) : null; }
+        var index = _resultIndex!;
+        try { return index.IsAlive(id) ? index.GetFullPath(id) : null; }
         catch (IndexOutOfRangeException) { return null; }
     }
 
-    /// <summary>False after the index compacted (renumbered ids) until the next search result arrives.</summary>
-    bool ResultsCurrent => _app.IndexManager.Index.Generation == _resultGeneration;
+    /// <summary>
+    /// Whether the ids can be read: false after their index compacted (renumbered them) until the next results arrive.
+    /// Ids are read only against the index they came from (<see cref="_resultIndex"/>): the app's, or a listing's.
+    /// </summary>
+    bool ResultsCurrent => _resultIndex is { } index && index.Generation == _resultGeneration;
 
     /// <summary>Applies a grid click/keyboard move to the list's selection (the single source of truth).</summary>
     void SelectFromGrid(int index, bool shift, bool ctrl, bool toggle)
@@ -545,8 +566,9 @@ internal sealed partial class MainForm : Form
         base.OnVisibleChanged(e);
         if (Visible && _staleWhileHidden && _loaded)
         {
-            _staleWhileHidden = false;
-            RunSearch(SearchReason.IndexChanged);
+            var reason = _tab.StaleNewQuery ? SearchReason.NewQuery : SearchReason.IndexChanged;
+            _staleWhileHidden = _tab.StaleNewQuery = false;
+            RunSearch(reason);
         }
     }
 
@@ -566,6 +588,9 @@ internal sealed partial class MainForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         _cts?.Cancel();
+        foreach (var t in _tabs) DisposeListing(t);
+        _listingTimer.Dispose();
+        DisposeThumbnailsHint();
         _changeTimer.Dispose();
         _iconTimer.Dispose();
         _previewTimer.Dispose();
@@ -840,11 +865,15 @@ internal sealed partial class MainForm : Form
         var options = CurrentOptions();
         var sort = _sort;
         bool desc = _desc;
-        var engine = _app.SearchEngine;
-        var index = _app.IndexManager.Index;
+        // "Every file in" a folder the index doesn't have comes from the tab's own listing, read from the disk.
+        var listing = _listing;
+        var engine = listing?.Engine ?? _app.SearchEngine;
+        var index = listing?.Index ?? _app.IndexManager.Index;
         long generation = index.Generation;
         var sw = Stopwatch.StartNew();
         _searchPending = true;
+        // "Every file in" with nothing typed says it is looking until the first results come in; a typed search keeps its text.
+        if (reason == SearchReason.NewQuery && _zapActive) UpdateEmptyText();
         Task.Run(() => engine.Search(index, query, options, sort, desc, cts.Token), cts.Token)
             .ContinueWith(t =>
             {
@@ -860,18 +889,18 @@ internal sealed partial class MainForm : Form
                     results = new SearchResults { Ids = [], Error = ex.Message };
                 }
                 else results = t.Result ?? SearchResults.Empty;
-                ApplyResults(results, query, options, reason, generation);
+                ApplyResults(results, query, options, reason, index, generation);
             }, CancellationToken.None, TaskContinuationOptions.None, _ui);
     }
 
-    void ApplyResults(SearchResults results, string query, SearchOptions options, SearchReason reason, long generation)
+    void ApplyResults(SearchResults results, string query, SearchOptions options, SearchReason reason, FileIndex index, long generation)
     {
         if (_pendingNewQuery) { reason = SearchReason.NewQuery; _pendingNewQuery = false; }
 
         // Remember focus/selection by id so they survive the refresh (only meaningful within one id generation).
         int focusedId = -1;
         List<int>? selectedIds = null;
-        if (_ids.Length > 0 && generation == _resultGeneration)
+        if (_ids.Length > 0 && ReferenceEquals(index, _resultIndex) && generation == _resultGeneration)
         {
             int fi = FocusedIndex();
             if (fi >= 0 && fi < _ids.Length) focusedId = _ids[fi];
@@ -884,6 +913,7 @@ internal sealed partial class MainForm : Form
         }
 
         _ids = results.Ids ?? [];
+        _resultIndex = index;
         _resultGeneration = generation;
         _rows.Clear();
         _resultQuery = query;
@@ -914,6 +944,8 @@ internal sealed partial class MainForm : Form
         if (ThumbnailMode) _grid.SetCount(_ids.Length, reset: reason == SearchReason.NewQuery);
         UpdateStatus();
         QueuePreview();
+        UpdateFolderBar(); // a search inside a folder the index doesn't have says so, and so does the empty text
+        if (_ids.Length == 0) CheckDiskForMissedFiles();
     }
 
     int FocusedIndex()
@@ -930,7 +962,7 @@ internal sealed partial class MainForm : Form
         if (!ResultsCurrent) return null; // renumbered by a compaction: show blanks until the re-search lands
         if (_rows.TryGetValue(index, out var r)) return r;
         if (_rows.Count > 3000) _rows.Clear();
-        r = Row.Build(_app.IndexManager.Index, _ids[index]);
+        r = Row.Build(_resultIndex!, _ids[index]);
         _rows[index] = r;
         return r;
     }
@@ -1008,7 +1040,7 @@ internal sealed partial class MainForm : Form
             left += $", {sel:N0} selected";
             if (sel <= 100_000 && ResultsCurrent)
             {
-                var index = _app.IndexManager.Index;
+                var index = _resultIndex!;
                 long total = 0;
                 bool any = false;
                 foreach (int i in _list.GetSelectedIndices(100_000))
@@ -1035,7 +1067,13 @@ internal sealed partial class MainForm : Form
     {
         var im = _app.IndexManager;
         string right;
-        if (im.State is IndexState.Loading or IndexState.Scanning or IndexState.Error && !string.IsNullOrEmpty(im.StatusText))
+        if (_zapActive && _listing is { State: ListingState.Reading } reading)
+            right = $"Reading {_zapLabel} ({reading.Found:N0} objects)"; // every file and folder read, before any filter
+        else if (_zapActive && _listing is { Problem: { } problem } listing && string.IsNullOrEmpty(_searchError))
+            // Said even with files on screen: read before a drive was removed or a share went away, they may be gone.
+            // Not over a search's own error (a bad regex, say), which nothing else would say.
+            right = listing.State == ListingState.Unavailable ? $"{_zapLabel} can't be read: {problem}" : $"Some of the folders can't be read: {problem}";
+        else if (im.State is IndexState.Loading or IndexState.Scanning or IndexState.Error && !string.IsNullOrEmpty(im.StatusText))
             right = im.StatusText;
         else if (!string.IsNullOrEmpty(_searchError))
             right = _searchError;

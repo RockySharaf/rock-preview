@@ -46,6 +46,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
     ScanCounter _scans = new();
     uint _planMask;
     long _lastFullPlanTicks;
+    volatile IReadOnlyList<DriveEntry> _plannedDrives = [];
     volatile IndexState _state = IndexState.Idle;
     volatile string _status = "";
     volatile RootIndexer? _scanningRoot;
@@ -77,6 +78,8 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
     public bool IsElevated { get; }
     public bool UsesService => _usesService;
     public event Action? StateChanged;
+    public event Action? DrivesChanged;
+    public IReadOnlyList<DriveEntry> PlannedDrives => _plannedDrives;
 
     /// <summary>Exceptions from background work, for diagnostics (last one wins).</summary>
     public Exception? LastError { get; private set; }
@@ -327,7 +330,8 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
             // Decide the roots and match them with what the database had. Drives are listed even when whole drives
             // aren't indexed: they tell which added folders are on a network or USB drive.
             _planMask = LetterSource();
-            var plan = IndexPlan.Plan(settings, DriveSource(), _filter);
+            var drives = DriveSource();
+            var plan = IndexPlan.Plan(settings, drives, _filter);
             _lastFullPlanTicks = Environment.TickCount64;
             _fallbackMode = false;
             _usesService = false;
@@ -365,6 +369,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
             // Every planned root holds its entries now: from here a save writes everything that was loaded.
             _loaded = true;
             MarkChanged();
+            if (PlannedWith(drives)) RaiseDrivesChanged();
 
             foreach (var root in background) StartScannedRoot(root, startup: !forceRescan);
 
@@ -592,11 +597,16 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
         lock (_roots) return _roots.Exists(r => r.Released && (r.EjectFailed || Environment.TickCount64 - r.ReleasedAtTicks > 60_000));
     }
 
-    /// <summary>Brings the roots in line with the drives there are now: new ones are scanned, gone ones dropped.</summary>
+    /// <summary>
+    /// Brings the roots in line with the drives there are now: new ones are scanned, gone ones dropped. Then, when the
+    /// drives differ from those of the last plan, <see cref="DrivesChanged"/>.
+    /// </summary>
     void Reconcile(bool drivesChanged)
     {
         var settings = _settings;
-        var plan = IndexPlan.Plan(settings, DriveSource(), _filter);
+        var drives = DriveSource();
+        var plan = IndexPlan.Plan(settings, drives, _filter);
+        bool drivesNew;
         lock (_gate)
         {
             if (_disposed || !_settled || !ReferenceEquals(settings, _settings)) return;
@@ -643,17 +653,35 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
                 }
                 else ((IIndexerHost)this).RequestRescan(r, "the eject didn't happen");
             }
-            if (drop.Count == 0 && add.Count == 0) return;
-            foreach (var r in drop) DropRoot(r);
-            foreach (var p in add)
+            if (drop.Count > 0 || add.Count > 0)
             {
-                var root = CreateRoot(p);
-                AddRoot(root);
-                if (root is FolderIndexer) StartScannedRoot(root, startup: false);
-                else RunRootTask(root, $"Scanning {root.RootPath} (new drive)", ct => ScanRoot(root, ct));
+                foreach (var r in drop) DropRoot(r);
+                foreach (var p in add)
+                {
+                    var root = CreateRoot(p);
+                    AddRoot(root);
+                    if (root is FolderIndexer) StartScannedRoot(root, startup: false);
+                    else RunRootTask(root, $"Scanning {root.RootPath} (new drive)", ct => ScanRoot(root, ct));
+                }
+                MarkChanged();
             }
-            MarkChanged();
+            // Under the gate, once the roots are in line: a restart (which plans again) can't come in between.
+            drivesNew = PlannedWith(drives);
         }
+        if (drivesNew) RaiseDrivesChanged();
+    }
+
+    /// <summary>Records the drives a plan was made with; true when they differ from the last plan's.</summary>
+    bool PlannedWith(IReadOnlyList<DriveEntry> drives)
+    {
+        if (_plannedDrives.SequenceEqual(drives)) return false;
+        _plannedDrives = [.. drives];
+        return true;
+    }
+
+    void RaiseDrivesChanged()
+    {
+        try { DrivesChanged?.Invoke(); } catch { }
     }
 
     static bool SameShape(PlannedRoot a, PlannedRoot b) => a with { Ready = b.Ready } == b;
@@ -789,6 +817,31 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
         }
         return list;
     }
+
+    /// <summary>
+    /// The root named <paramref name="rootName"/> as it is now, or null when there is none (not planned, the database
+    /// still loading, a rebuild started over, stopped). A root let go of for an eject counts as none.
+    /// </summary>
+    public RootState? StateOfRoot(string rootName)
+    {
+        ArgumentNullException.ThrowIfNull(rootName);
+        string name = RootIndexer.NormalizeRootName(rootName);
+        // Only the list lock, briefly: never the index lock or a count, which a scan or save can hold for long.
+        lock (_roots)
+        {
+            foreach (var r in _roots)
+                if (!r.Released && string.Equals(r.RootName, name, StringComparison.OrdinalIgnoreCase))
+                    return new RootState(r.Status, r.RootId >= 0, r.Complete);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// A listing that lets go of a drive being ejected as the index does, told by this manager's device notifications
+    /// (listened to from <see cref="Start"/> on).
+    /// </summary>
+    public FolderListing CreateListing(IReadOnlyList<string> folders, IndexSettings settings) =>
+        new(folders, settings, Index.RunHistory, Volatile.Read(ref _devices));
 
     // ---- IIndexerHost ----
 

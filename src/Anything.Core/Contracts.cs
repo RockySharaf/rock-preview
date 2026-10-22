@@ -13,7 +13,13 @@ public sealed record SearchOptions
     public bool MatchPath { get; init; }
     public bool MatchDiacritics { get; init; }
     public bool Regex { get; init; }
-    /// <summary>Active filter's search text (e.g. "ext:mp3;wav"), ANDed with the query; null/empty = Everything.</summary>
+    /// <summary>
+    /// Active filter's search text (e.g. "ext:mp3;wav", or a folder scope like <c>file: "C:\x\"</c>), ANDed with the query;
+    /// null/empty = Everything. The app builds it, so the toggles above don't apply to it: it is read ignoring case, with
+    /// whole words off, no regex, wildcards on and Match path off (a term with a backslash still matches the full path),
+    /// but with diacritics matched (a scope of <c>C:\cafe</c> does not take <c>C:\café</c>); see
+    /// <see cref="Search.QueryParser.FilterOptions"/>. Modifiers on its text terms (case:, ww:, ...) still apply.
+    /// </summary>
     public string? Filter { get; init; }
 }
 
@@ -53,6 +59,20 @@ public enum RootStatus : byte { Waiting, Scanning, Ready, Offline }
 /// <param name="Items">Files and folders it holds in the index, the root included.</param>
 /// <param name="Detail">Why it is offline, or the last error; null when there is nothing to say.</param>
 public sealed record IndexedRootInfo(string Path, DriveKind Kind, bool Network, string Method, RootStatus Status, int Items, string? Detail);
+
+/// <summary>Where one root the index holds stands now, without counting its items (<see cref="IIndexManager.StateOfRoot"/>).</summary>
+/// <param name="Status">Waiting, scanning, ready or offline (an offline root keeps what it had).</param>
+/// <param name="HasEntries">
+/// Its root entry is in the index: loaded from the database or added by a scan. A first scan of a folder adds entries as
+/// it goes, so while it scans they can be partial (see <paramref name="Complete"/>). False while it has none (never
+/// scanned, or never reached).
+/// </param>
+/// <param name="Complete">
+/// Its entries are a whole copy: a scan of it finished, now or before the database was saved. False while it has none,
+/// during a folder's first scan, and for a first scan cut short (saved on exit, or broken off when its drive went away),
+/// whose entries are partial.
+/// </param>
+public readonly record struct RootState(RootStatus Status, bool HasEntries, bool Complete);
 
 public sealed class IndexSettings
 {
@@ -147,4 +167,35 @@ public interface IIndexManager : IDisposable
 
     /// <summary>The indexed roots with their item counts. Walks the whole index, so call it off the UI thread.</summary>
     IReadOnlyList<IndexedRootInfo> GetRoots() => [];
+
+    /// <summary>
+    /// The indexed root named <paramref name="rootName"/> ("C:\", "D:\Data", "\\server\share"; any case, with or without
+    /// the trailing backslash), or null when the index has no such root: Settings leaves it out, its drive is being
+    /// ejected, or it isn't started or has stopped. Null is not an answer yet while <see cref="State"/> is Loading or a
+    /// rebuild has just started over (the roots are listed again then): ask again on <see cref="StateChanged"/>. Counts
+    /// nothing, so the UI thread can ask at any time.
+    /// </summary>
+    RootState? StateOfRoot(string rootName) => null;
+
+    /// <summary>
+    /// Raised on a worker thread when <see cref="PlannedDrives"/> changes: the index listed the drives and planned its
+    /// roots with them, at start or after the drives changed (a drive plugged in or removed, a network drive mapped, a
+    /// card put in a reader or a drive unlocked, which a look every 30 seconds finds). New roots are added and gone ones
+    /// dropped by then. Only when they differ from the last plan's: not for no drives at all, nor for a Rebuild with the
+    /// same ones. The first can come before a handler is added, so read <see cref="PlannedDrives"/> once after adding one.
+    /// </summary>
+    event Action? DrivesChanged { add { } remove { } }
+
+    /// <summary>
+    /// The drives the index last planned its roots with (a network drive as mapped, its server not asked), so what is
+    /// worked out from the drives matches what the index does. Empty until it has planned.
+    /// </summary>
+    IReadOnlyList<Indexing.DriveEntry> PlannedDrives => [];
+
+    /// <summary>
+    /// Folders the index doesn't hold, read from the disk into a listing of their own (<see cref="Indexing.FolderListing"/>)
+    /// whose run history follows this index's. The index manager's also lets go of a drive being ejected, as the index
+    /// does. Throws <see cref="ArgumentException"/> when no folder is left to read.
+    /// </summary>
+    Indexing.FolderListing CreateListing(IReadOnlyList<string> folders, IndexSettings settings) => new(folders, settings, Index.RunHistory);
 }

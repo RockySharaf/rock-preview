@@ -37,7 +37,10 @@ internal sealed partial class AnythingApp : ApplicationContext
     public string? HotkeyError { get; private set; }
     public bool Exiting => _exiting;
     public IReadOnlyList<MainForm> Windows => _windows;
-    /// <summary>The drives Windows had when they were last listed (at startup and when index settings change); empty until then.</summary>
+    /// <summary>
+    /// The drives Windows had when they were last listed (at startup, when index settings change, and when a fresh look
+    /// at a folder's drive found the list old); empty until then.
+    /// </summary>
     public IReadOnlyList<DriveEntry> KnownDrives { get; private set; } = [];
     /// <summary>Drives that Folders › Leave these folders out leaves out whole and that would be searched otherwise (the windows' bar).</summary>
     public IReadOnlyList<string> LeftOutDrives { get; private set; } = [];
@@ -93,6 +96,8 @@ internal sealed partial class AnythingApp : ApplicationContext
             MessageBox.Show($"Indexing could not be started.\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         SubscribeIndex();
+        // A card put in, a drive unlocked or a SUBST made: the folder bar's reasons follow the drives the index sees.
+        IndexManager.DrivesChanged += () => Post(RefreshDrives);
 
         UpdateTray();
         RegisterHotkey();
@@ -674,8 +679,10 @@ internal sealed partial class AnythingApp : ApplicationContext
         }
         UpdateTray();
         RegisterHotkey();
+        _coverage.Clear();
         FindLeftOutDrives();
         foreach (var w in _windows) w.ApplyUiSettings();
+        foreach (var w in _windows) w.UpdateFolderBar();
         if (!IsDemo)
         {
             if (!Settings.CheckForUpdates) { if (NewVersion is not null) SetNewVersion(null); }
@@ -711,8 +718,9 @@ internal sealed partial class AnythingApp : ApplicationContext
             {
                 if (seq != _drivesSeq || _exiting) return; // a newer listing is on its way
                 KnownDrives = t.Result;
+                _coverage.Clear();
                 FindLeftOutDrives();
-                foreach (var w in _windows) w.UpdateLeftOutBar();
+                foreach (var w in _windows) w.UpdateFolderBar(); // and the left-out drive bar
             });
         }, TaskScheduler.Default);
     }
@@ -760,8 +768,100 @@ internal sealed partial class AnythingApp : ApplicationContext
     {
         foreach (var root in roots) Settings.KeepDriveLeftOut(root);
         Settings.Save();
+        _coverage.Clear();
         FindLeftOutDrives();
-        foreach (var w in _windows) w.UpdateLeftOutBar();
+        foreach (var w in _windows) w.UpdateFolderBar();
+    }
+
+    // ---- folders the index doesn't have ---------------------------------------------------------
+
+    readonly Dictionary<string, FolderCoverage> _coverage = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether the index holds <paramref name="folder"/> and, if not, why: worked out from the settings, the drives
+    /// listed and the attributes of the folder and its parents (a junction, a hidden folder), never anything on the
+    /// network, so the UI thread can ask. Remembered until the settings or the drives change; <paramref name="fresh"/>
+    /// looks again, at the folder's own local drive too (the drive list is only as new as its last listing). Null in the
+    /// demo, whose sample index ignores the settings.
+    /// </summary>
+    public FolderCoverage? CoverageOf(string folder, bool fresh = false)
+    {
+        if (IsDemo) return null;
+        if (!fresh && _coverage.TryGetValue(folder, out var known)) return known;
+        var ix = Settings.Index;
+        var drives = DrivesFor(folder, fresh);
+        var (attributes, links) = IndexPlan.ChainReaders(drives, folder);
+        var coverage = IndexPlan.Coverage(ix, drives, folder, new ExclusionFilter(ix), attributes, links);
+        if (_coverage.Count >= 256) _coverage.Clear();
+        return _coverage[folder] = coverage;
+    }
+
+    /// <summary>"C:\" for any spelling of a drive's root (c:, C:\., \\?\C:\).</summary>
+    static string DriveRootOf(string root)
+    {
+        string r = root.StartsWith(@"\\?\", StringComparison.Ordinal) || root.StartsWith(@"\\.\", StringComparison.Ordinal) ? root[4..] : root;
+        return char.ToUpperInvariant(r[0]) + @":\";
+    }
+
+    /// <summary>A drive's root (not a SUBST letter, which stands for a folder): it has its own switches and entry.</summary>
+    public bool IsWholeDrive(string folder) => IndexPlan.IsWholeDrive(DrivesFor(folder), folder);
+
+    /// <summary>
+    /// The drives listed, plus the folder's own drive letter when no listing has seen it yet (taken as ready).
+    /// <paramref name="fresh"/>: a local letter the list lacks, or has as not ready, is looked at again (a card put in, a
+    /// drive unlocked or a SUBST made since it was listed; a network one never is, as that can wait on the server). When
+    /// that look differs from the list, every drive is listed again in the background.
+    /// </summary>
+    List<DriveEntry> DrivesFor(string folder, bool fresh = false)
+    {
+        var drives = KnownDrives.ToList();
+        if (folder.Length >= 2 && folder[1] == ':' && char.IsAsciiLetter(folder[0]))
+        {
+            string root = char.ToUpperInvariant(folder[0]) + @":\";
+            int i = drives.FindIndex(d => string.Equals(d.Root, root, StringComparison.OrdinalIgnoreCase));
+            if (i >= 0 && (!fresh || drives[i].IsReady)) return drives;
+            var kind = i >= 0 ? drives[i].Kind : Drives.KindOf(root);
+            DriveEntry? now = null;
+            if (fresh && kind != DriveKind.Network)
+            {
+                try { now = Drives.Describe(root); }
+                catch (Exception) { /* gone while we looked: as listed */ }
+            }
+            // The list is old: every drive is listed again, for the bars and the lookups that don't look again.
+            if (now != null && (i < 0 || now.IsReady != drives[i].IsReady || now.Kind != drives[i].Kind || now.SubstTarget != drives[i].SubstTarget))
+                RefreshDrives();
+            if (i >= 0) { if (now != null) drives[i] = now; }
+            else drives.Add(now ?? new DriveEntry(root, kind, "", "", true, null, null));
+        }
+        return drives;
+    }
+
+    /// <summary>What kind of drive <paramref name="root"/> is, as the drive list has it (a share is a network drive): never asks a share.</summary>
+    public DriveKind KindOfDrive(string root) => root.StartsWith(@"\\", StringComparison.Ordinal) ? DriveKind.Network
+        : DrivesFor(root).Find(d => string.Equals(d.Root, root, StringComparison.OrdinalIgnoreCase))?.Kind ?? DriveKind.Unknown;
+
+    /// <summary>
+    /// The folder bar's "Show them in searches": takes the folders off the list of folders to leave out, or adds them to
+    /// Also search these folders, then indexes them. A whole drive comes off the list the way the left-out drive bar does
+    /// it. False when nothing could change (a drive switch is the reason: that is in Settings › Indexing).
+    /// </summary>
+    public bool ShowFolderInSearches(IEnumerable<string> folders)
+    {
+        if (IsDemo) return false;
+        bool changed = false;
+        foreach (var folder in folders)
+        {
+            var drives = DrivesFor(folder);
+            var (attributes, links) = IndexPlan.ChainReaders(drives, folder);
+            changed |= IndexPlan.SearchFolder(Settings.Index, drives, folder, attributes, links) switch
+            {
+                SearchFolderResult.Added or SearchFolderResult.Unexcluded => true,
+                SearchFolderResult.DriveRoot => Settings.IncludeDrive(IndexPlan.IsWholeDrive(drives, folder) ? DriveRootOf(folder) : folder),
+                _ => false,
+            };
+        }
+        if (changed) ApplySettings(indexChanged: true);
+        return changed;
     }
 
     /// <summary>Discards the index and scans everything again (Rebuild now, and after turning on instant indexing).</summary>

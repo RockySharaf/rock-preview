@@ -8,7 +8,7 @@ internal sealed partial class MainForm
     ToolStripMenuItem _miMatchCase = null!, _miWholeWord = null!, _miMatchPath = null!, _miDiacritics = null!, _miRegex = null!;
     ToolStripMenuItem _miFiltersBar = null!, _miStatusBar = null!, _miOnTop = null!, _miRunAsAdmin = null!, _miBookmarks = null!;
     ToolStripMenuItem _miPreview = null!;
-    ToolStripMenuItem _miNavPane = null!, _miZap = null!, _miZapThumbs = null!, _miZapDeep = null!;
+    ToolStripMenuItem _miNavPane = null!, _miZap = null!, _miZapThumbs = null!, _miZapDeep = null!, _miEveryday = null!;
     readonly List<(ToolStripMenuItem Item, string Theme)> _miThemes = [];
     readonly List<(ToolStripMenuItem Item, int Size)> _miViewModes = [];
     ToolStripMenuItem _miAscending = null!, _miDescending = null!;
@@ -118,6 +118,7 @@ internal sealed partial class MainForm
         _miZapThumbs = Item("&Thumbnails", ToggleThumbnails, Keys.Control | Keys.Shift | Keys.X);
         _miZap = Item("Every File Here as a &List", () => ToggleZap(thumbs: false), Keys.Control | Keys.Shift | Keys.Z);
         _miZapDeep = Item("&Include Subfolders", ToggleZapDepth);
+        _miEveryday = Item("&Everyday Files Only", ToggleEverydayFiles);
         browse.DropDownItems.AddRange(
         [
             Item("&Back", GoBack, Keys.Alt | Keys.Left, "Alt+Left"),
@@ -129,7 +130,7 @@ internal sealed partial class MainForm
             Item("This &PC", () => OpenFolder(ThisPcLocation)),
             Item("&Address Bar", FocusAddress, Keys.Control | Keys.L, "Ctrl+L"),
             new ToolStripSeparator(),
-            _miZapThumbs, _miZap, _miZapDeep,
+            _miZapThumbs, _miZap, _miZapDeep, _miEveryday,
             new ToolStripSeparator(),
             _miNavPane,
         ]);
@@ -188,8 +189,8 @@ internal sealed partial class MainForm
             Item("&About Ultimate File Explorer...", ShowAbout),
         ]);
 
-        // Explorer has no menu bar: its "See more" (...) menu holds the selection commands and Properties. Settings come
-        // first here, then the full menus underneath.
+        // Explorer has no menu bar: its "See more" (...) menu holds the selection commands and Properties. Here that menu
+        // is under the Settings gear's arrow, with Settings first, then the full menus underneath.
         var selectAll = Item("Select all", SelectAllAny, display: "Ctrl+A");
         var selectNone = Item("Select none", SelectNoneAny);
         var invert = Item("Invert selection", InvertSelectionAny);
@@ -246,6 +247,7 @@ internal sealed partial class MainForm
         _miZap.Checked = _zapActive && !_zapThumbs;
         _miZapThumbs.Checked = !ExplorerShown && ThumbnailMode;
         _miZapDeep.Checked = _app.Settings.ZapIncludeSubfolders;
+        _miEveryday.Checked = _app.Settings.EverydayFilesOnly;
         foreach (var (item, t) in _miThemes) item.Checked = t == _app.Settings.Theme;
         int thumb = _app.Settings.ThumbnailSize;
         foreach (var (item, size) in _miViewModes) item.Checked = size == thumb || (size == 160 && thumb > 0 && !_miViewModes.Any(v => v.Size == thumb));
@@ -303,6 +305,8 @@ internal sealed partial class MainForm
     void RefreshResults()
     {
         if (ExplorerShown) { _explorer.RefreshView(); return; }
+        _listing?.Rescan(); // "every file in" read from the disk: read it again
+        ResetDiskCheck(_tab);
         _rows.Clear();
         _list.Invalidate();
         RunSearch(SearchReason.Refresh);
@@ -463,9 +467,9 @@ internal sealed partial class MainForm
 
     List<string> SelectedPaths(int max)
     {
-        var index = _app.IndexManager.Index;
         var list = new List<string>();
         if (!ResultsCurrent) return list; // ids were renumbered by a compaction; a refreshed search is on its way
+        var index = _resultIndex!;
         foreach (int i in _list.GetSelectedIndices(max))
         {
             if (i >= _ids.Length) continue;
@@ -732,11 +736,13 @@ internal sealed partial class MainForm
         int type = dlg.FilterIndex - 1;
         _app.Settings.LastExportType = type;
         var columns = _list.Columns.Cast<ColumnHeader>().OrderBy(c => c.DisplayIndex).Select(c => (ColumnDef)c.Tag!).ToList();
+        // The ids are read in the index they came from; renumbered meanwhile (a compaction), there is nothing to write yet.
         var ids = ResultsCurrent ? _ids : [];
+        var index = _resultIndex ?? _app.IndexManager.Index;
         Cursor = Cursors.WaitCursor;
         try
         {
-            await ResultExporter.ExportAsync(dlg.FileName, (ExportFormat)type, _app.IndexManager.Index, ids, columns, ContentExportText(), _resultGeneration);
+            await ResultExporter.ExportAsync(dlg.FileName, (ExportFormat)type, index, ids, columns, ContentExportText(), _resultGeneration);
         }
         catch (Exception ex)
         {

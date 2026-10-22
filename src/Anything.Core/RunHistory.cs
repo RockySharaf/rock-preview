@@ -76,6 +76,34 @@ public sealed class RunHistory
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// Makes this history the same as <paramref name="other"/>'s, marking only the paths that differ (a copy kept for
+    /// another index stays current with it cheaply). Lock order: <paramref name="other"/>'s, then this one's.
+    /// </summary>
+    public void CopyFrom(RunHistory other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        if (ReferenceEquals(other, this)) return;
+        bool changed = false;
+        lock (other._gate)
+        lock (_gate)
+        {
+            foreach (var path in _byPath.Keys.Where(p => !other._byPath.ContainsKey(p)).ToList())
+            {
+                _byPath.Remove(path);
+                Dirty(path);
+                changed = true;
+            }
+            foreach (var (path, e) in other._byPath)
+            {
+                if (_byPath.TryGetValue(path, out var had) && had == e) continue;
+                Put(path, e);
+                changed = true;
+            }
+        }
+        if (changed) Changed?.Invoke();
+    }
+
     /// <summary>Every entry, most runs first.</summary>
     public List<(string Path, Entry Entry)> Entries()
     {

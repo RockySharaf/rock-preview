@@ -1,4 +1,5 @@
 using Anything.Core;
+using Anything.Core.Search;
 using Anything.Interop;
 using Anything.Explorer;
 
@@ -7,7 +8,8 @@ namespace Anything;
 /// <summary>
 /// Browsing: the real Windows Explorer view (ExplorerBrowser) merged with Rock Preview's instant search.
 /// Empty search box + a folder open = Explorer; typing = instant results, inside the folders selected in the view
-/// (or everywhere when none are); Thumbnails on a folder = every file under it, straight from the index (internally "ZAP").
+/// (or everywhere when none are); Thumbnails on a folder = every file under it, from the index, or from the disk when
+/// the index doesn't have the folder (internally "ZAP"; see MainForm.Listing.cs).
 /// </summary>
 internal sealed partial class MainForm
 {
@@ -17,11 +19,14 @@ internal sealed partial class MainForm
     readonly TextBox _address = new();         // the address bar's edit mode
     BreadcrumbBar _breadcrumb = null!;
     readonly ToolStripDropDownButton _cmdNew = new("New"), _cmdSort = new("Sort"), _cmdView = new("View"),
-                                     _cmdSearchOptions = new("Search options"), _cmdMore = new();
+                                     _cmdSearchOptions = new("Search options");
+    readonly ToolStripSplitButton _cmdMore = new(); // a gear: Settings; its arrow, the rest (Explorer's "See more")
     readonly ToolStripButton _cmdCut = new(), _cmdCopy = new(), _cmdPaste = new(), _cmdRename = new(), _cmdShare = new(),
                              _cmdDelete = new(), _cmdCloseSearch = new("Close search"), _cmdPreview = new("Preview");
     readonly ToolStripSplitButton _thumbsButton = new("Thumbnails");
-    readonly ToolStripMenuItem _zapThumbItem = new(), _zapListItem = new(), _zapDeepItem = new("Include subfolders");
+    readonly ToolStripMenuItem _zapThumbItem = new(), _zapListItem = new(), _zapDeepItem = new("Include subfolders"),
+                               _zapEverydayItem = new("Everyday files only");
+    readonly ToolStripButton _cmdEveryday = new("Everyday files"); // shown with "every file in": hides code and system files
     readonly ToolStripSeparator _sepSearch = new();
     readonly CheckBox _scope = new();          // not shown: "search this folder only" state (Search options menu)
     readonly SplitContainer _body = new();     // navigation pane | files + preview
@@ -43,7 +48,8 @@ internal sealed partial class MainForm
 
     void BuildBrowseBar()
     {
-        // Command bar, like Windows 11 File Explorer's: New | Cut Copy Paste Rename Share Delete | Sort View | Thumbnails | ...
+        // Command bar, like Windows 11 File Explorer's: New | Cut Copy Paste Rename Share Delete | Sort View | Thumbnails |
+        // Settings, whose arrow has Explorer's "See more" (...) commands.
         _commands.Dock = DockStyle.Top;
         _commands.BackColor = ExplorerTheme.Content;
         _commands.CanOverflow = true;
@@ -71,11 +77,12 @@ internal sealed partial class MainForm
         Cmd(_cmdSearchOptions, ExplorerIcons.SearchOptions, ExplorerTheme.GFilter, "Search options", "Where and how to search", null);
         Cmd(_cmdCloseSearch, ExplorerIcons.CloseSearch, ExplorerTheme.GClose, "Close search", "Close search (Esc)", CloseSearch);
         Cmd(_thumbsButton, ExplorerIcons.IconsSmall, ExplorerTheme.GGrid, "Thumbnails", "", null);
-        Cmd(_cmdMore, null, ExplorerTheme.GMore, null, "See more", null);
+        Cmd(_cmdEveryday, ExplorerIcons.AddressGallery, ExplorerTheme.GPhoto, "Everyday files", "", ToggleEverydayFiles);
+        Cmd(_cmdMore, null, ExplorerTheme.GSettings, null, "Settings (Ctrl+P). More commands under the arrow", null);
         Cmd(_cmdPreview, ExplorerIcons.DetailsPane, ExplorerTheme.GPane, "Preview", "Show or hide the preview pane (Alt+P)", TogglePreview);
         _cmdPreview.Alignment = ToolStripItemAlignment.Right;
-        _cmdMore.ShowDropDownArrow = false;
-        _cmdMore.AccessibleName = "See more";
+        _cmdMore.AccessibleName = "Settings";
+        _cmdMore.ButtonClick += (_, _) => _app.ShowSettings(this);
 
         // "New": Explorer's own New menu (Folder, Shortcut, Text Document...) for the open folder.
         _cmdNew.DropDownItems.Add(new ToolStripMenuItem("(new)"));
@@ -94,8 +101,9 @@ internal sealed partial class MainForm
         _zapThumbItem.Click += (_, _) => ToggleZap(thumbs: true);
         _zapListItem.Click += (_, _) => ToggleZap(thumbs: false);
         _zapDeepItem.Click += (_, _) => ToggleZapDepth();
+        _zapEverydayItem.Click += (_, _) => ToggleEverydayFiles();
         _zapListItem.ShortcutKeyDisplayString = "Ctrl+Shift+Z";
-        _thumbsButton.DropDownItems.AddRange([_zapThumbItem, _zapListItem, new ToolStripSeparator(), _zapDeepItem]);
+        _thumbsButton.DropDownItems.AddRange([_zapThumbItem, _zapListItem, new ToolStripSeparator(), _zapDeepItem, _zapEverydayItem]);
         _thumbsButton.DropDownOpening += (_, _) =>
         {
             string where = _zapActive ? _zapLabel : ZapTargets() is { Count: > 0 } roots ? ZapLabel(roots) : "this folder";
@@ -105,11 +113,12 @@ internal sealed partial class MainForm
             _zapThumbItem.Checked = _zapActive && _zapThumbs;
             _zapListItem.Checked = _zapActive && !_zapThumbs;
             _zapDeepItem.Checked = _app.Settings.ZapIncludeSubfolders;
+            _zapEverydayItem.Checked = _app.Settings.EverydayFilesOnly;
         };
 
         _commands.Items.AddRange([_cmdNew, new ToolStripSeparator(), _cmdCut, _cmdCopy, _cmdPaste, _cmdRename, _cmdShare, _cmdDelete,
                                   new ToolStripSeparator(), _cmdSort, _cmdView, _sepSearch, _cmdSearchOptions, _cmdCloseSearch,
-                                  new ToolStripSeparator(), _thumbsButton, new ToolStripSeparator(), _cmdMore, _cmdPreview]);
+                                  new ToolStripSeparator(), _thumbsButton, _cmdEveryday, new ToolStripSeparator(), _cmdMore, _cmdPreview]);
 
         // Navigation buttons left of the address bar.
         _nav.Dock = DockStyle.Left;
@@ -414,6 +423,12 @@ internal sealed partial class MainForm
             : thumbs ? (_zapActive ? "Back to the folder (Ctrl+Shift+X)" : "Back to the list (Ctrl+Shift+X)")
             : "Show these files as thumbnails (Ctrl+Shift+X)";
         _thumbsButton.Invalidate();
+        // Only with "every file in", where it applies. Available, not Visible: Visible reads false until the bar shows.
+        if (_cmdEveryday.Available != _zapActive) _cmdEveryday.Available = _zapActive;
+        _cmdEveryday.Checked = _app.Settings.EverydayFilesOnly;
+        _cmdEveryday.ToolTipText = _app.Settings.EverydayFilesOnly
+            ? "Showing only pictures, videos, music, documents and design files. Click to show every file (code, settings, system files...)"
+            : "Showing every file. Click to show only pictures, videos, music, documents and design files";
         _cmdPreview.Checked = _app.Settings.PreviewVisible;
     }
 
@@ -530,6 +545,9 @@ internal sealed partial class MainForm
         UpdateTitle();
         QueuePreview();
         QueueStatusUpdate();
+        // Every way in or out of the folder view comes here, also those that clear the search box without a search.
+        DropListingResults();
+        UpdateFolderBar();
     }
 
     void SyncAddress()
@@ -577,6 +595,7 @@ internal sealed partial class MainForm
         SyncNavTree();
         UpdateLeftView();
         if (_search.TextLength > 0) RunSearch(SearchReason.NewQuery); // re-scope a typed search to the new folder
+        QueueThumbnailsHint();
     }
 
     /// <summary>
@@ -736,6 +755,7 @@ internal sealed partial class MainForm
     /// </summary>
     void ToggleThumbnails()
     {
+        ThumbnailsUsed();
         if (ExplorerShown) { ToggleZap(thumbs: true); return; }
         if (_zapActive)
         {
@@ -769,6 +789,7 @@ internal sealed partial class MainForm
 
     void ToggleZap(bool thumbs)
     {
+        ThumbnailsUsed();
         if (_zapActive && _zapThumbs == thumbs) { ExitZap(rerun: true); return; }
         if (_zapActive)
         {
@@ -798,6 +819,7 @@ internal sealed partial class MainForm
         }
         _zapActive = true;
         _zapThumbs = thumbs;
+        ChooseZapSource(roots); // the index, or the disk when the index doesn't have the folders
         if (thumbs) _app.Tried(GettingStarted.Thumbnails);
         _suppress = true;
         _search.Clear(); // the search box now filters inside the zapped files
@@ -814,6 +836,10 @@ internal sealed partial class MainForm
         _zapActive = false;
         _zapThumbs = false;
         _zapRoots = [];
+        DisposeListing(_tab);
+        _tab.ZapSearchRoots = [];
+        _tab.FolderBarDismissedFor = null;
+        ResetDiskCheck(_tab);
         // Back to the search's own order, unless it was changed while every file showed.
         if (_sortFromFolder is { } folderSort && (_sort, _desc) == folderSort && _sortBeforeZap is { } before)
         {
@@ -829,35 +855,46 @@ internal sealed partial class MainForm
             _suppress = false;
         }
         ApplyViewMode();
-        UpdateLeftView();
+        UpdateLeftView(); // and the folder bar and the empty text
         if (rerun) RunSearch(SearchReason.NewQuery);
+    }
+
+    /// <summary>"Everyday files": "every file in" leaves out code, settings, program and system files, or shows them again.</summary>
+    void ToggleEverydayFiles()
+    {
+        _app.Settings.EverydayFilesOnly = !_app.Settings.EverydayFilesOnly;
+        _app.Settings.Save();
+        foreach (var w in _app.Windows) w.OnZapOptionsChanged();
     }
 
     void ToggleZapDepth()
     {
         _app.Settings.ZapIncludeSubfolders = !_app.Settings.ZapIncludeSubfolders;
+        _app.Settings.Save();
         _app.Tried(GettingStarted.Subfolders);
-        SyncMenus();
-        if (_zapActive) RunSearch(SearchReason.NewQuery);
-        QueueStatusUpdate();
+        foreach (var w in _app.Windows) w.OnZapOptionsChanged();
     }
 
     /// <summary>Every file under the roots (files only), or only those directly inside them.</summary>
     string ZapFilter()
     {
         bool deep = _app.Settings.ZapIncludeSubfolders;
-        var terms = _zapRoots.Select(r =>
+        // The names the index (or the tab's listing) has the folders under: a SUBST drive's folder is under its target.
+        var roots = _tab.ZapSearchRoots.Count > 0 ? _tab.ZapSearchRoots : _zapRoots;
+        var terms = roots.Select(r =>
         {
             string folder = r.TrimEnd('\\');
             return deep ? Quote(WithSlash(r)) : "parent:" + Quote(folder.Length == 2 ? folder + "\\" : folder);
         }).ToList();
         string scope = terms.Count == 1 ? terms[0] : "<" + string.Join(" | ", terms) + ">";
-        return "file: " + scope;
+        return "file: " + scope + (_app.Settings.EverydayFilesOnly ? " " + EverydayFiles.Filter : "");
     }
 
     string ZapStatus()
     {
         string where = _app.Settings.ZapIncludeSubfolders ? "including subfolders" : "this folder only";
+        if (_app.Settings.EverydayFilesOnly) where += ", everyday files only";
+        if (_listing != null) where += ", read from the disk";
         return $"Every file in {_zapLabel}: {_ids.Length:N0} ({where})";
     }
 }

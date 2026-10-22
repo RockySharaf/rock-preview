@@ -10,6 +10,7 @@ namespace Anything.Tests.Indexing;
 /// service close the volume at once, mid-read, and the app must hear back only once the volume is closed, so the
 /// drive's handles are gone when Windows checks. A test pipe and a fake volume stand in for the service's real ones.
 /// </summary>
+[Collection(TimingCollection.Name)]
 public sealed class VolumeServiceStopTests
 {
     /// <summary>
