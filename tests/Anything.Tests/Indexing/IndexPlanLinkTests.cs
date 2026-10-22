@@ -318,7 +318,8 @@ public sealed class IndexPlanLinkTests
         List<string> Names(IndexSettings s, string folder, Disk d)
         {
             var (chain, links) = IndexPlan.ChainReaders(drives, folder, d.Attributes, d.Target);
-            return IndexPlan.ListingNames(drives, IndexPlan.Coverage(s, drives, folder, attributesOf: chain, linkTargetOf: links), chain, links);
+            return IndexPlan.ListingNames(s, drives, IndexPlan.Coverage(s, drives, folder, attributesOf: chain, linkTargetOf: links),
+                attributesOf: chain, linkTargetOf: links);
         }
 
         var c = Coverage(settings, drives, Projects, disk);
@@ -348,6 +349,42 @@ public sealed class IndexPlanLinkTests
         var on = new IndexSettings { SkipDrives = [@"E:\"] };
         Assert.Equal(CoverageReason.BehindLink, Coverage(on, drives, @"C:\A\C", twice).Reason);
         Assert.Equal([@"T:\Real", @"E:\Work\Real"], Names(on, @"C:\A\C", twice));
-        Assert.Empty(IndexPlan.ListingNames(drives, IndexPlan.Coverage(on, drives, @"relative\path", attributesOf: disk.Attributes, linkTargetOf: disk.Target)));
+        Assert.Empty(IndexPlan.ListingNames(on, drives, IndexPlan.Coverage(on, drives, @"relative\path", attributesOf: disk.Attributes, linkTargetOf: disk.Target)));
+    }
+
+    [Fact]
+    public void A_listing_of_a_folder_behind_a_link_is_named_as_the_way_a_searched_folder_lies_nearest_below_has_it()
+    {
+        // Documents\Projects is a junction to D:\Projects and D: is off.
+        var drives = new[] { Fixed(@"C:\"), Fixed(@"D:\"), Fixed(@"E:\"), Subst(@"S:\", @"C:\Users\Me"), Subst(@"T:\", @"E:\Work") };
+        const string Projects = @"C:\Users\Me\Documents\Projects";
+        var disk = On((Projects, @"D:\Projects"));
+        // As the app finds them: the coverage and the names in one look, with the chain readers.
+        List<string> Names(IndexSettings s, string folder, Disk d)
+        {
+            var (chain, links) = IndexPlan.ChainReaders(drives, folder, d.Attributes, d.Target);
+            var c = IndexPlan.Coverage(s, drives, folder, attributesOf: chain, linkTargetOf: links);
+            Assert.Equal(CoverageReason.BehindLink, c.Reason);
+            return IndexPlan.ListingNames(s, drives, c, attributesOf: chain, linkTargetOf: links);
+        }
+        static IndexSettings Searching(params string[] folders) => new() { SkipDrives = [@"D:\"], Folders = [.. folders] };
+
+        // Picked by browsing through the junction, a folder is searched as C: names it (C:'s index stops at the junction,
+        // so it is a root of its own), and a listing of the junction finds its files' words that way: its name in the index
+        // first, then every name, as for any folder. Picked through a SUBST letter of C:, the same.
+        Assert.Equal([Projects, @"D:\Projects"], Names(Searching(Projects + @"\Active"), Projects, disk));
+        Assert.Equal([Projects, @"S:\Documents\Projects", @"D:\Projects"], Names(Searching(Projects + @"\Active"), @"S:\Documents\Projects", disk));
+        Assert.Equal([Projects, @"D:\Projects"], Names(Searching(@"S:\Documents\Projects\Active"), Projects, disk));
+
+        // Searched on both sides of the junction: the side whose folder is nearer, as it holds more of the listing; where
+        // the junction points on a tie.
+        Assert.Equal([@"D:\Projects"], Names(Searching(Projects + @"\Active\Old", @"D:\Projects\Active"), Projects, disk));
+        Assert.Equal([Projects, @"D:\Projects"], Names(Searching(Projects + @"\Active", @"D:\Projects\Active\Old"), Projects, disk));
+        Assert.Equal([@"D:\Projects"], Names(Searching(Projects + @"\Active", @"D:\Projects\Old"), Projects, disk));
+
+        // A link to a folder behind another link, searched below the middle step: only as that step has it. The name on C:
+        // before it would place the files on C:, whose index stops at the first link.
+        var twice = On((@"C:\A", @"D:\B"), (@"D:\B\C", @"T:\Real"));
+        Assert.Equal([@"D:\B\C"], Names(new IndexSettings { SkipDrives = [@"E:\"], Folders = [@"D:\B\C\Sub"] }, @"C:\A\C", twice));
     }
 }

@@ -191,8 +191,9 @@ internal sealed partial class MainForm
     /// <summary>
     /// The names a listing of these folders finds their files' words under (IndexPlan.ListingNames): each folder's name in
     /// the index first (IndexedAs), then every other name it has, so roots spelled either way are reached (Z:\Music picked
-    /// in Settings, \\nas\share\Docs shown in searches by its share); a folder behind a link only where the link points, as
-    /// its own name is in a root that stops at the link. For a new listing, CoverageOf remembers the fresh look
+    /// in Settings, \\nas\share\Docs shown in searches by its share); a folder behind a link only as the step of its way
+    /// through the link a searched folder lies nearest below has it, as a name in a root that stops at the link would place
+    /// its files where no words are. For a new listing, CoverageOf remembers the fresh look
     /// ChooseZapSource took, names and all, so nothing is read again here.
     /// </summary>
     Dictionary<string, IReadOnlyList<string>> ListingNames(List<string> roots)

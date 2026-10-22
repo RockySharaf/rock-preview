@@ -796,8 +796,9 @@ internal sealed partial class AnythingApp : ApplicationContext
 
     /// <summary>
     /// The names a folder listing of <paramref name="folder"/> finds its files' words under (<see cref="IndexPlan.ListingNames"/>:
-    /// its name in the index, then its own, what its drive shows, where the links on its way point; only where they point
-    /// when it is behind a link), found in the same look as <see cref="CoverageOf"/>'s and remembered with it. Empty in the demo.
+    /// its name in the index, then its own, what its drive shows, where the links on its way point; behind a link, only as
+    /// the step of that way a searched folder lies nearest below has it), found in the same look as <see cref="CoverageOf"/>'s
+    /// and remembered with it. Empty in the demo.
     /// </summary>
     public IReadOnlyList<string> ListingNamesOf(string folder) => Look(folder, fresh: false)?.Names ?? [];
 
@@ -824,8 +825,9 @@ internal sealed partial class AnythingApp : ApplicationContext
     {
         var ix = Settings.Index;
         var (attributes, links) = IndexPlan.ChainReaders(drives, folder);
-        var coverage = IndexPlan.Coverage(ix, drives, folder, new ExclusionFilter(ix), attributes, links);
-        return (coverage, IndexPlan.ListingNames(drives, coverage, attributes, links));
+        var filter = new ExclusionFilter(ix);
+        var coverage = IndexPlan.Coverage(ix, drives, folder, filter, attributes, links);
+        return (coverage, IndexPlan.ListingNames(ix, drives, coverage, filter, attributes, links));
     }
 
     /// <summary>"C:\" for any spelling of a drive's root (c:, C:\., \\?\C:\).</summary>

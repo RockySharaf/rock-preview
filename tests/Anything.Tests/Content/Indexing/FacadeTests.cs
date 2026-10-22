@@ -257,7 +257,10 @@ public class FacadeTests
         Dictionary<string, IReadOnlyList<string>> NamesUnder(IndexSettings names, Func<string, string?> target)
         {
             var c = IndexPlan.Coverage(names, drives, @"C:\Games\Big", attributesOf: Attributes, linkTargetOf: target);
-            return new(StringComparer.OrdinalIgnoreCase) { [@"C:\Games\Big"] = IndexPlan.ListingNames(drives, c, Attributes, target) };
+            return new(StringComparer.OrdinalIgnoreCase)
+            {
+                [@"C:\Games\Big"] = IndexPlan.ListingNames(names, drives, c, attributesOf: Attributes, linkTargetOf: target),
+            };
         }
         var listing = new FileIndex();
         int save = Listed(h, listing, listing.AddRoot(@"C:\Games\Big"), @"D:\Games\Big\save.pdf");
@@ -288,8 +291,8 @@ public class FacadeTests
         static bool IsLink(string p) => string.Equals(p.TrimEnd('\\'), @"C:\Users\Me\Projects", StringComparison.OrdinalIgnoreCase);
         FileAttributes? Attributes(string p) => IsLink(p) ? FileAttributes.Directory | FileAttributes.ReparsePoint : FileAttributes.Directory;
         string? Target(string p) => IsLink(p) ? @"D:\Projects" : null;
-        var coverage = IndexPlan.Coverage(new IndexSettings { SkipDrives = [@"D:\"], Folders = [@"D:\Projects\Active"] }, drives, @"C:\Users\Me\Projects",
-            attributesOf: Attributes, linkTargetOf: Target);
+        var index = new IndexSettings { SkipDrives = [@"D:\"], Folders = [@"D:\Projects\Active"] };
+        var coverage = IndexPlan.Coverage(index, drives, @"C:\Users\Me\Projects", attributesOf: Attributes, linkTargetOf: Target);
         Assert.Equal(CoverageReason.BehindLink, coverage.Reason);
         // A listing of the junction, shared under these names.
         (FileIndex Listing, int Plan) Listing(IReadOnlyList<string> names)
@@ -301,7 +304,7 @@ public class FacadeTests
             return (listing, plan);
         }
         // Named as StartListing names it: only where the junction points, so the root below there is looked into.
-        var (listing, plan) = Listing(IndexPlan.ListingNames(drives, coverage, Attributes, Target));
+        var (listing, plan) = Listing(IndexPlan.ListingNames(index, drives, coverage, attributesOf: Attributes, linkTargetOf: Target));
         Assert.Equal(plan, BoundIn(listing, @"D:\Projects\Active\plan.pdf"));
         Assert.Equal(@"D:\Projects\Active\plan.pdf", ContentServices.IndexedPath(listing, @"C:\Users\Me\Projects\Active\plan.pdf"));
         var highlighter = ContentHighlighter.Create("content:budget", new SearchOptions())!;
@@ -309,6 +312,50 @@ public class FacadeTests
         // Named first as C: has it, its files are placed on C:, whose index stops at the junction: nothing is bound.
         var (shadowed, _) = Listing([coverage.IndexedAs!, .. IndexPlan.Names(drives, @"C:\Users\Me\Projects", Attributes, Target)]);
         Assert.Equal(-1, BoundIn(shadowed, @"D:\Projects\Active\plan.pdf"));
+    }
+
+    [Fact]
+    public void A_listing_of_a_folder_behind_a_link_finds_the_documents_of_a_root_below_it_spelled_through_the_link()
+    {
+        // C:\Users\Me\Projects is a junction to C:\Archive\Projects, C:\Archive is left out, and C:\Users\Me\Projects\Active
+        // was added by browsing to it through the junction (the folder picker doesn't resolve links). On one drive, as the
+        // root's documents are keyed on the volume the junction leads to.
+        var settings = Harness.DefaultSettings();
+        settings.Folders = [@"C:\Users\Me", @"C:\Users\Me\Projects\Active"];
+        using var h = new Harness(settings);
+        h.File(@"C:\Users\Me\notes.pdf", "the notes");
+        h.Root(@"C:\Users\Me\Projects\Active");
+        h.File(@"C:\Users\Me\Projects\Active\plan.pdf", "the budget for the year");
+        h.Start();
+        h.Settle();
+        Assert.NotNull(h.Row(@"C:\Users\Me\Projects\Active\plan.pdf"));
+        var drives = new[] { new DriveEntry(@"C:\", DriveKind.Fixed, "NTFS", "", true, null, null) };
+        static bool IsLink(string p) => string.Equals(p.TrimEnd('\\'), @"C:\Users\Me\Projects", StringComparison.OrdinalIgnoreCase);
+        FileAttributes? Attributes(string p) => IsLink(p) ? FileAttributes.Directory | FileAttributes.ReparsePoint : FileAttributes.Directory;
+        string? Target(string p) => IsLink(p) ? @"C:\Archive\Projects" : null;
+        var index = new IndexSettings { ExcludeFolders = [@"C:\Archive"], Folders = [@"C:\Users\Me\Projects\Active"] };
+        var coverage = IndexPlan.Coverage(index, drives, @"C:\Users\Me\Projects", attributesOf: Attributes, linkTargetOf: Target);
+        Assert.Equal(CoverageReason.BehindLink, coverage.Reason);
+        // A listing of the junction, shared under these names.
+        (FileIndex Listing, int Plan) Listing(IReadOnlyList<string> names)
+        {
+            var listing = new FileIndex();
+            int active = listing.Add("Active", listing.AddRoot(@"C:\Users\Me\Projects"), FileAttributes.Directory, -1, 0, 0);
+            int plan = Listed(h, listing, active, @"C:\Users\Me\Projects\Active\plan.pdf");
+            ContentServices.ShareWith(h.Index, listing, new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase) { [@"C:\Users\Me\Projects"] = names });
+            return (listing, plan);
+        }
+        // Named as StartListing names it: as C: has it first, as the root below is spelled, so that root's documents are bound.
+        var names = IndexPlan.ListingNames(index, drives, coverage, attributesOf: Attributes, linkTargetOf: Target);
+        Assert.Equal([@"C:\Users\Me\Projects", @"C:\Archive\Projects"], names);
+        var (listing, plan) = Listing(names);
+        Assert.Equal(plan, BoundIn(listing, @"C:\Users\Me\Projects\Active\plan.pdf"));
+        Assert.Equal(@"C:\Users\Me\Projects\Active\plan.pdf", ContentServices.IndexedPath(listing, @"C:\Users\Me\Projects\Active\plan.pdf"));
+        var highlighter = ContentHighlighter.Create("content:budget", new SearchOptions())!;
+        Assert.NotNull(h.Content.GetSnippet(ContentServices.IndexedPath(listing, @"C:\Users\Me\Projects\Active\plan.pdf"), highlighter));
+        // Named only where the junction points, its files are placed in C:\Archive, where no words are: nothing is bound.
+        var (there, _) = Listing([@"C:\Archive\Projects"]);
+        Assert.Equal(-1, BoundIn(there, @"C:\Users\Me\Projects\Active\plan.pdf"));
     }
 
     [Theory]

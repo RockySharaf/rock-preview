@@ -216,30 +216,57 @@ public static class IndexPlan
     /// <summary>
     /// The names a folder listing of <see cref="FolderCoverage.Folder"/> finds its files' words under, the one to try
     /// first first, each once: its name in the index (<see cref="FolderCoverage.IndexedAs"/>), then <see cref="Names"/>.
-    /// A folder behind a link whose target is not searched (<see cref="CoverageReason.BehindLink"/>) has only the names
-    /// where its links lead: the root that holds its own name stops at the link, and so does one holding a name on the
-    /// way through another link, so those names would place its files where no words can be (on C: for files on D:),
-    /// ahead of the root below that has them (C:\Users\Me\Projects is a junction to D:\Projects, D: is off and
-    /// D:\Projects\Active is searched). Empty when it is not a folder on a drive or a share.
+    /// A folder behind a link whose target is not searched (<see cref="CoverageReason.BehindLink"/>) has its files placed
+    /// by the first of its names a root holds, so it is named for the one step of its way through the links that a planned
+    /// root lies nearest below (that root holds the most of it), the later step on a tie, the last when no root lies below.
+    /// A name of an earlier step would place its files in a root that stops at the link after it (on C: for files on D:),
+    /// and one of a later step in a root that leaves that step out, ahead of the root below. So C:\Users\Me\Projects, a
+    /// junction to D:\Projects with D: off, has only D:\Projects while D:\Projects\Active is searched, and every name as
+    /// for any folder, its own first, while the folder searched is C:\Users\Me\Projects\Active (picked by browsing through
+    /// the junction): the first step's names are the folder's own. Empty when it is not a folder on a drive or a share.
     /// </summary>
-    /// <param name="coverage">The folder's <see cref="Coverage"/>, found with the same readers.</param>
+    /// <param name="settings">The settings <paramref name="coverage"/> was found under.</param>
+    /// <param name="coverage">The folder's <see cref="Coverage"/>, found with the same filter and readers.</param>
+    /// <param name="filter">As for <see cref="Coverage"/>.</param>
     /// <param name="attributesOf">As for <see cref="Coverage"/>; the same readers read nothing again.</param>
     /// <param name="linkTargetOf">As for <see cref="Coverage"/>.</param>
-    public static List<string> ListingNames(IReadOnlyList<DriveEntry> drives, FolderCoverage coverage, Func<string, FileAttributes?>? attributesOf = null,
-        Func<string, string?>? linkTargetOf = null)
+    public static List<string> ListingNames(IndexSettings settings, IReadOnlyList<DriveEntry> drives, FolderCoverage coverage, ExclusionFilter? filter = null,
+        Func<string, FileAttributes?>? attributesOf = null, Func<string, string?>? linkTargetOf = null)
     {
         if (coverage.IndexedAs is not { } indexedAs || FolderName(coverage.Folder) is not { } name) return [];
-        var paths = ThroughLinks(drives, name, attributesOf ?? ReadAttributes, LinkReader(attributesOf, linkTargetOf)).ToList();
+        var read = attributesOf ?? ReadAttributes;
+        var paths = ThroughLinks(drives, name, read, LinkReader(attributesOf, linkTargetOf)).ToList();
         var names = new List<string>();
         // Each step but the last has a link on its way. A link that can't be read leaves one step: nothing better to try.
-        if (coverage.Reason == CoverageReason.BehindLink && paths.Count > 1)
+        if (coverage.Reason == CoverageReason.BehindLink && paths.Count > 1
+            && NearestRootBelow(drives, Plan(settings, drives, filter ?? new ExclusionFilter(settings), read), paths) is var step and > 0)
         {
-            AddNames(drives, names, paths[^1]);
+            AddNames(drives, names, paths[step]);
             return names;
         }
         names.Add(indexedAs);
         foreach (var path in paths) AddNames(drives, names, path);
         return names;
+    }
+
+    /// <summary>
+    /// Which of <paramref name="paths"/> (one folder, through each link on its way) a planned root lies nearest below,
+    /// under any of the names its drive gives it, the later one on a tie; the last when no root lies below any.
+    /// </summary>
+    static int NearestRootBelow(IReadOnlyList<DriveEntry> drives, List<PlannedRoot> roots, List<string> paths)
+    {
+        int step = paths.Count - 1, nearest = int.MaxValue;
+        for (int i = paths.Count - 1; i >= 0; i--)
+            foreach (var form in Aliases(drives, paths[i]))
+                foreach (var r in roots)
+                    foreach (var below in Aliases(drives, r.Name))
+                    {
+                        if (below.Length <= form.Length || !Under(below, form)) continue;
+                        // Folders between them: "\Active" is one.
+                        int depth = below.AsSpan(form.TrimEnd('\\').Length).Count('\\');
+                        if (depth < nearest) (step, nearest) = (i, depth);
+                    }
+        return step;
     }
 
     /// <summary>Adds <paramref name="path"/> and the names its drive gives it (<see cref="Aliases"/>) to <paramref name="names"/>, each once.</summary>
