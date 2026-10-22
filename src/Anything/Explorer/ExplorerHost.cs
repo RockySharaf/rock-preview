@@ -26,6 +26,7 @@ internal sealed class ExplorerHost : Control
     string? _lastSelection;
     int _lastSelectionCount = -1;
     int _lastFocused = -1;
+    int _firstIndex = -1;               // view index of a big selection's first item, read again each tick; -1 unknown
     bool _selectionReported;            // the view said the selection changed (CDBOSC_SELCHANGE) since the last poll
     int _itemCount, _lastItemCount = -1;
     bool _renameAfterSelect;
@@ -390,17 +391,24 @@ internal sealed class ExplorerHost : Control
                 if (fv.ItemCount(0x2 /* SVGIO_ALLVIEW */, out int all) == ShellNative.S_OK) _itemCount = all;
                 // The count and the focused item are cheap; the selection array copies every selected item, so a big
                 // selection (Ctrl+A among 100,000 files) is read again only when one of them changes or the view says
-                // the selection did (CDBOSC_SELCHANGE). Which item comes first, and so is previewed, stays the array's.
+                // the selection did (CDBOSC_SELCHANGE). Which item comes first, and so is previewed, stays the array's;
+                // its name alone is read again from the view each tick, as a rename changes none of those.
                 int selected = fv.ItemCount(0x1 /* SVGIO_SELECTION */, out int s) == ShellNative.S_OK ? s : -1;
                 int focused = fv.GetFocusedItem(out int f) == ShellNative.S_OK ? f : -1;
                 bool reported = _selectionReported;
                 _selectionReported = false;
                 if (selected != 0)
                 {
-                    if (ShellSelection.CanKeepFirst(selected, focused, reported, _lastSelectionCount, _lastFocused))
-                        (count, first) = (selected, _lastSelection);
+                    Func<int> firstSelected = () => fv.GetSelectedItem(-1, out int i) == ShellNative.S_OK ? i : -1;
+                    ShellSelection.SelectedItemPath read = (int i, out string? p) => ReadSelectedItem(fv, i, out p);
+                    if (ShellSelection.CanKeepFirst(selected, focused, reported, _lastSelectionCount, _lastFocused)
+                        && ShellSelection.TryRefreshFirst(_firstIndex, _lastSelection, focused, firstSelected, read, out first))
+                        count = selected;
                     else
+                    {
                         (count, first) = ReadSelection(fv);
+                        _firstIndex = count > ShellSelection.FullReadLimit ? ShellSelection.IndexOfFirst(first, focused, firstSelected, read) : -1;
+                    }
                 }
                 _lastFocused = focused;
             }
@@ -430,6 +438,36 @@ internal sealed class ExplorerHost : Control
             return ((int)n, first);
         }
         finally { Marshal.ReleaseComObject(items); }
+    }
+
+    /// <summary>
+    /// The file-system path of the view's item at <paramref name="index"/> (null for a virtual item); false when it can't
+    /// be read or isn't selected. One item, named from its pidl, so no disk.
+    /// </summary>
+    static bool ReadSelectedItem(IFolderView2 fv, int index, out string? path)
+    {
+        path = null;
+        if (fv.Item(index, out var pidl) != ShellNative.S_OK || pidl == IntPtr.Zero) return false;
+        try
+        {
+            if (fv.GetSelectionState(pidl, out uint state) != ShellNative.S_OK || (state & ShellNative.SVSI_SELECT) == 0) return false;
+        }
+        finally { Marshal.FreeCoTaskMem(pidl); }
+        var iid = ShellNative.IID_IShellItem;
+        if (fv.GetItem(index, ref iid, out var ptr) != ShellNative.S_OK || ptr == IntPtr.Zero) return false;
+        object? obj = null;
+        try
+        {
+            obj = Marshal.GetObjectForIUnknown(ptr);
+            if (obj is not IShellItem item) return false;
+            path = ShellNative.NameOf(item, SIGDN.FileSysPath);
+            return true;
+        }
+        finally
+        {
+            if (obj != null) Marshal.ReleaseComObject(obj);
+            Marshal.Release(ptr);
+        }
     }
 
     /// <summary>
