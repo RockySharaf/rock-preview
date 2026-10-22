@@ -114,7 +114,7 @@ public sealed class NotSearchedByNameTests
     {
         // Setup's check: E: is a USB drive and Z: a network drive, as Windows says without touching them.
         static DriveKind Kind(string root) => char.ToUpperInvariant(root[0]) switch { 'E' => DriveKind.Removable, 'Z' => DriveKind.Network, _ => DriveKind.Fixed };
-        static bool Held(string folder, IndexSettings names) => ContentEstimator.NameIndexRules(folder, names, [], Kind).Held;
+        static bool Held(string folder, IndexSettings names) => ContentEstimator.NameIndexRules(folder, names, [], Kind, _ => null).Held;
 
         Assert.True(Held(@"E:\Work", new IndexSettings()));
         Assert.False(Held(@"E:\Work", new IndexSettings { IndexRemovableDrives = false }));
@@ -128,6 +128,28 @@ public sealed class NotSearchedByNameTests
         Assert.True(Held(@"E:\Work", listed));
         // In a folder searched by name, its drive's switches don't count: it is searched as a folder.
         Assert.True(Held(@"E:\Work\2024", new IndexSettings { IndexRemovableDrives = false, Folders = [@"E:\Work"] }));
+    }
+
+    [Fact]
+    public void Without_a_drive_list_a_subst_drive_is_held_where_the_folder_it_shows_is()
+    {
+        // S: shows C:\Work and T: shows S:\Deep. Windows calls both fixed drives, as it does a SUBST of a fixed drive's folder.
+        static string? Subst(string root) => char.ToUpperInvariant(root[0]) switch { 'S' => @"C:\Work", 'T' => @"S:\Deep", 'L' => @"L:\Loop", _ => null };
+        static bool Held(string folder, IndexSettings names) => ContentEstimator.NameIndexRules(folder, names, [], _ => DriveKind.Fixed, Subst).Held;
+
+        // 1.4.0's list of drives names C: only: S: isn't on it, but its files are searched under C:, as IndexPlan.Coverage finds.
+        var listed = new IndexSettings { Volumes = [@"C:\"] };
+        Assert.True(Held(@"S:\Proj", listed));
+        Assert.True(Held(@"S:\", listed));
+        Assert.True(Held(@"T:\Notes", listed)); // C:\Work\Deep\Notes
+        Assert.False(Held(@"S:\Proj", new IndexSettings { Volumes = [@"D:\"] }));
+        // The folder it shows decides: C: switched off, the folder or one above it left out, or searched by name.
+        Assert.False(Held(@"S:\Proj", new IndexSettings { SkipDrives = [@"C:\"] }));
+        Assert.False(Held(@"S:\Proj", new IndexSettings { ExcludeFolders = [@"C:\Work\Proj"] }));
+        Assert.True(Held(@"S:\Proj", new IndexSettings { SkipDrives = [@"C:\"], Folders = [@"C:\Work"] }));
+        Assert.True(Held(@"S:\Proj", new IndexSettings { SkipDrives = [@"C:\"], Folders = [@"S:\Proj"] }));
+        // A SUBST that shows itself ends: the plan holds nothing on it.
+        Assert.False(Held(@"L:\Proj", new IndexSettings()));
     }
 
     [Fact]

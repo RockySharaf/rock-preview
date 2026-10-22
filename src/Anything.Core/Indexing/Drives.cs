@@ -138,6 +138,12 @@ public static class Drives
         _ => DriveKind.Unknown,
     };
 
+    /// <summary>
+    /// The folder SUBST drive <paramref name="root"/> ("X:\") shows ("C:\Projects"); null for a real drive. Asks Windows
+    /// for the letter's DOS device only, without touching the drive or the network.
+    /// </summary>
+    internal static string? SubstTargetOf(string root) => root.Length >= 2 && root[1] == ':' ? SubstTarget(root[..2]) : null;
+
     /// <summary>The folder a SUBST drive shows, from its DOS device ("\??\C:\Projects"); null for real drives.</summary>
     static string? SubstTarget(string letter)
     {

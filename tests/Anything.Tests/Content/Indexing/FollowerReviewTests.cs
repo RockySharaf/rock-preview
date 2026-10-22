@@ -471,8 +471,8 @@ public class FollowerReviewTests
             for (int i = 0; i < 4; i++) File.WriteAllBytes(Path.Combine(dir.FullName, $"d{i}.pdf"), new byte[100]);
             var settings = new ContentSettings { UseMyFolders = false };
             async Task<int> Pdfs(IndexSettings names, DriveKind kind)
-                => (await ContentEstimator.CountFoldersAsync([dir.FullName], settings, TimeSpan.FromSeconds(20), null, CancellationToken.None, names, _ => kind))
-                    .Kinds.GetValueOrDefault(ContentKind.Pdf).Files;
+                => (await ContentEstimator.CountFoldersAsync([dir.FullName], settings, TimeSpan.FromSeconds(20), null, CancellationToken.None, names, _ => kind,
+                    _ => null)).Kinds.GetValueOrDefault(ContentKind.Pdf).Files;
 
             Assert.Equal(4, await Pdfs(new IndexSettings { IndexRemovableDrives = false, IndexNetworkDrives = false }, DriveKind.Fixed));
             // The folder's drive is a USB drive or a network drive, and those are switched off: the name index never has it.
@@ -483,6 +483,29 @@ public class FollowerReviewTests
             Assert.Equal(0, await Pdfs(new IndexSettings { Volumes = [other] }, DriveKind.Fixed));
             // Searched by name as a folder, it counts whatever its drive is.
             Assert.Equal(4, await Pdfs(new IndexSettings { IndexRemovableDrives = false, Folders = [dir.FullName] }, DriveKind.Removable));
+        }
+        finally { dir.Delete(true); }
+    }
+
+    [Fact]
+    public async Task Setups_count_takes_a_subst_drive_where_the_folder_it_shows_is()
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "names-subst-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            for (int i = 0; i < 3; i++) File.WriteAllBytes(Path.Combine(dir.FullName, $"d{i}.pdf"), new byte[100]);
+            var settings = new ContentSettings { UseMyFolders = false };
+            // The folder's drive is a SUBST of Q:\Work (R:\Work when the folder is on Q:), and Windows calls it fixed.
+            char own = char.ToUpperInvariant(dir.FullName[0]);
+            string shown = own == 'Q' ? "R:" : "Q:";
+            string? Subst(string root) => char.ToUpperInvariant(root[0]) == own ? shown + @"\Work" : null;
+            async Task<int> Pdfs(IndexSettings names)
+                => (await ContentEstimator.CountFoldersAsync([dir.FullName], settings, TimeSpan.FromSeconds(20), null, CancellationToken.None, names,
+                    _ => DriveKind.Fixed, Subst)).Kinds.GetValueOrDefault(ContentKind.Pdf).Files;
+
+            // 1.4.0's list of drives names the drive it shows, not the SUBST letter: its files are searched there.
+            Assert.Equal(3, await Pdfs(new IndexSettings { Volumes = [shown + @"\"] }));
+            Assert.Equal(0, await Pdfs(new IndexSettings { SkipDrives = [shown + @"\"] }));
         }
         finally { dir.Delete(true); }
     }

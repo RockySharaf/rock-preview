@@ -458,30 +458,40 @@ public static class ContentEstimator
     /// </summary>
     public static Task<ContentCensus> CountFoldersAsync(IReadOnlyList<string> folders, ContentSettings settings, TimeSpan budget, IProgress<ContentCensus>? progress,
         CancellationToken ct, IndexSettings? names = null)
-        => CountFoldersAsync(folders, settings, budget, progress, ct, names, Drives.KindOf);
+        => CountFoldersAsync(folders, settings, budget, progress, ct, names, Drives.KindOf, Drives.SubstTargetOf);
 
     /// <param name="kindOf">The kind of a drive ("D:\"), read without touching it (tests pass their own).</param>
+    /// <param name="substOf">The folder a SUBST drive ("S:\") shows, null for a real one, read without touching it (tests pass their own).</param>
     internal static Task<ContentCensus> CountFoldersAsync(IReadOnlyList<string> folders, ContentSettings settings, TimeSpan budget, IProgress<ContentCensus>? progress,
-        CancellationToken ct, IndexSettings? names, Func<string, DriveKind> kindOf)
+        CancellationToken ct, IndexSettings? names, Func<string, DriveKind> kindOf, Func<string, string?> substOf)
     {
         var s = settings.Clone();
         var list = ContentSettings.MergeNested(folders);
         // All of it: the drive switches (USB and network drives, 1.4.0's list of drives) decide what is held too.
         var n = names?.Clone();
-        return Task.Run(() => CountFolders(list, s, budget, progress, ct, n, kindOf), ct);
+        return Task.Run(() => CountFolders(list, s, budget, progress, ct, n, kindOf, substOf), ct);
     }
 
     /// <summary>
     /// Whether the name index holds <paramref name="folder"/> under these settings, and the rules a listing of it follows:
     /// the content rules (deny-lists, content_exclude_folders) plus the name index's own (its excluded folders, patterns,
     /// hidden or system files). Inside an "also search these folders" root, rules leaving out that root or a folder above
-    /// it don't apply (ExclusionFilter.WithoutAncestorsOf), as in the name index. Without a drive list (setup), whether it
-    /// or a folder above it is hidden or system, a link or a volume mounted in a folder isn't looked at: the app asks
+    /// it don't apply (ExclusionFilter.WithoutAncestorsOf), as in the name index. A folder on a SUBST drive is held when the
+    /// folder the drive shows is, as the plan finds it there. Without a drive list (setup), whether it or a folder above it
+    /// is hidden or system, a link or a volume mounted in a folder isn't looked at: the app asks
     /// <see cref="IndexPlan.Coverage"/>, which knows (<see cref="FoldersNotSearchedByName"/>).
     /// </summary>
     /// <param name="kindOf">The kind of a drive ("D:\"), read without touching it; <see cref="Drives.KindOf"/> when null (tests pass their own).</param>
+    /// <param name="substOf">
+    /// The folder a SUBST drive ("S:\") shows, null for a real one, read without touching it; <see cref="Drives.SubstTargetOf"/>
+    /// when null (tests pass their own).
+    /// </param>
     internal static (bool Held, ExclusionFilter Filter) NameIndexRules(string folder, IndexSettings names, IReadOnlyList<string> contentRules,
-        Func<string, DriveKind>? kindOf = null)
+        Func<string, DriveKind>? kindOf = null, Func<string, string?>? substOf = null)
+        => NameIndexRules(folder, names, contentRules, kindOf ?? Drives.KindOf, substOf ?? Drives.SubstTargetOf, hops: 0);
+
+    static (bool Held, ExclusionFilter Filter) NameIndexRules(string folder, IndexSettings names, IReadOnlyList<string> contentRules,
+        Func<string, DriveKind> kindOf, Func<string, string?> substOf, int hops)
     {
         string path = folder.Trim().TrimEnd('\\');
         string? root = null;
@@ -510,8 +520,13 @@ public static class ContentEstimator
         // switch, its kind's switch, the folders left out). Taken as ready: one that isn't is searched once it is.
         bool letter = path.Length >= 2 && path[1] == ':' && char.IsAsciiLetter(path[0]);
         string drive = letter ? path[..2] : path;
-        var kind = letter ? (kindOf ?? Drives.KindOf)(drive + "\\") : DriveKind.Unknown;
-        var entry = new DriveEntry(drive + "\\", kind, "", "", IsReady: true, NetworkPath: null, SubstTarget: null);
+        // A SUBST drive isn't indexed itself (Windows calls it the kind of drive it is on, so 1.4.0's list would turn it
+        // off): its files are searched under the folder it shows, so that name decides, as in IndexPlan.Coverage. A SUBST
+        // of a SUBST takes more than one step; the cap stops a loop, and the plan holds nothing on the drive then.
+        string? target = letter ? substOf(drive + "\\") : null;
+        if (target != null && hops < 4) return NameIndexRules(target.TrimEnd('\\') + path[2..], names, contentRules, kindOf, substOf, hops + 1);
+        var kind = letter ? kindOf(drive + "\\") : DriveKind.Unknown;
+        var entry = new DriveEntry(drive + "\\", kind, "", "", IsReady: true, NetworkPath: null, SubstTarget: target);
         if (IndexPlan.ForDrive(names, entry, nameOnly) != DriveIndexing.Indexed || nameOnly.ExcludesPathOrAncestor(drive, path)) return (false, filter);
         return (true, filter);
     }
@@ -640,7 +655,7 @@ public static class ContentEstimator
     }
 
     static ContentCensus CountFolders(IReadOnlyList<string> folders, ContentSettings s, TimeSpan budget, IProgress<ContentCensus>? progress, CancellationToken ct,
-        IndexSettings? names, Func<string, DriveKind> kindOf)
+        IndexSettings? names, Func<string, DriveKind> kindOf, Func<string, string?> substOf)
     {
         var tallies = new Tallies();
         var extras = ContentTypes.ExtraSet(s.ExtraTextExtensions);
@@ -657,7 +672,7 @@ public static class ContentEstimator
             var filter = contentFilter;
             if (names != null)
             {
-                (bool held, filter) = NameIndexRules(folder, names, contentRules, kindOf);
+                (bool held, filter) = NameIndexRules(folder, names, contentRules, kindOf, substOf);
                 if (!held) return; // the name index doesn't hold it: nothing in it is ever read inside
             }
             try
