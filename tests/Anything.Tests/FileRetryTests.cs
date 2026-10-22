@@ -103,11 +103,28 @@ public sealed class FileRetryTests : IDisposable
         File.WriteAllText(setup, "1.7.2");
         File.WriteAllText(exe, "1.7.1");
         int sleeps = 0;
+        FileHeldException held;
         using (new FileStream(exe, FileMode.Open, FileAccess.Read, FileShare.None))
-            Assert.Throws<UnauthorizedAccessException>(() => FileRetry.Replace(setup, exe, attempts: 3, sleep: () => sleeps++));
+            held = Assert.Throws<FileHeldException>(() => FileRetry.Replace(setup, exe, attempts: 3, sleep: () => sleeps++));
+        Assert.Equal(exe, held.Path);
+        Assert.IsType<UnauthorizedAccessException>(held.InnerException);
         Assert.Equal(2, sleeps);
         Assert.Equal("1.7.1", File.ReadAllText(exe));
         Assert.False(File.Exists(exe + ".new"));
+    }
+
+    [Fact]
+    public void AccessDeniedMakingTheNewFileFailsAtOnceAndIsntCalledHeld()
+    {
+        // Nothing can hold a file that isn't made yet, so access denied there is final (here: a source that is a folder).
+        string setup = Path.Combine(_dir, "setup"), exe = Path.Combine(_dir, "RockPreview.exe");
+        Directory.CreateDirectory(setup);
+        File.WriteAllText(exe, "1.7.1");
+        var e = Assert.Throws<UnauthorizedAccessException>(() => FileRetry.Replace(setup, exe, sleep: () => throw new InvalidOperationException("waited")));
+        Assert.IsNotType<FileHeldException>(e);
+        Assert.Equal("1.7.1", File.ReadAllText(exe));
+        Assert.False(File.Exists(exe + ".new"));
+        Directory.Delete(setup);
     }
 
     [Fact]

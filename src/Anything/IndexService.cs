@@ -80,15 +80,20 @@ internal static class IndexService
         try
         {
             IntPtr svc = OpenService(scm, ServiceName, SERVICE_ALL_ACCESS);
+            bool wasRunning = false;
             if (svc != IntPtr.Zero)
             {
+                wasRunning = IsRunning(svc);
                 Stop(svc);
                 CloseServiceHandle(svc);
             }
 
             Directory.CreateDirectory(InstallFolder);
             if (!string.Equals(Path.GetFullPath(sourceExe), Path.GetFullPath(InstalledExe), StringComparison.OrdinalIgnoreCase))
-                CopyWithRetry(sourceExe, InstalledExe);
+            {
+                try { CopyWithRetry(sourceExe, InstalledExe); }
+                catch (Exception) when (wasRunning) { StartAgain(scm); throw; } // the old service goes on rather than staying stopped
+            }
 
             string binPath = $"\"{InstalledExe}\" -service";
             svc = OpenService(scm, ServiceName, SERVICE_ALL_ACCESS);
@@ -175,8 +180,24 @@ internal static class IndexService
         return list;
     }
 
-    // The stopping service may still hold its file for a moment: a sharing violation, or access denied.
-    static void CopyWithRetry(string from, string to) => Anything.Core.FileRetry.Run(() => File.Copy(from, to, overwrite: true));
+    // The stopping service may still hold its file for a moment: access denied, or a sharing violation. Through a .new file,
+    // so a copy that fails part way never leaves half a service; read-only (setup run off a disc) doesn't stop it.
+    static void CopyWithRetry(string from, string to) => Anything.Core.FileRetry.Replace(from, to);
+
+    static bool IsRunning(IntPtr svc)
+    {
+        var status = new SERVICE_STATUS();
+        return QueryServiceStatus(svc, ref status) && status.dwCurrentState != SERVICE_STOPPED;
+    }
+
+    /// <summary>Starts the service as it was, best effort: an update that couldn't replace its file leaves it running.</summary>
+    static void StartAgain(IntPtr scm)
+    {
+        IntPtr svc = OpenService(scm, ServiceName, SERVICE_ALL_ACCESS);
+        if (svc == IntPtr.Zero) return;
+        StartService(svc, 0, IntPtr.Zero);
+        CloseServiceHandle(svc);
+    }
 
     static void Stop(IntPtr svc)
     {
