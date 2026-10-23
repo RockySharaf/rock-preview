@@ -691,14 +691,20 @@ public sealed class FolderListingTests : IDisposable
         ((IIndexerHost)listing).MarkChanged();
         Thread.Sleep(250);
 
-        var dispose = Task.Run(() =>
+        // On a thread of its own, known to have begun before the handler is let go: a pool thread can start late on a busy
+        // machine, and the waiting raise, let in before Dispose began, would then rightly call the handler.
+        using var disposing = new ManualResetEventSlim();
+        var dispose = new Thread(() =>
         {
+            disposing.Set();
             listing.Dispose();
             disposed.Set();
-        });
-        Assert.False(Ends(dispose, 300), "Dispose returned while a handler ran");
+        }) { IsBackground = true };
+        dispose.Start();
+        Assert.True(disposing.Wait(10_000), "Dispose never began");
+        Assert.False(disposed.Wait(300), "Dispose returned while a handler ran");
         proceed.Set();
-        Assert.True(Ends(dispose, 10_000), "Dispose did not return");
+        Assert.True(disposed.Wait(10_000), "Dispose did not return");
         Assert.False(Volatile.Read(ref disposedWhileRunning));
 
         // The raise that was waiting gets the gate now, after Dispose: it must not call the handler.
