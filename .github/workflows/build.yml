@@ -29,8 +29,13 @@ jobs:
           $trx = Get-ChildItem TestResults -Recurse -Filter first.trx | Select-Object -First 1
           if (-not $trx) { exit 1 }
           [xml]$results = Get-Content $trx.FullName
-          # A run that was aborted (the test host crashed) isn't tried again: the tests it never ran would pass unseen.
-          if (@($results.TestRun.ResultSummary.RunInfos.RunInfo | Where-Object { $_.outcome -eq 'Error' }).Count -gt 0) { exit 1 }
+          # A run that was aborted (the test host crashed) isn't tried again: the tests it never ran would pass unseen. (A
+          # failed test's own [FAIL] line is a RunInfo with outcome Error too, so that alone says nothing.)
+          $summary = $results.TestRun.ResultSummary
+          $aborted = $summary.outcome -eq 'Aborted' -or [int]$summary.Counters.aborted -gt 0 -or
+            @($results.TestRun.Results.UnitTestResult).Count -lt [int]$summary.Counters.total -or
+            @($summary.RunInfos.RunInfo | Where-Object { "$($_.Text)" -match 'test run was aborted|host process crashed' }).Count -gt 0
+          if ($aborted) { exit 1 }
           $failed = @($results.TestRun.Results.UnitTestResult | Where-Object { $_.outcome -eq 'Failed' } |
             ForEach-Object { $_.testName -replace '\(.*$', '' } | Sort-Object -Unique)
           if ($failed.Count -eq 0 -or $failed.Count -gt 10) { exit 1 }
