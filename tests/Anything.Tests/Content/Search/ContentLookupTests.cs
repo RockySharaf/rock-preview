@@ -54,17 +54,30 @@ public class ContentLookupTests
     [Fact]
     public void A_pending_word_compiles_from_the_segments_resolved_so_far()
     {
-        var f = Fixture();
-        using var gate = new ManualResetEventSlim(false);
-        f.Publish();
-        f.View!.FakeSegments[1].OnTerms = () => gate.Wait(Long);
-        f.Engine.ContentBudget = TimeSpan.FromMilliseconds(50);
-        var r = f.Run("budget", ContentFixture.Plain);
-        gate.Set();
-        Assert.True(r.ContentPending);
-        Assert.Equal([Named, Inside], r.Ids.Select(f.Index.GetFullPath)); // segment 10 answered, 20 still looking
-        Assert.Equal(1, r.NameMatches);
-        Assert.True(f.Source.WaitCompleted(Long));
+        // The search takes a segment itself when no helper got a thread within the grace (a busy machine): it can't wait
+        // for the gate then (this thread opens it once the search returns), so that try is done again on a fresh index.
+        for (int attempt = 0; attempt < 5; attempt++)
+        {
+            var f = Fixture();
+            using var gate = new ManualResetEventSlim(false);
+            f.Publish();
+            int search = Environment.CurrentManagedThreadId, itself = 0;
+            f.View!.FakeSegments[1].OnTerms = () =>
+            {
+                if (Environment.CurrentManagedThreadId == search) Volatile.Write(ref itself, 1);
+                else gate.Wait(Long);
+            };
+            f.Engine.ContentBudget = TimeSpan.FromMilliseconds(50);
+            var r = f.Run("budget", ContentFixture.Plain);
+            gate.Set();
+            if (Volatile.Read(ref itself) == 1) continue;
+            Assert.True(r.ContentPending);
+            Assert.Equal([Named, Inside], r.Ids.Select(f.Index.GetFullPath)); // segment 10 answered, 20 still looking
+            Assert.Equal(1, r.NameMatches);
+            Assert.True(f.Source.WaitCompleted(Long));
+            return;
+        }
+        Assert.Fail("the search took the slow segment itself every time");
     }
 
     [Fact]

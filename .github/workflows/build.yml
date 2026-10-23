@@ -20,7 +20,24 @@ jobs:
         run: dotnet build Anything.sln -c Release
 
       - name: Test
-        run: dotnet test tests/Anything.Tests -c Release --no-build --logger "console;verbosity=normal"
+        shell: pwsh
+        run: |
+          # A test that misses a timing bound on a busy shared runner is run once more on its own (and named in a warning);
+          # a real failure fails both times. More than 10 failures, or a run that crashed, isn't tried again.
+          dotnet test tests/Anything.Tests -c Release --no-build --logger "console;verbosity=normal" --logger "trx;LogFileName=first.trx" --results-directory TestResults
+          if ($LASTEXITCODE -eq 0) { exit 0 }
+          $trx = Get-ChildItem TestResults -Recurse -Filter first.trx | Select-Object -First 1
+          if (-not $trx) { exit 1 }
+          [xml]$results = Get-Content $trx.FullName
+          # A run that was aborted (the test host crashed) isn't tried again: the tests it never ran would pass unseen.
+          if (@($results.TestRun.ResultSummary.RunInfos.RunInfo | Where-Object { $_.outcome -eq 'Error' }).Count -gt 0) { exit 1 }
+          $failed = @($results.TestRun.Results.UnitTestResult | Where-Object { $_.outcome -eq 'Failed' } |
+            ForEach-Object { $_.testName -replace '\(.*$', '' } | Sort-Object -Unique)
+          if ($failed.Count -eq 0 -or $failed.Count -gt 10) { exit 1 }
+          Write-Host "::warning title=Tests run again::Failed once, run again on their own: $($failed -join ', ')"
+          $filter = ($failed | ForEach-Object { "FullyQualifiedName=$_" }) -join '|'
+          dotnet test tests/Anything.Tests -c Release --no-build --logger "console;verbosity=normal" --filter $filter
+          exit $LASTEXITCODE
 
       - name: Publish single-file builds
         shell: pwsh

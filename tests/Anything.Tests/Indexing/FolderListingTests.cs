@@ -280,7 +280,10 @@ public sealed class FolderListingTests : IDisposable
             marks++;
             Thread.Sleep(1);
         }
-        Thread.Sleep(400); // the last one comes after the burst
+        // The last one comes after the burst: waited for, however late a busy machine runs the timer; then a moment in
+        // which no other may come.
+        SpinWait.SpinUntil(() => times.Any(x => x >= last), 10_000);
+        Thread.Sleep(200);
 
         var t = times.ToArray();
         Assert.True(t.Length >= 2 && t.Length <= 10, $"{t.Length} events for {marks} changes");
