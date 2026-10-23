@@ -186,7 +186,7 @@ internal sealed partial class MainForm
             new ToolStripSeparator(),
             Item("&Get Started", _app.ShowGetStarted),
             Item("Check for &Updates...", () => _app.CheckForUpdatesInteractive(this)),
-            Item("&About Ultimate File Explorer...", ShowAbout),
+            Item("&About Rock Preview...", ShowAbout),
         ]);
 
         // Explorer has no menu bar: its "See more" (...) menu holds the selection commands and Properties. Here that menu
@@ -267,7 +267,7 @@ internal sealed partial class MainForm
         _app.Settings.Save();
         SyncMenus();
         string name = theme switch { "dark" => "dark", "system" => "Windows", _ => "light" };
-        if (MessageBox.Show(this, $"Restart Ultimate File Explorer now to switch to the {name} theme?", "Theme",
+        if (MessageBox.Show(this, $"Restart Rock Preview now to switch to the {name} theme?", "Theme",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             _app.Restart();
     }
@@ -807,8 +807,8 @@ internal sealed partial class MainForm
     {
         var v = typeof(MainForm).Assembly.GetName().Version;
         MessageBox.Show(this,
-            $"Ultimate File Explorer {v?.ToString(3)} (formerly Rock Preview)\n\nInstant file name search for Windows, in the spirit of voidtools Everything.\n\n" +
+            $"Rock Preview {v?.ToString(3)}\n\nInstant file name search for Windows, in the spirit of voidtools Everything.\n\n" +
             $"Index: {_app.IndexManager.Index.LiveCount:N0} objects\n.NET {Environment.Version}" + (_app.IsDemo ? "\n\nRunning with the in-memory demo index." : ""),
-            "About Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            "About Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 }

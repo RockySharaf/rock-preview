@@ -22,11 +22,11 @@ namespace Anything;
 /// </summary>
 internal static partial class Setup
 {
-    public const string AppName = "Ultimate File Explorer";
-    /// <summary>The settings and index folders keep the earlier name, so updating keeps them.</summary>
+    public const string AppName = "Rock Preview";
+    /// <summary>The settings and index folders: named Rock Preview all along, so updating keeps them.</summary>
     public const string DataFolderName = "Rock Preview";
-    /// <summary>Shortcuts named before the rename; replaced by ones named AppName.</summary>
-    public const string OldShortcutName = "Rock Preview";
+    /// <summary>Shortcuts named while the app was called that (1.5 to 1.7.4); replaced by ones named AppName.</summary>
+    public const string OldShortcutName = "Ultimate File Explorer";
     public const string ExeName = "RockPreview.exe";
     const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\RockPreview";
     const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -180,10 +180,10 @@ internal static partial class Setup
         string source = Environment.ProcessPath ?? throw new InvalidOperationException("Can't find the setup program.");
         string folder = o.TargetFolder, exe = o.TargetExe;
 
-        status("Closing Ultimate File Explorer...");
+        status("Closing Rock Preview...");
         CloseRunning(exe, o.Quiet, anyFolder: true, again: "install again");
 
-        status("Copying Ultimate File Explorer...");
+        status("Copying Rock Preview...");
         Directory.CreateDirectory(folder);
         if (!SamePath(source, exe)) CopyWithRetry(source, exe);
 
@@ -245,7 +245,7 @@ internal static partial class Setup
             }
             catch (Exception ex) { Log(ex); }
         }
-        status("Ultimate File Explorer is installed.");
+        status("Rock Preview is installed.");
     }
 
     // ---- update in place (Update now) -------------------------------------------------------------
@@ -264,7 +264,7 @@ internal static partial class Setup
         var inst = string.IsNullOrWhiteSpace(o.Folder) ? FindInstalled() : FindInstalled(o.Folder);
         if (inst is null || (o.AllUsers && !inst.AllUsers))
         {
-            MessageBox.Show("Ultimate File Explorer isn't installed there any more, so there is nothing to update. Run its Setup to install it.",
+            MessageBox.Show("Rock Preview isn't installed there any more, so there is nothing to update. Run its Setup to install it.",
                 AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
             // The copy that closed for this opens again, from the folder it named, when it is still there.
             if (o.Launch && !string.IsNullOrWhiteSpace(o.Folder) && File.Exists(o.TargetExe))
@@ -291,7 +291,7 @@ internal static partial class Setup
             // The app asks Windows before it closes; run without rights (by hand, or where Windows can't give them), it
             // stops here rather than ask again and again.
             code = 5;
-            MessageBox.Show("Updating Ultimate File Explorer for everyone on this PC needs administrator rights, and Windows didn't give them. " +
+            MessageBox.Show("Updating Rock Preview for everyone on this PC needs administrator rights, and Windows didn't give them. " +
                 "Nothing changed: run its Setup as administrator to update it.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         else
@@ -301,7 +301,7 @@ internal static partial class Setup
             {
                 Log(ex);
                 code = 1;
-                MessageBox.Show($"Ultimate File Explorer couldn't finish updating: {ex.Message}\n\n" +
+                MessageBox.Show($"Rock Preview couldn't finish updating: {ex.Message}\n\n" +
                     "It opens again as it is now. Try Update now later, or get the new version from its page on GitHub.",
                     AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
@@ -388,16 +388,16 @@ internal static partial class Setup
         // copy installed there since, which only a whole uninstall removes.
         bool portable = o.Portable;
         if (portable && !(named && inst is null && SamePath(o.Folder!, own)))
-            return Report(o, "Ultimate File Explorer was not removed from this PC", inst is not null
+            return Report(o, "Rock Preview was not removed from this PC", inst is not null
                 ? $"It is installed in {o.Folder} now. Open Settings › About again to uninstall it."
                 : "Only the copy that runs from that folder can remove itself this way.", 3);
         if (named && inst is null && !portable)
-            return Report(o, "Ultimate File Explorer was not uninstalled", $"It isn't installed in {o.Folder} any more.", 3);
+            return Report(o, "Rock Preview was not uninstalled", $"It isn't installed in {o.Folder} any more.", 3);
         string folder = inst?.Folder ?? own;
         bool allUsers = inst?.AllUsers ?? false;
         // The elevated half must have the rights it was started for (with UAC turned off, "runas" doesn't give them).
         if (o.OwnPartDone && allUsers && !Program.IsElevated())
-            return Report(o, "Ultimate File Explorer was not uninstalled", "Windows didn't give administrator rights to remove it for everyone on this PC.", 5);
+            return Report(o, "Rock Preview was not uninstalled", "Windows didn't give administrator rights to remove it for everyone on this PC.", 5);
 
         // Asked here, in the user's own process, before anything changes; the elevated half of an uninstall for everyone
         // doesn't ask again.
@@ -416,14 +416,14 @@ internal static partial class Setup
         catch (UninstallStopped stop)
         {
             Log(stop);
-            return Report(o, portable ? "Ultimate File Explorer was not removed from this PC" : "Ultimate File Explorer was not uninstalled", stop.Message, 4);
+            return Report(o, portable ? "Rock Preview was not removed from this PC" : "Rock Preview was not uninstalled", stop.Message, 4);
         }
-        catch (Exception ex) { Log(ex); return Report(o, "Ultimate File Explorer could not be completely removed", ex.Message, 1); }
+        catch (Exception ex) { Log(ex); return Report(o, "Rock Preview could not be completely removed", ex.Message, 1); }
         if (!o.Quiet)
             TaskDialog.ShowDialog(new TaskDialogPage
             {
                 Caption = AppName + " Setup",
-                Heading = portable ? "Ultimate File Explorer was removed from this PC." : "Ultimate File Explorer was uninstalled.",
+                Heading = portable ? "Rock Preview was removed from this PC." : "Rock Preview was uninstalled.",
                 Text = portable
                     ? string.Join(" ", new[]
                     {
@@ -455,8 +455,8 @@ internal static partial class Setup
             CloseRunning(exe, o.Quiet, anyFolder: o.Confirmed || removeData);
             own = RemoveOwnPart(exe);
         }
-        catch (UninstallStopped stop) { Log(stop); return Report(o, "Ultimate File Explorer was not uninstalled", stop.Message, 4); }
-        catch (Exception ex) { Log(ex); return Report(o, "Ultimate File Explorer was not uninstalled", ex.Message, 1); }
+        catch (UninstallStopped stop) { Log(stop); return Report(o, "Rock Preview was not uninstalled", stop.Message, 4); }
+        catch (Exception ex) { Log(ex); return Report(o, "Rock Preview was not uninstalled", ex.Message, 1); }
 
         var args = new List<string> { "-uninstall", "-confirmed", "-ownpartdone", "-parent", Environment.ProcessId.ToString(), "-dir", folder };
         if (o.Quiet) args.Add("-quiet");
@@ -468,7 +468,7 @@ internal static partial class Setup
         if (File.Exists(exe)) own.PutBack(exe);
         // The elevated copy told the user why it stopped; a refused or cancelled permission prompt is said here.
         return code == -1
-            ? Report(o, "Ultimate File Explorer was not uninstalled", "Windows didn't give permission to remove it for everyone on this PC.", 5)
+            ? Report(o, "Rock Preview was not uninstalled", "Windows didn't give permission to remove it for everyone on this PC.", 5)
             : code;
     }
 
@@ -489,24 +489,24 @@ internal static partial class Setup
     sealed record Uninstalled(bool DeleteLater, string? Warning, bool ServiceStays = false);
 
     /// <summary>
-    /// "Uninstall Ultimate File Explorer?" (with <paramref name="portable"/>, "Remove ... from this PC?" for the running
+    /// "Uninstall Rock Preview?" (with <paramref name="portable"/>, "Remove ... from this PC?" for the running
     /// copy, which isn't installed and whose program stays), with a box (unticked) to delete the user's settings and search
     /// index too: whether the box was ticked, or null when cancelled. Settings › About asks it, and so does the uninstall
     /// itself unless it was asked already (-confirmed).
     /// </summary>
     public static bool? ConfirmUninstall(IWin32Window? owner, string folder, bool portable = false)
     {
-        var check = new TaskDialogVerificationCheckBox("Also delete my Ultimate File Explorer settings and search index");
+        var check = new TaskDialogVerificationCheckBox("Also delete my Rock Preview settings and search index");
         var uninstall = new TaskDialogButton(portable ? "Remove" : "Uninstall");
         var page = new TaskDialogPage
         {
             Caption = owner is null ? AppName + " Setup" : AppName,
-            Heading = portable ? "Remove Ultimate File Explorer from this PC?" : "Uninstall Ultimate File Explorer?",
+            Heading = portable ? "Remove Rock Preview from this PC?" : "Uninstall Rock Preview?",
             Text = portable
                 ? "Folders, drives, This PC and Win+E go back to File Explorer, start with Windows is turned off, and the " +
                   "instant-indexing service is removed unless other accounts on this PC use it too. The program stays in " +
                   $"{folder}: delete {Path.GetFileName(Environment.ProcessPath) ?? ExeName} afterwards. Your files are not affected."
-                : $"Ultimate File Explorer will be removed from this PC ({folder}). Your files are not affected.",
+                : $"Rock Preview will be removed from this PC ({folder}). Your files are not affected.",
             Icon = TaskDialogIcon.Information,
             Buttons = { uninstall, TaskDialogButton.Cancel },
             Verification = check,
@@ -578,9 +578,9 @@ internal static partial class Setup
             {
                 if (Program.IsElevated()) global::Anything.IndexService.Uninstall();
                 else if (Program.RunElevatedAndWait(["-uninstallservice", "-quiet"]) == -1)
-                    warnings.Add("Windows didn't give permission to remove the instant-indexing service (Ultimate File Explorer Service), so it is still installed.");
+                    warnings.Add("Windows didn't give permission to remove the instant-indexing service (Rock Preview Service), so it is still installed.");
                 if (warnings.Count == 0 && global::Anything.IndexService.IsInstalled())
-                    warnings.Add("The instant-indexing service (Ultimate File Explorer Service) couldn't be removed, so it is still installed " +
+                    warnings.Add("The instant-indexing service (Rock Preview Service) couldn't be removed, so it is still installed " +
                                  $"(the reason is in {Path.Combine(Path.GetTempPath(), "Rock Preview Setup", "setup.log")}).");
             }
         }
@@ -697,7 +697,7 @@ internal static partial class Setup
         {
             try { ExplorerReplacement.Disable(); } catch (Exception ex) { Log(ex); }
             if (ExplorerReplacement.References(exe))
-                throw new UninstallStopped("Folders, drives or Win+E still open with Ultimate File Explorer, and Windows' settings for " +
+                throw new UninstallStopped("Folders, drives or Win+E still open with Rock Preview, and Windows' settings for " +
                     "them couldn't be changed, so nothing was removed. Turn off Settings › General › Use instead of Windows File " +
                     $"Explorer, then {(keepProgram ? "try again" : "uninstall again")}.");
         }
@@ -807,7 +807,7 @@ internal static partial class Setup
         void StopForOtherSessions(List<Process> list)
         {
             if (list.Any(p => UninstallRules.StopsForOtherSession(session, SessionOf(p))))
-                throw new InvalidOperationException("Ultimate File Explorer is running in another account that is signed in on this PC. " +
+                throw new InvalidOperationException("Rock Preview is running in another account that is signed in on this PC. " +
                     $"Close it there, or sign that account out, then {again}.");
         }
         StopForOtherSessions(running);
@@ -823,7 +823,7 @@ internal static partial class Setup
             if (running.Count == 0) return;
         }
         StopForOtherSessions(running);
-        if (!force) throw new InvalidOperationException("Ultimate File Explorer is still running. Close it and try again.");
+        if (!force) throw new InvalidOperationException("Rock Preview is still running. Close it and try again.");
         foreach (var p in running) { try { p.Kill(); p.WaitForExit(5000); } catch (Exception) { } }
     }
 

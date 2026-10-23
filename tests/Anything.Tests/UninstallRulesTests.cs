@@ -153,7 +153,7 @@ public sealed class UninstallRulesTests
 
     // ---- an installed copy, from another copy ---------------------------------------------------
 
-    const string Installed = "Removes Ultimate File Explorer from this PC: the program, its shortcuts, start with Windows and the " +
+    const string Installed = "Removes Rock Preview from this PC: the program, its shortcuts, start with Windows and the " +
                              "instant-indexing service, and gives folders and Win+E back to File Explorer. Your files are not affected.";
 
     [Fact]

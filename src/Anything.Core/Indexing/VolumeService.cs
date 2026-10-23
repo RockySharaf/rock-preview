@@ -97,7 +97,7 @@ public static class VolumeService
 
         int version = r.ReadInt32();
         string drive = ReadShortString(r, 16);
-        if (version < OldestProtocolVersion || version > ProtocolVersion) { Fail(w, $"Ultimate File Explorer service speaks protocol {ProtocolVersion}, not {version}."); return; }
+        if (version < OldestProtocolVersion || version > ProtocolVersion) { Fail(w, $"Rock Preview service speaks protocol {ProtocolVersion}, not {version}."); return; }
         if (!IsLocalNtfsVolume(drive)) { Fail(w, "Not a local NTFS volume."); return; }
         using var volume = LocalVolumeSource.TryOpen(drive.ToUpperInvariant());
         if (volume == null) { Fail(w, "The volume can't be opened."); return; }

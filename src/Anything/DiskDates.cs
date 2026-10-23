@@ -42,7 +42,7 @@ internal static class DiskDates
         lock (s_queue)
         {
             if (s_worker != null) return;
-            s_worker = new Thread(Worker) { IsBackground = true, Name = "Ultimate File Explorer date reader", Priority = ThreadPriority.BelowNormal };
+            s_worker = new Thread(Worker) { IsBackground = true, Name = "Rock Preview date reader", Priority = ThreadPriority.BelowNormal };
             s_worker.Start();
         }
     }

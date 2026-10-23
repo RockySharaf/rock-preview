@@ -153,7 +153,7 @@ internal sealed unsafe class ServiceVolumeSource : IVolumeSource
         {
             ct.ThrowIfCancellationRequested();
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (!EnsureConnected()) throw new IOException("The Ultimate File Explorer service isn't running.");
+            if (!EnsureConnected()) throw new IOException("The Rock Preview service isn't running.");
             var pipe = _pipe!;
             Volatile.Write(ref _stopping, 0);
             _reading = pipe;
@@ -169,8 +169,8 @@ internal sealed unsafe class ServiceVolumeSource : IVolumeSource
                 {
                     byte reply = _r!.ReadByte();
                     if (reply == VolumeService.ReplyProgress) { progress(_r.ReadInt32()); continue; }
-                    if (reply == VolumeService.ReplyError) throw new IOException("Ultimate File Explorer service: " + _r.ReadString());
-                    if (reply != VolumeService.ReplyOk) throw new InvalidDataException("unexpected reply from the Ultimate File Explorer service");
+                    if (reply == VolumeService.ReplyError) throw new IOException("Rock Preview service: " + _r.ReadString());
+                    if (reply != VolumeService.ReplyOk) throw new InvalidDataException("unexpected reply from the Rock Preview service");
                     method = _r.ReadString();
                     return VolumeRecords.ReadFrom(_r, accessTimes: _protocol >= 2);
                 }

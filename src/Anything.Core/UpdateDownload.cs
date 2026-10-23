@@ -22,7 +22,7 @@ public static class UpdateDownload
     {
         var asset = release.Installer ?? throw new InvalidOperationException("This release has no installer for this PC.");
         if (!UpdateCheck.IsReleaseDownload(asset.Url))
-            throw new InvalidOperationException("The installer isn't one of Ultimate File Explorer's release downloads on GitHub.");
+            throw new InvalidOperationException("The installer isn't one of Rock Preview's release downloads on GitHub.");
         string dir = Path.Combine(folder, release.Version.ToString(3));
         Directory.CreateDirectory(dir);
         string target = Path.Combine(dir, asset.Name);

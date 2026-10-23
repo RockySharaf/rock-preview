@@ -64,7 +64,7 @@ internal sealed partial class SettingsForm : Form
         _app = app;
         SuspendLayout();
         AutoScaleMode = AutoScaleMode.None;
-        Text = app.IsDemo ? "Ultimate File Explorer Settings (Demo)" : "Ultimate File Explorer Settings";
+        Text = app.IsDemo ? "Rock Preview Settings (Demo)" : "Rock Preview Settings";
         Icon = app.AppIcon;
         StartPosition = FormStartPosition.CenterScreen;
         ShowInTaskbar = !Application.OpenForms.Cast<Form>().Any(f => f.Visible && f != this);
@@ -253,11 +253,11 @@ internal sealed partial class SettingsForm : Form
         string key = _app.ActiveHotkey ?? "the hotkey";
         _replaceExplorer.Enabled = _checkUpdates.Enabled = !_app.IsDemo;
         return Page("General",
-            Card("Start when Windows starts", $"So {key} opens Ultimate File Explorer any time.", _startWithWindows),
+            Card("Start when Windows starts", $"So {key} opens Rock Preview any time.", _startWithWindows),
             Card("Keep running in the background", $"Closing the window keeps it ready for {key}, with your searches as you left them.", _runInBackground),
             Card("Show the tray icon", "An icon by the clock to open it, or to exit.", _showTray),
             Card("Use instead of Windows File Explorer",
-                "Folders, drives, Win+E, This PC and File Explorer's taskbar button open Ultimate File Explorer. " +
+                "Folders, drives, Win+E, This PC and File Explorer's taskbar button open Rock Preview. " +
                 "Turn it off to get File Explorer back exactly as it was.", _replaceExplorer),
             Card("Open folders in tabs",
                 "A folder opened from Windows, or Win+E, opens as a new tab in the window you used last. Off: each opens in a new window.", _openInTabs),
@@ -292,11 +292,11 @@ internal sealed partial class SettingsForm : Form
         bool service = !_app.IsDemo && IndexService.IsInstalled();
         // An older service (setup's update declined, say) still works, but reads only fixed drives.
         bool outdated = service && IndexService.NeedsUpdate();
-        string status = index.UsesService && outdated ? "On, through an older Ultimate File Explorer Service. Update it to read USB drives instantly too, and dates accessed; Windows asks for permission once."
-            : index.UsesService ? "On: the Ultimate File Explorer Service reads your drives, so every change shows up at once."
-            : index.IsElevated ? "On, because Ultimate File Explorer runs as administrator."
-            : service && outdated ? "The Ultimate File Explorer Service isn't answering. Updating it usually brings it back; Windows asks for permission once."
-            : service ? "The Ultimate File Explorer Service isn't answering. Restarting the PC usually brings it back."
+        string status = index.UsesService && outdated ? "On, through an older Rock Preview Service. Update it to read USB drives instantly too, and dates accessed; Windows asks for permission once."
+            : index.UsesService ? "On: the Rock Preview Service reads your drives, so every change shows up at once."
+            : index.IsElevated ? "On, because Rock Preview runs as administrator."
+            : service && outdated ? "The Rock Preview Service isn't answering. Updating it usually brings it back; Windows asks for permission once."
+            : service ? "The Rock Preview Service isn't answering. Restarting the PC usually brings it back."
             : "Off: folders are scanned instead, which is slower. Windows asks for permission once to turn it on.";
         bool offer = !_app.IsDemo && (!service || (outdated && (index.UsesService || !index.IsElevated)));
         Control? turnOn = !offer ? null : CardButton(service ? "Update" : "Turn on", () => { Close(); _app.Post(() => _app.TurnOnInstantIndexing(null)); });
@@ -623,7 +623,7 @@ internal sealed partial class SettingsForm : Form
     {
         var current = AnythingApp.CurrentVersion.ToString(3);
         return Page("About",
-            Card("Ultimate File Explorer", $"Version {current}, formerly Rock Preview. Free software under the GNU GPL v3."),
+            Card("Rock Preview", $"Version {current}. Free software under the GNU GPL v3."),
             Card("Updates", "See if a newer version is out.", CardButton("Check for updates", () => _app.CheckForUpdatesInteractive(this))),
             Card("Get started", "The short tour: Alt+X, Thumbnails, subfolders, sorting and choosing folders.", CardButton("Show", () => { Close(); _app.ShowGetStarted(); })),
             Card("Source code and releases", "github.com/RockySharaf/rock-preview", CardButton("Open", () => AnythingApp.OpenWebPage("https://github.com/" + Anything.Core.UpdateCheck.Repository))),
@@ -691,7 +691,7 @@ internal sealed partial class SettingsForm : Form
                 Heading = $"{what} couldn't be started",
                 Text = portable
                     ? $"Before deleting {Path.GetFileName(Environment.ProcessPath) ?? Setup.ExeName}, turn off Use instead of Windows File Explorer and Start when Windows starts in Settings › General."
-                    : "Uninstall Ultimate File Explorer from Settings › Apps instead.",
+                    : "Uninstall Rock Preview from Settings › Apps instead.",
                 Icon = TaskDialogIcon.Error,
             });
             return;

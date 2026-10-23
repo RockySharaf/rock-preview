@@ -50,7 +50,7 @@ internal sealed class GetStartedForm : Form
         ];
         _stepRects = new Rectangle[_steps.Length];
         Text = "Get started";
-        AccessibleName = $"Ultimate File Explorer is ready. Press {hotkey} in any app to open it, and again to hide it.";
+        AccessibleName = $"Rock Preview is ready. Press {hotkey} in any app to open it, and again to hide it.";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
@@ -154,11 +154,11 @@ internal sealed class GetStartedForm : Form
         g.Clear(BackColor);
         const TextFormatFlags line = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
         if (_icon is not null) g.DrawIcon(_icon, _iconRect);
-        TextRenderer.DrawText(g, AllDone ? "You've got it!" : "Ultimate File Explorer is ready", _heading, _headingRect, ExplorerTheme.Text, line);
+        TextRenderer.DrawText(g, AllDone ? "You've got it!" : "Rock Preview is ready", _heading, _headingRect, ExplorerTheme.Text, line);
         DrawKeys(g);
         string body = AllDone
             ? $"{_hotkey} works in every app. You can change it in Settings › Keyboard."
-            : $"Press {_hotkey} in any app to open Ultimate File Explorer, and press it again to hide it.";
+            : $"Press {_hotkey} in any app to open Rock Preview, and press it again to hide it.";
         TextRenderer.DrawText(g, body, _body, _bodyRect, ExplorerTheme.SecondaryText, TextFormatFlags.NoPadding | TextFormatFlags.WordBreak);
         TextRenderer.DrawText(g, "Try these", _bold, _tryRect, ExplorerTheme.Text, line);
         for (int i = 0; i < _steps.Length; i++) DrawStep(g, _stepRects[i], _steps[i], _done.Contains(_steps[i].Kind));

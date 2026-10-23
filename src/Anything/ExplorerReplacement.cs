@@ -6,7 +6,7 @@ using Microsoft.Win32;
 namespace Anything;
 
 /// <summary>
-/// Optional (Settings › General, Setup): Ultimate File Explorer instead of File Explorer. Only this user's registry classes
+/// Optional (Settings › General, Setup): Rock Preview instead of File Explorer. Only this user's registry classes
 /// change, and whatever was there before is kept under <see cref="BackupKey"/> and put back when this is turned off,
 /// so File Explorer (or another file manager) comes back exactly as it was. What opens Rock Preview:
 /// <list type="bullet">
@@ -261,7 +261,7 @@ internal static class ExplorerReplacement
             if (firstTime && shell.GetValue(null) is string previous && !IsOurVerb(previous)) backup.SetValue(cls.Key + " default", previous);
             using (var verb = shell.CreateSubKey(Verb))
             {
-                verb.SetValue(null, "Open in Ultimate File Explorer");
+                verb.SetValue(null, "Open in Rock Preview");
                 verb.SetValue("Icon", $"\"{exe}\",0");
                 using var cmd = verb.CreateSubKey("command");
                 // -path last: a drive's "C:\" arrives as C:" (the backslash escapes the quote); CommandLine repairs it.
@@ -294,7 +294,7 @@ internal static class ExplorerReplacement
     static string TaskbarPins => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         @"Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar");
     const string FileExplorerObject = "::{52205FD8-5DFB-447D-801A-D0B52F2E83E1}";
-    const string PinDescription = "Ultimate File Explorer, in place of File Explorer";
+    const string PinDescription = "Rock Preview, in place of File Explorer";
 
     static bool IsOurShortcut(string lnk) => Shortcuts.Read(lnk) is { } t && t.Arguments.Contains("-explorer", StringComparison.OrdinalIgnoreCase);
 

@@ -249,7 +249,7 @@ internal sealed class SearchSyntaxForm : Form
     {
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
-        Text = "Search Syntax - Ultimate File Explorer";
+        Text = "Search Syntax - Rock Preview";
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(700, 600);

@@ -204,7 +204,7 @@ internal sealed partial class MainForm : Form
         var label = new Label
         {
             AutoSize = true,
-            Text = "Instant indexing is off, so Ultimate File Explorer is scanning folders (slower). Turn it on once and it stays on: Windows asks for permission one time.",
+            Text = "Instant indexing is off, so Rock Preview is scanning folders (slower). Turn it on once and it stays on: Windows asks for permission one time.",
             Margin = new Padding(0, 2, 6, 2),
         };
         var restart = new LinkLabel { AutoSize = true, Text = "Turn on instant indexing", Margin = new Padding(0, 2, 12, 2) };
@@ -251,9 +251,9 @@ internal sealed partial class MainForm : Form
         {
             string version = v.ToString(3);
             bool inApp = _app.CanUpdateInApp, downloading = _app.UpdateProgress is not null;
-            _updateText.Text = _app.UpdateProgress is { } p ? $"Downloading Ultimate File Explorer {version}... {(int)(p * 100)}%"
-                : _app.UpdateError is { } error ? $"Ultimate File Explorer {version} is available, but updating to it didn't work. {error}"
-                : $"Ultimate File Explorer {version} is available. You have {AnythingApp.CurrentVersion.ToString(3)}.";
+            _updateText.Text = _app.UpdateProgress is { } p ? $"Downloading Rock Preview {version}... {(int)(p * 100)}%"
+                : _app.UpdateError is { } error ? $"Rock Preview {version} is available, but updating to it didn't work. {error}"
+                : $"Rock Preview {version} is available. You have {AnythingApp.CurrentVersion.ToString(3)}.";
             _updateNowLink.Text = _app.UpdateError is null ? "Update now" : "Try again";
             _updateNowLink.Visible = inApp && !downloading;
             _updateGetLink.Text = inApp ? "What's new" : "See what's new and get it";

@@ -21,11 +21,11 @@ internal sealed class SetupForm : Form
     readonly ToolTip _tips = new() { AutoPopDelay = 20_000 };
     readonly CheckBox _desktop = new() { Text = "Add a desktop shortcut", AutoSize = true };
     readonly CheckBox _admin = new() { Text = "Always run as administrator (not needed with instant indexing; Windows asks each time)", AutoSize = true };
-    readonly CheckBox _startup = new() { Text = "Start Ultimate File Explorer when Windows starts", AutoSize = true };
+    readonly CheckBox _startup = new() { Text = "Start Rock Preview when Windows starts", AutoSize = true };
     readonly CheckBox _replace = new() { Text = "Use it instead of Windows File Explorer (folders, Win+E, This PC, taskbar)", AutoSize = true };
     readonly CheckBox _service = new() { Text = "Instant indexing for all drives (Windows asks for permission once)", AutoSize = true, Checked = true };
     readonly CheckBox _updates = new() { Text = "Tell me when a new version is out (checks GitHub once a day)", AutoSize = true, Checked = true };
-    readonly CheckBox _launch = new() { Text = "Open Ultimate File Explorer when setup finishes", AutoSize = true, Checked = true };
+    readonly CheckBox _launch = new() { Text = "Open Rock Preview when setup finishes", AutoSize = true, Checked = true };
     readonly Button _install = new() { Text = "Install", AutoSize = true, FlatStyle = FlatStyle.System };
     readonly Button _cancel = new() { Text = "Cancel", AutoSize = true, FlatStyle = FlatStyle.System };
     readonly Label _status = new() { AutoSize = false, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
@@ -50,7 +50,7 @@ internal sealed class SetupForm : Form
         AutoScaleMode = AutoScaleMode.None;
         int dpi = DeviceDpi > 0 ? DeviceDpi : 96;
         int S(int v) => v * dpi / 96;
-        Text = "Ultimate File Explorer Setup";
+        Text = "Rock Preview Setup";
         Font = _ui;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = MinimizeBox = false;
@@ -66,7 +66,7 @@ internal sealed class SetupForm : Form
         var header = new Panel { Dock = DockStyle.Top, Height = S(104), BackColor = ExplorerTheme.TitleBar };
         var logo = new PictureBox { Location = new Point(S(28), S(24)), Size = new Size(S(56), S(56)), SizeMode = PictureBoxSizeMode.Zoom };
         try { logo.Image = LoadIcon(256).ToBitmap(); } catch (Exception) { }
-        var title = new Label { Text = "Ultimate File Explorer", Font = _title, AutoSize = true, Location = new Point(S(100), S(20)), ForeColor = ExplorerTheme.Text };
+        var title = new Label { Text = "Rock Preview", Font = _title, AutoSize = true, Location = new Point(S(100), S(20)), ForeColor = ExplorerTheme.Text };
         var sub = new Label
         {
             Text = $"Version {Setup.Version}  ·  Search, browse and preview every file instantly",
@@ -173,7 +173,7 @@ internal sealed class SetupForm : Form
         _desktop.Checked = o.Auto ? o.DesktopShortcut : _existing is null || Setup.ShortcutExists(desktop: true, allUsers);
         _admin.Checked = o.RunAsAdmin;
         // The hotkey only works while Rock Preview runs, so a new install starts with Windows unless unticked.
-        if (_hotkey is not null) _startup.Text = $"Start Ultimate File Explorer when Windows starts, so {_hotkey} always opens it";
+        if (_hotkey is not null) _startup.Text = $"Start Rock Preview when Windows starts, so {_hotkey} always opens it";
         _startup.Checked = o.Auto ? o.StartWithWindows : _existing is null || Setup.StartsWithWindows();
         _replace.Checked = o.Auto ? o.ReplaceExplorer : _existing is null || ExplorerReplacement.IsEnabled();
         _updates.Checked = o.Auto ? o.CheckForUpdates ?? true : Setup.ChecksForUpdates();
@@ -190,7 +190,7 @@ internal sealed class SetupForm : Form
         if (_existing is not null)
         {
             _install.Text = "Update";
-            _status.Text = $"Ultimate File Explorer {_existing.Version} is installed here. Setup will update it.";
+            _status.Text = $"Rock Preview {_existing.Version} is installed here. Setup will update it.";
             _justMe.Enabled = _everyone.Enabled = _folder.Enabled = _browse.Enabled = false;
         }
         // Search inside files: the choice made before, wherever it was made (an installed copy, the portable one, or before
@@ -212,7 +212,7 @@ internal sealed class SetupForm : Form
         _folder.TextChanged += (_, _) => { if (_folder.Focused) _folderEdited = true; };
         _browse.Click += (_, _) =>
         {
-            using var dlg = new FolderBrowserDialog { Description = "Install Ultimate File Explorer in", UseDescriptionForTitle = true, InitialDirectory = _folder.Text };
+            using var dlg = new FolderBrowserDialog { Description = "Install Rock Preview in", UseDescriptionForTitle = true, InitialDirectory = _folder.Text };
             if (dlg.ShowDialog(this) == DialogResult.OK)
             {
                 _folder.Text = Path.GetFileName(dlg.SelectedPath.TrimEnd('\\')).Equals(Setup.AppName, StringComparison.OrdinalIgnoreCase)
@@ -387,7 +387,7 @@ internal sealed class SetupForm : Form
         _o.Launch = _launch.Checked;
         if (!Path.IsPathFullyQualified(_o.TargetFolder))
         {
-            _status.Text = "Choose a full folder path, like C:\\Program Files\\Ultimate File Explorer.";
+            _status.Text = "Choose a full folder path, like C:\\Program Files\\Rock Preview.";
             return;
         }
 
@@ -410,8 +410,8 @@ internal sealed class SetupForm : Form
             await Task.Run(() => Setup.Install(_o, s => BeginInvoke(() => _status.Text = s)));
             _done = true;
             _status.Text = _hotkey is not null
-                ? $"Ultimate File Explorer is installed. Press {_hotkey} anytime to open it, or find it in the Start menu."
-                : "Ultimate File Explorer is installed. You'll find it in the Start menu.";
+                ? $"Rock Preview is installed. Press {_hotkey} anytime to open it, or find it in the Start menu."
+                : "Rock Preview is installed. You'll find it in the Start menu.";
             _install.Text = "Finish";
             _cancel.Visible = false;
         }
@@ -421,7 +421,7 @@ internal sealed class SetupForm : Form
             _status.Text = ex is Anything.Core.FileHeldException && _existing is not null
                 ? "The copy that was running hasn't let go of its program file yet. Wait a moment, then click Update again."
                 : ex is UnauthorizedAccessException && _existing is not null
-                ? $"Windows didn't allow setup to update Ultimate File Explorer: {ex.Message}"
+                ? $"Windows didn't allow setup to update Rock Preview: {ex.Message}"
                 : ex is UnauthorizedAccessException
                 ? "Windows didn't allow setup to write there. Choose another folder or \"Everyone\" (administrator)."
                 : ex.Message;

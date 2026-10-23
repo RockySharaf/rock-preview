@@ -140,7 +140,7 @@ public static class UninstallRules
     {
         const string Files = "Your files are not affected.";
         if (copy is null || !(takeover || startsWithWindows))
-            return "Removes Ultimate File Explorer from this PC: the program, its shortcuts, start with Windows and the instant-indexing " +
+            return "Removes Rock Preview from this PC: the program, its shortcuts, start with Windows and the instant-indexing " +
                    $"service, and gives folders and Win+E back to File Explorer. {Files}";
         string removes = startsWithWindows ? "the program, its shortcuts and the instant-indexing service"
                                            : "the program, its shortcuts, start with Windows and the instant-indexing service";
@@ -150,7 +150,7 @@ public static class UninstallRules
             (true, false) => "folders and Win+E open with it",
             _ => "it starts with Windows",
         };
-        return $"Removes the installed Ultimate File Explorer from this PC: {removes}" +
+        return $"Removes the installed Rock Preview from this PC: {removes}" +
                $"{(takeover ? "" : ", and gives folders and Win+E back to File Explorer")}. This window is another copy ({copy}): " +
                $"{still}, which Uninstall doesn't change. Once the installed copy is uninstalled, Settings › About in this copy " +
                $"offers Remove from this PC to turn that off. {Files}";
@@ -171,12 +171,12 @@ public static class UninstallRules
         string stays = service == ServiceFor.ThisUserAndOthers ? " " + ServiceStays : "";
         if (parts.Count == 0)
             return service == ServiceFor.ThisUserAndOthers
-                ? "Ultimate File Explorer isn't installed on this PC: this copy runs on its own, so deleting it removes it (your " +
+                ? "Rock Preview isn't installed on this PC: this copy runs on its own, so deleting it removes it (your " +
                   $"settings and search index stay in the Rock Preview folders in AppData).{stays}"
-                : "Ultimate File Explorer isn't installed on this PC: this copy runs on its own and hasn't set anything up in " +
+                : "Rock Preview isn't installed on this PC: this copy runs on its own and hasn't set anything up in " +
                   "Windows, so deleting it removes it (your settings and search index stay in the Rock Preview folders in AppData).";
         string list = parts.Count == 1 ? parts[0] : string.Join(", ", parts.Take(parts.Count - 1)) + " and " + parts[^1];
-        return $"Ultimate File Explorer isn't installed on this PC, but this copy set Windows up for it: {list}. Remove from this PC " +
+        return $"Rock Preview isn't installed on this PC, but this copy set Windows up for it: {list}. Remove from this PC " +
                $"turns that off and keeps the program in {folder}, so deleting it afterwards leaves nothing pointing at it.{stays} " +
                "Your files are not affected.";
     }

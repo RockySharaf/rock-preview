@@ -17,8 +17,8 @@ namespace Anything;
 internal static class IndexService
 {
     public const string ServiceName = "RockPreviewService";
-    const string DisplayName = "Ultimate File Explorer Service";
-    const string Description = "Lets Ultimate File Explorer index your NTFS drives instantly without running as administrator. " +
+    const string DisplayName = "Rock Preview Service";
+    const string Description = "Lets Rock Preview index your NTFS drives instantly without running as administrator. " +
                                "Reads file names, sizes and dates only, for the users who installed it.";
     const string ParametersKey = @"SYSTEM\CurrentControlSet\Services\" + ServiceName + @"\Parameters";
     const string AllowedUsersValue = "AllowedUsers";
@@ -27,7 +27,7 @@ internal static class IndexService
     /// <summary>
     /// Bumped only when the service itself changes (not with every Rock Preview release), so updating Rock Preview
     /// asks for administrator permission again only when the service really needs it. 2: frees memory after a scan.
-    /// 3: the new name (Ultimate File Explorer Service) in Windows' Services list. 4: reads USB drives formatted NTFS
+    /// 3: the new name (Rock Preview Service) in Windows' Services list. 4: reads USB drives formatted NTFS
     /// too, lets go of a drive when asked (so it can be safely removed at once) and never waits on a busy change journal.
     /// 5: sends each file's date accessed too (protocol 2; older apps still get protocol 1).
     /// </summary>

@@ -110,7 +110,7 @@ internal sealed class SnippetResolver : IDisposable
     void EnsureWorker()
     {
         if (_worker != null) return;
-        _worker = new Thread(Work) { IsBackground = true, Name = "Ultimate File Explorer matching text", Priority = ThreadPriority.BelowNormal };
+        _worker = new Thread(Work) { IsBackground = true, Name = "Rock Preview matching text", Priority = ThreadPriority.BelowNormal };
         _worker.Start();
     }
 

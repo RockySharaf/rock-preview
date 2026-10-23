@@ -662,7 +662,7 @@ internal sealed partial class MainForm
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Unable to open File Explorer.\n\n{ex.Message}", "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, $"Unable to open File Explorer.\n\n{ex.Message}", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -808,7 +808,7 @@ internal sealed partial class MainForm
         if (roots.Count == 0)
         {
             MessageBox.Show(this, "Open a folder, or select folders in the results, to see every file in it at once.",
-                "Ultimate File Explorer", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
         _zapRoots = roots;

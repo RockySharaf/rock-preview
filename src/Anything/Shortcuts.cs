@@ -13,7 +13,7 @@ internal static class Shortcuts
     /// </summary>
     /// <summary>
     /// The AppUserModelID: windows, shortcuts and notifications share it. Windows shows the name of the Start menu
-    /// shortcut carrying it ("Ultimate File Explorer"), or this ID itself when there is none (the portable copy).
+    /// shortcut carrying it ("Rock Preview"), or this ID itself when there is none (the portable copy).
     /// </summary>
     public const string AppId = "UltimateFileExplorer";
 
