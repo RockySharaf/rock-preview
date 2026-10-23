@@ -16,6 +16,9 @@ internal sealed partial class AppSettings
     /// <summary>The window's offer to search inside files was answered (Choose… or Not now), or Setup asked already.</summary>
     public bool ContentAsked { get; set; }
 
+    /// <summary>The window's question about reading inside network drives was answered, or Settings' Network drives switch was used.</summary>
+    public bool ContentNetworkAsked { get; set; }
+
     /// <summary>This is the demo's ini (RockPreview-demo.ini), whose defaults let the sample index be searched inside.</summary>
     bool IsDemoFile => string.Equals(Path.GetFileName(FilePath), Path.GetFileName(DefaultPath(demo: true)), StringComparison.OrdinalIgnoreCase);
 
@@ -25,6 +28,7 @@ internal sealed partial class AppSettings
         // Whitelisted like the content_* switches: 1, 0, true or false; anything else keeps the default.
         s.MatchContent = ContentIni.Bool(v.TryGetValue("match_content", out var mc) ? mc : null, s.MatchContent);
         s.ContentAsked = ContentIni.Bool(v.TryGetValue("content_asked", out var asked) ? asked : null, s.ContentAsked);
+        s.ContentNetworkAsked = ContentIni.Bool(v.TryGetValue("content_network_asked", out var netAsked) ? netAsked : null, s.ContentNetworkAsked);
     }
 
     void SaveContent(StringBuilder sb)
@@ -32,6 +36,7 @@ internal sealed partial class AppSettings
         void W(string k, string value) => sb.Append(k).Append('=').Append(value).Append("\r\n");
         ContentIni.Save(Content, W);
         W("content_asked", ContentAsked ? "1" : "0");
+        W("content_network_asked", ContentNetworkAsked ? "1" : "0");
         W("match_content", MatchContent ? "1" : "0");
         // The name database's place, when moved: read since 1.0 but never written before, so a moved database (and the text
         // index beside it, in its Content folder) was forgotten at the next save.

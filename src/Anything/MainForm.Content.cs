@@ -45,7 +45,8 @@ internal sealed partial class MainForm
     ToolStripMenuItem? _miMatchContent;
     FlowLayoutPanel? _offerBar;
     Label? _offerText;
-    LinkLabel? _offerTurnOn;
+    LinkLabel? _offerTurnOn, _offerChoose, _offerSearchNetwork;
+    bool _offerNetwork; // the bar asks about network drives (not the offer to search inside files)
     System.Windows.Forms.Timer? _snippetTimer;
     NoLabelTips? _noLabelTips;
     int _previewSeq;
@@ -259,18 +260,24 @@ internal sealed partial class MainForm
 
     // ---- the offer ---------------------------------------------------------------------------------
 
-    /// <summary>The offer to search inside files, under the new-version bar, while it is due (built the first time).</summary>
+    /// <summary>
+    /// The offer to search inside files, under the new-version bar, while it is due (built the first time); once that is
+    /// answered, the same bar asks about network drives searched by name only.
+    /// </summary>
     internal void UpdateOfferBar()
     {
-        bool show = _app.ShowContentOffer;
-        if (!show)
+        bool content = _app.ShowContentOffer, network = !content && _app.ShowNetworkOffer;
+        if (!content && !network)
         {
             if (_offerBar is { Visible: true }) _offerBar.Visible = false;
             return;
         }
         if (_offerBar is null) BuildOfferBar();
-        _offerText!.Text = _app.ContentOfferText;
-        _offerTurnOn!.Visible = _app.KeptContent is not null;
+        _offerNetwork = network;
+        _offerText!.Text = network ? _app.NetworkOfferText : _app.ContentOfferText;
+        _offerTurnOn!.Visible = content && _app.KeptContent is not null;
+        _offerChoose!.Visible = content;
+        _offerSearchNetwork!.Visible = network;
         if (!_offerBar!.Visible) _offerBar.Visible = true;
     }
 
@@ -296,9 +303,17 @@ internal sealed partial class MainForm
             _app.ContentOfferAnswered();
             _app.ShowContentSettings(this);
         };
+        var searchNetwork = new LinkLabel { AutoSize = true, Text = "Search inside them", Margin = new Padding(0, 2, 12, 2) };
+        searchNetwork.LinkClicked += (_, _) => _app.NetworkOfferAnswered(turnOn: true);
         var later = new LinkLabel { AutoSize = true, Text = "Not now", Margin = new Padding(0, 2, 0, 2) };
-        later.LinkClicked += (_, _) => _app.ContentOfferAnswered();
-        bar.Controls.AddRange([_offerText, _offerTurnOn, choose, later]);
+        later.LinkClicked += (_, _) =>
+        {
+            if (_offerNetwork) _app.NetworkOfferAnswered(turnOn: false);
+            else _app.ContentOfferAnswered();
+        };
+        _offerChoose = choose;
+        _offerSearchNetwork = searchNetwork;
+        bar.Controls.AddRange([_offerText, _offerTurnOn, choose, searchNetwork, later]);
         // The sentence wraps in a narrow window rather than run past its edge (it can name folders left out).
         var text = _offerText;
         bar.SizeChanged += (_, _) =>

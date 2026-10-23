@@ -16,13 +16,13 @@ internal sealed partial class SettingsForm
     readonly ComboBox _contentMode = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly NoteLabel _contentNote = new(), _addedFolderNote = new();
     readonly RowList _contentFolders = new();
-    SubRow? _myFoldersRow;
+    SubRow? _myFoldersRow, _networkDrivesRow;
     ActionNote? _notByNameNote;
     List<string> _namesAdded = []; // folders the note's "Search them by name too" added (the name index takes them when Settings closes)
     string _problemsText = "";
     string? _readingText;
     readonly FolderList _contentExclude = new();
-    readonly ToggleSwitch _myFolders = new(), _readEncrypted = new(), _readOnBattery = new(), _matchContentDefault = new(), _ocr = new();
+    readonly ToggleSwitch _myFolders = new(), _networkDrives = new(), _readEncrypted = new(), _readOnBattery = new(), _matchContentDefault = new(), _ocr = new();
     readonly List<(ContentKinds Kind, ToggleSwitch Switch)> _kindSwitches = [];
     readonly TextBox _extraExtensions = new();
     readonly ComboBox _maxFileSize = new() { DropDownStyle = ComboBoxStyle.DropDownList }, _networkSpeed = new() { DropDownStyle = ComboBoxStyle.DropDownList };
@@ -92,6 +92,9 @@ internal sealed partial class SettingsForm
 
         _myFolders.AccessibleName = "My folders";
         _myFoldersRow = new SubRow("My folders", _myFolders, detail: "Desktop, Documents, Downloads, Pictures and OneDrive.");
+        _networkDrives.AccessibleName = "Network drives";
+        _networkDrivesRow = new SubRow("Network drives", _networkDrives, detail: ContentPresentation.NetworkDrivesDetail);
+        if (_networkDrivesRow.DetailLabel is { } networkDetail) _tips.SetToolTip(networkDetail, ContentPresentation.NetworkDrivesTip);
         // Under it: the folders searched inside that the name index doesn't hold (so never read inside), and a button that
         // adds them to the folders searched by name. Nothing changes until it is clicked.
         _notByNameNote = new ActionNote(CardButton(ContentPresentation.SearchByNameButton(2), SearchContentFoldersByName));
@@ -185,7 +188,7 @@ internal sealed partial class SettingsForm
             _modeCard,
             _readingCard,
             Card("Folders to search inside",
-                @"Your own folders, and the folders, drives and network shares (\\server\share) you add. A folder that isn't searched by name yet is added there too.",
+                @"Your own folders, your network drives if you switch them on, and the folders, drives and network shares (\\server\share) you add. A folder that isn't searched by name yet is added there too.",
                 folderButtons, _contentFolders),
             Card("Don't search inside these folders", "Nothing inside them is read, even within the folders above.", excludeAdd, _contentExclude),
             Card("Kinds of files", "Keys, certificates, password stores, password exports, recovery codes and app data are never read (known by their names), whatever is chosen here.", null, kinds),
@@ -233,6 +236,7 @@ internal sealed partial class SettingsForm
         var s = _app.Settings.Content;
         _contentMode.SelectedIndex = (int)(s.ModeExplicit ? s.Mode : ContentMode.NamesOnly);
         _myFolders.Checked = s.UseMyFolders;
+        _networkDrives.Checked = s.ReadNetworkDrives;
         _contentExclude.Folders = s.ExcludeFolders;
         foreach (var (kind, sw) in _kindSwitches) sw.Checked = (s.Kinds & kind) != 0;
         _extraExtensions.Text = string.Join("; ", s.ExtraTextExtensions);
@@ -274,6 +278,22 @@ internal sealed partial class SettingsForm
                 }
             }
             _app.Settings.Content.UseMyFolders = _myFolders.Checked;
+            ContentSettingsChanged();
+        };
+        _networkDrives.CheckedChanged += async (_, _) =>
+        {
+            if (_loading) return;
+            // Only what the text index holds can be lost: switched on and off again before Settings applied it, nothing was read.
+            if (!_networkDrives.Checked && _app.NetworkDrivesApplied)
+            {
+                if (!await ConfirmScopeLoss("Network drives", t => t.ReadNetworkDrives = false))
+                {
+                    _loading = true; _networkDrives.Checked = true; _loading = false;
+                    return;
+                }
+            }
+            _app.Settings.Content.ReadNetworkDrives = _networkDrives.Checked;
+            _app.Settings.ContentNetworkAsked = true; // the window's question is answered too
             ContentSettingsChanged();
         };
         _contentExclude.Changed += () => { _app.Settings.Content.ExcludeFolders = _contentExclude.Folders; ContentSettingsChanged(); };
@@ -462,7 +482,7 @@ internal sealed partial class SettingsForm
         SetNote(_contentNote, string.Join(" ", notes));
         bool on = chosen != ContentMode.NamesOnly;
         foreach (var (_, sw) in _kindSwitches) sw.Enabled = on;
-        _myFolders.Enabled = _readEncrypted.Enabled = _readOnBattery.Enabled = _extraExtensions.Enabled = _maxFileSize.Enabled = _networkSpeed.Enabled = on;
+        _myFolders.Enabled = _networkDrives.Enabled = _readEncrypted.Enabled = _readOnBattery.Enabled = _extraExtensions.Enabled = _maxFileSize.Enabled = _networkSpeed.Enabled = on;
         UpdateSearchContentCard();
     }
 
@@ -648,9 +668,10 @@ internal sealed partial class SettingsForm
         foreach (Control c in _contentFolders.Controls.Cast<Control>().ToList())
         {
             _contentFolders.Controls.Remove(c);
-            if (c != _myFoldersRow && c != _addedFolderNote && c != _notByNameNote) c.Dispose();
+            if (c != _myFoldersRow && c != _networkDrivesRow && c != _addedFolderNote && c != _notByNameNote) c.Dispose();
         }
         if (_myFoldersRow is { } mine) _contentFolders.Controls.Add(mine);
+        if (_networkDrivesRow is { } network) _contentFolders.Controls.Add(network);
         if (_notByNameNote is { } notByName) _contentFolders.Controls.Add(notByName);
         foreach (var folder in _app.Settings.Content.Folders)
         {
@@ -774,6 +795,13 @@ internal sealed partial class SettingsForm
         // searched inside that lie within it are left out of its count.
         var before = _app.Settings.Content.Clone();
         before.Folders = [.. before.Folders.Where(f => !AppSettings.SamePath(f, path))];
+        if (before.ReadNetworkDrives && ContentEstimator.ReadAsNetworkDrive(path))
+        {
+            _addedCts?.Cancel();
+            _added = null;
+            SetNote(_addedFolderNote, ContentPresentation.AddedFolderOnNetworkDrive(path, notInNameIndex));
+            return;
+        }
         if (before.CoveredBy(path) is { } covering)
         {
             _addedCts?.Cancel();
@@ -785,6 +813,7 @@ internal sealed partial class SettingsForm
         var scope = _app.Settings.Content.Clone();
         scope.UseMyFolders = false;
         scope.Folders = [path];
+        scope.ReadNetworkDrives = false; // only the folder is priced, not every share the switch reads
         scope.ExcludeFolders = [.. scope.ExcludeFolders, .. before.FoldersInside(path)];
         scope.ModeExplicit = true;
         if (scope.Mode == ContentMode.NamesOnly) scope.Mode = ContentMode.Documents;

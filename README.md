@@ -94,6 +94,9 @@ documents; the first pass takes about 2 minutes in the background"):
 - It reads your own folders (Desktop, Documents, Downloads, Pictures and OneDrive) unless you add drives, folders or
   network shares, or leave some out. Keys, certificates, password stores, password exports, recovery codes and app data
   are never read (they are known by their names).
+- Network drives are searched by name until you switch on **Network drives** under **Settings › Indexing › Folders to
+  search inside** (every mapped drive and share the app searches by name, ones mapped later too); the window asks once
+  when it sees one. They're read over the network, at most at the network speed limit.
 - The first pass runs in the background at low priority, newest and most-opened files first, and slows down while you
   use the PC; it waits while on battery (unless you allow it) and while the app runs as administrator. After that only
   files that change are read again, as the name index sees them change. Settings shows how far it is and which files

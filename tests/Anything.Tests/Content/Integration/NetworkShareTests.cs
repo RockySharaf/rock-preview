@@ -67,6 +67,33 @@ public sealed class NetworkShareTests(ITestOutputHelper output) : IDisposable
         Assert.StartsWith(@"\\localhost\", _rig.Index.GetFullPath(r.Ids[0]), StringComparison.OrdinalIgnoreCase);
     }
 
+    [ShareFact]
+    public void A_share_searched_by_name_is_read_inside_once_network_drives_are_switched_on()
+    {
+        // The share is searched by name only (not among the folders searched inside): nothing on it is read ...
+        _rig.Write(@"Share\note.txt", "zqxnetprobe words on the share");
+        _rig.Write(@"Share\Jobs\job.txt", "zqxnetprobe second file");
+        _rig.Configure(s => s.Folders = []);
+        _rig.Start(threaded: true);
+        Assert.True(SpinWait.SpinUntil(() => _rig.Content!.Status is { Phase: ContentPhase.UpToDate }, TimeSpan.FromSeconds(30)),
+            $"never up to date: {_rig.Content!.Status}");
+        Thread.Sleep(500);
+        Assert.Empty(_rig.Files.Log);
+        Assert.Empty(_rig.Rows());
+
+        // ... until Network drives is switched on: then every file on it is read, as a network file, and found by its words.
+        var on = _rig.Settings;
+        on.Folders = [];
+        on.ReadNetworkDrives = true;
+        _rig.Content!.Apply(on);
+        Assert.True(WaitUpToDate(2, TimeSpan.FromSeconds(60)), $"not read in time: {_rig.Content!.Status}");
+        Assert.All(_rig.Files.Log, r => Assert.True(r.Network, $"{r.Path} wasn't read as a network file"));
+        var r = new SearchEngine().Search(_rig.Index, "content:zqxnetprobe", new SearchOptions(), SortKey.Name, false, default);
+        Assert.Null(r.Error);
+        Assert.Equal(2, r.Ids.Length);
+        Assert.All(r.Ids, id => Assert.StartsWith(@"\\localhost\", _rig.Index.GetFullPath(id), StringComparison.OrdinalIgnoreCase));
+    }
+
     [ShareFact(slow: true)]
     public void A_read_held_back_by_the_limit_past_its_time_limit_is_not_cut_off()
     {

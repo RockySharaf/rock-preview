@@ -28,6 +28,9 @@ internal sealed partial class AnythingApp
     /// <summary>Search inside files is on.</summary>
     public bool ContentOn => _contentMode != ContentMode.NamesOnly;
 
+    /// <summary>The text index reads inside network drives (Settings' switch as last applied, not as being edited).</summary>
+    public bool NetworkDrivesApplied { get; private set; }
+
     /// <summary>Matching text for the windows' rows; null before the text index started.</summary>
     public SnippetResolver? Snippets => _snippets;
 
@@ -57,7 +60,14 @@ internal sealed partial class AnythingApp
         try { _content.Start(IndexManager, Settings.Content); }
         catch (Exception) { }
         _contentMode = AppliedMode(Settings.Content);
+        NetworkDrivesApplied = Settings.Content.ReadNetworkDrives;
         IndexManager.StateChanged += OnOfferStateBackground;
+        // A network drive mapped or gone: the question about them may be due, and what reading them costs is counted again.
+        IndexManager.DrivesChanged += () => Post(() =>
+        {
+            ForgetNetworkEstimate();
+            UpdateOfferBars();
+        });
         SystemEvents.SessionEnding += OnSessionEnding;
         LookForKeptIndex();
     }
@@ -88,8 +98,13 @@ internal sealed partial class AnythingApp
         Settings.Save();
         try { _content.Apply(Settings.Content); } catch (Exception) { }
         _contentMode = AppliedMode(Settings.Content);
+        NetworkDrivesApplied = Settings.Content.ReadNetworkDrives;
         if (Settings.Content.ModeExplicit) _kept = null; // chosen now: kept means followed again, or deleted
         _snippets?.Clear(); // what is searched inside may have changed: no line from before is shown again
+        // What the question's estimate counts may have changed (the mode, kinds, folders); search inside files just turned on
+        // makes the question due.
+        ForgetNetworkEstimate();
+        if (ShowNetworkOffer) EstimateNetworkOffer();
         foreach (var w in _windows.ToArray()) w.OnContentModeChanged();
     }
 
@@ -161,6 +176,7 @@ internal sealed partial class AnythingApp
     void UpdateOfferBars()
     {
         if (ShowContentOffer && _kept is null) EstimateOffer();
+        else if (ShowNetworkOffer) EstimateNetworkOffer();
         foreach (var w in _windows.ToArray()) w.UpdateOfferBar();
     }
 
@@ -204,6 +220,89 @@ internal sealed partial class AnythingApp
             _kept = t.Result;
             UpdateOfferBars();
         }), TaskScheduler.Default);
+    }
+
+    // ---- the question about network drives -----------------------------------------------------------
+
+    /// <summary>
+    /// Whether windows ask about reading inside network drives now: search inside files on, the Network drives switch off
+    /// and never answered, and a network drive the name index planned that nothing reads inside (the documents' offer first).
+    /// </summary>
+    public bool ShowNetworkOffer => !_exiting && ContentOn && !Settings.Content.ReadNetworkDrives && !Settings.ContentNetworkAsked
+        && IndexManager.State == IndexState.Ready && NetworkDrivesNotReadInside().Count > 0 && !NothingToRead(_networkEstimate);
+
+    /// <summary>A whole count that found nothing to read inside them: the question would offer nothing.</summary>
+    static bool NothingToRead(ContentEstimate? estimate) => estimate is { AtLeast: false } e && ContentPresentation.NetworkOfferFiles(e) == 0;
+
+    /// <summary>The question's sentence: which drives, what reading them costs once worked out, at what speed, and the administrator pause.</summary>
+    public string NetworkOfferText => ContentPresentation.NetworkOffer(NetworkDrivesNotReadInside(),
+        Settings.Content.NetworkKilobytesPerSecond, IndexManager.IsElevated, _networkEstimate);
+
+    ContentEstimate? _networkEstimate; // shown while it is the latest; counted again until a whole count (not AtLeast) came in
+    bool _networkEstimating;
+    int _networkEstimateFor; // bumped when what it counts changes (drives, settings): an older count is dropped when it comes in
+
+    /// <summary>What the question's estimate counted changed: it is counted again when the question is next shown.</summary>
+    void ForgetNetworkEstimate()
+    {
+        _networkEstimateFor++;
+        _networkEstimate = null;
+    }
+
+    /// <summary>
+    /// The network drives and shares the name index holds that no folder searched inside covers or leaves out (the plan's
+    /// own answer, as the folder bar has it); none in the demo.
+    /// </summary>
+    IReadOnlyList<string> NetworkDrivesNotReadInside()
+    {
+        if (IsDemo) return [];
+        try { return ContentEstimator.NetworkRootsNotReadInside(Settings.Content, Settings.Index, IndexManager.PlannedDrives, f => CoverageOf(f)); }
+        catch (Exception) { return []; }
+    }
+
+    /// <summary>
+    /// Works out once, in the background, what reading inside the network drives would cost, for the question: from the
+    /// name index's counts and the measured priors only, never a file opened.
+    /// </summary>
+    void EstimateNetworkOffer()
+    {
+        // Counted once the name index is ready (a share still being scanned would count only what it listed so far), and
+        // again after a count that wasn't whole.
+        if (_networkEstimating || _networkEstimate is { AtLeast: false } || IndexManager.State != IndexState.Ready) return;
+        _networkEstimating = true;
+        int counting = _networkEstimateFor;
+        var network = Settings.Content.Clone();
+        // Only what switching it on adds: the folders searched inside already are left out of the count.
+        network.ExcludeFolders = [.. network.ExcludeFolders, .. network.EffectiveFolders()];
+        network.UseMyFolders = false;
+        network.Folders = [];
+        network.ReadNetworkDrives = true;
+        network.Mode = _contentMode;
+        network.ModeExplicit = true;
+        var content = _content;
+        Task.Run<ContentEstimate?>(async () =>
+        {
+            try { return await content.EstimateWithoutReadingAsync(network, CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception) { return null; }
+        }).ContinueWith(t => Post(() =>
+        {
+            _networkEstimating = false;
+            if (t.Result is { } e && counting == _networkEstimateFor) _networkEstimate = e;
+            if (!_exiting) foreach (var w in _windows.ToArray()) w.UpdateOfferBar();
+        }), TaskScheduler.Default);
+    }
+
+    /// <summary>The question was answered: "Search inside them" switches Network drives on (applied now), "Not now" doesn't; it doesn't come back.</summary>
+    public void NetworkOfferAnswered(bool turnOn)
+    {
+        Settings.ContentNetworkAsked = true;
+        if (turnOn)
+        {
+            Settings.Content.ReadNetworkDrives = true;
+            ApplyContentSettings(); // saves the settings too
+        }
+        else Settings.Save();
+        foreach (var w in _windows.ToArray()) w.UpdateOfferBar();
     }
 
     /// <summary>The offer was answered (Choose… or Not now): it doesn't come back.</summary>

@@ -37,6 +37,51 @@ public static class ContentPresentation
     /// <summary>Where the choice lives later, for setup's footnote.</summary>
     public const string ChangeLater = "Add drives or network folders, or change this, any time in Settings › Indexing.";
 
+    /// <summary>Settings' Network drives switch, under My folders (one line at 100–150%; the rest in <see cref="NetworkDrivesTip"/>).</summary>
+    public const string NetworkDrivesDetail = "Mapped drives like Z: and shares, read over the network.";
+
+    /// <summary>The Network drives switch's tooltip.</summary>
+    public const string NetworkDrivesTip =
+        "Every mapped drive and network share that is searched by name, ones mapped later too, read at most at the network speed limit below.";
+
+    /// <summary>
+    /// The windows' question while network drives are searched by name only: which ones (<paramref name="drives"/>, as
+    /// "Z:\" or "\\nas\jobs"), what reading them costs once it is worked out (<paramref name="estimate"/>, every one of them),
+    /// at what speed, and that nothing is read while the app runs as administrator.
+    /// </summary>
+    public static string NetworkOffer(IReadOnlyList<string> drives, int kilobytesPerSecond, bool elevated, ContentEstimate? estimate = null)
+    {
+        string which = drives.Count switch
+        {
+            0 => "your network drives",
+            1 => drives[0].TrimEnd('\\'),
+            <= 3 => string.Join(", ", drives.Take(drives.Count - 1).Select(d => d.TrimEnd('\\'))) + " and " + drives[^1].TrimEnd('\\'),
+            _ => string.Join(", ", drives.Take(3).Select(d => d.TrimEnd('\\'))) + $" and {drives.Count - 3} more",
+        };
+        string them = drives.Count == 1 ? "it" : "them";
+        var sb = new StringBuilder($"Files on {which} are found by name only. Search inside {them} too?");
+        if (estimate is { } e && NetworkOfferFiles(e) is var files and > 0)
+        {
+            bool pictures = e.Mode == ContentMode.DocumentsAndPictures;
+            sb.Append(' ').Append(Capital(Count(files, pictures ? "file" : "document", pictures ? "files" : "documents", e.AtLeast)));
+            sb.Append(": ").Append(SizePhrase(e.IndexBytes, e.AtLeast)).Append(" more on this PC");
+            if (e.NetworkBytesToRead > 0) sb.Append(", reading ").Append(SizePhrase(e.NetworkBytesToRead, e.AtLeast)).Append(" over the network").Append(AtMost(kilobytesPerSecond));
+            sb.Append("; ").Append(FirstPass(e.FirstPass, e.AtLeast)).Append('.');
+        }
+        else sb.Append($" They're read over the network{AtMost(kilobytesPerSecond)}.");
+        if (elevated) sb.Append(' ').Append(AdminNote);
+        return sb.ToString();
+    }
+
+    /// <summary>The files the question's estimate counts (documents, and pictures when their details are read).</summary>
+    public static int NetworkOfferFiles(ContentEstimate estimate)
+        => estimate.Documents + (estimate.Mode == ContentMode.DocumentsAndPictures ? estimate.Pictures : 0);
+
+    /// <summary>What adding a folder costs while Network drives reads it already (it is on a share): nothing.</summary>
+    public static string AddedFolderOnNetworkDrive(string folder, bool alsoAddedToNames)
+        => $"Adding {folder}: already searched inside, as one of your network drives; nothing more to read." +
+            (alsoAddedToNames ? " Also added to the folders searched by name." : "");
+
     /// <summary>
     /// The network speed Settings stores for "No limit" (KB/s; the ini needs a number). At or above it, nothing says "at
     /// most …".
@@ -766,6 +811,7 @@ public static class ContentIni
         else s.LoadMode(mode);
         s.UseMyFolders = Bool(value("content_my_folders"), s.UseMyFolders);
         s.Folders = List(value("content_folders")) ?? s.Folders;
+        s.ReadNetworkDrives = Bool(value("content_network_drives"), s.ReadNetworkDrives);
         s.ExcludeFolders = List(value("content_exclude_folders")) ?? s.ExcludeFolders;
         if (value("content_kinds") is { } kinds)
         {
@@ -791,6 +837,7 @@ public static class ContentIni
         if (s.ModeToSave() is { } mode) write("content_mode", mode);
         write("content_my_folders", s.UseMyFolders ? "1" : "0");
         write("content_folders", Join(s.Folders));
+        write("content_network_drives", s.ReadNetworkDrives ? "1" : "0");
         write("content_exclude_folders", Join(s.ExcludeFolders));
         write("content_kinds", string.Join('|', KindNames.Where(k => (s.Kinds & k.Kind) != 0).Select(k => k.Name)));
         write("content_extensions", Join(s.ExtraTextExtensions));

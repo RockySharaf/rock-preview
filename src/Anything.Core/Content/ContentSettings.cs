@@ -18,6 +18,11 @@ public sealed partial class ContentSettings
     public bool UseMyFolders { get; set; } = true;
     /// <summary>More folders, drives and shares to read inside ("E:\", "\\nas\jobs"); added to My folders, never replacing them.</summary>
     public List<string> Folders { get; set; } = [];
+    /// <summary>
+    /// Read inside every network drive and share the name index holds (mapped letters like Z:, \\server\share), as if each
+    /// were in Folders; off by default (a share can hold hundreds of GB, read over the network).
+    /// </summary>
+    public bool ReadNetworkDrives { get; set; }
     /// <summary>Folders never read inside, even within the ones above.</summary>
     public List<string> ExcludeFolders { get; set; } = [];
     /// <summary>Kinds of document read.</summary>
@@ -38,7 +43,7 @@ public sealed partial class ContentSettings
     /// <summary>A copy, lists included.</summary>
     public ContentSettings Clone() => new()
     {
-        Mode = Mode, ModeExplicit = ModeExplicit, UseMyFolders = UseMyFolders, Folders = [.. Folders], ExcludeFolders = [.. ExcludeFolders],
+        Mode = Mode, ModeExplicit = ModeExplicit, UseMyFolders = UseMyFolders, Folders = [.. Folders], ReadNetworkDrives = ReadNetworkDrives, ExcludeFolders = [.. ExcludeFolders],
         Kinds = Kinds, ExtraTextExtensions = [.. ExtraTextExtensions], MaxFileSizeMB = MaxFileSizeMB, ReadOnBattery = ReadOnBattery,
         ReadEncrypted = ReadEncrypted, NetworkKilobytesPerSecond = NetworkKilobytesPerSecond, OcrFolders = [.. OcrFolders],
     };

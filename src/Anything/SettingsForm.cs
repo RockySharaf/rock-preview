@@ -327,7 +327,8 @@ internal sealed partial class SettingsForm : Form
             Card("USB drives and memory cards",
                 "Search them, and CDs and DVDs, while they're plugged in. NTFS drives are read instantly; others are scanned. They can still be safely removed.", _removable),
             Card("Network drives",
-                "Mapped network drives (like Z:) are scanned and kept up to date. Their files stay searchable while the network is away.", _network, rescanRow),
+                "Mapped network drives (like Z:) are scanned and kept up to date. Their files stay searchable while the network is away. " +
+                "They're searched by name; to search inside their files too, switch on Network drives under Search inside files.", _network, rescanRow),
             Header("Information about each file"),
             Card("Date accessed",
                 "Keep when each file was last opened, for instant da: searches and sorting. It takes 8 bytes per file and folder (27 MB for 3.2 million). " +

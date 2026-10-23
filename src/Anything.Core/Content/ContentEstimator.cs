@@ -573,6 +573,51 @@ public static class ContentEstimator
     }
 
     /// <summary>
+    /// The network drives and shares the name index holds that nothing reads inside, for the windows' question about
+    /// Settings' Network drives switch: mapped letters from the drive list ("Z:\") and the shares among the folders searched
+    /// by name ("\\nas\jobs"). Left out: those a folder searched inside already holds (by its letter or its share), those
+    /// left out of reading inside, and those the name index doesn't hold (<paramref name="coverageOf"/>: the plan's answer,
+    /// as the folder bar has it).
+    /// </summary>
+    public static IReadOnlyList<string> NetworkRootsNotReadInside(ContentSettings settings, IndexSettings names,
+        IReadOnlyList<DriveEntry> drives, Func<string, FolderCoverage?> coverageOf)
+    {
+        var read = settings.EffectiveFolders();
+        // Left out as the scope leaves a root out: by a folder path above it or at it (a rule by name applies only below a
+        // root, never to a drive or share itself).
+        var leftOut = ContentSettings.MergeNested(settings.ExcludeFolders.Where(x => x.IndexOfAny(['*', '?']) < 0 && (x.Contains('\\') || x.Contains('/'))));
+        bool Covered(string? path) => ContentSettings.Normalize(path) is { } n
+            && (read.Any(f => ContentSettings.IsInside(n, f)) || leftOut.Any(x => ContentSettings.IsInside(n, x)));
+        var network = drives.Where(d => d.Kind == DriveKind.Network).ToList();
+        var found = new List<string>();
+        if (names.IndexNetworkDrives)
+            foreach (var d in network)
+                if (!Covered(d.Root) && !Covered(d.NetworkPath) && HeldByName(coverageOf(d.Root))) found.Add(d.Root);
+        // Folders searched by name on a share, or on a mapped letter whose drive isn't searched as a whole.
+        foreach (var folder in names.Folders)
+        {
+            if (ContentSettings.Normalize(folder) is not { } n || found.Any(f => ContentSettings.IsInside(n, f))) continue;
+            var mapped = network.FirstOrDefault(d => d.IsDriveLetter && ContentSettings.IsInside(n, d.Root));
+            if (!n.StartsWith(@"\\", StringComparison.Ordinal) && mapped is null) continue;
+            // "Z:\Projects" on Z: = \\nas\jobs is also "\\nas\jobs\Projects".
+            string? viaShare = mapped?.NetworkPath is { } share ? share.TrimEnd('\\') + n[2..] : null;
+            if (Covered(n) || Covered(viaShare)) continue;
+            if (HeldByName(coverageOf(n)) && !found.Contains(n, StringComparer.OrdinalIgnoreCase)) found.Add(n);
+        }
+        return found;
+    }
+
+    /// <summary>
+    /// Whether Settings' Network drives switch reads a folder inside: it is on a share, by its own path or a mapped letter
+    /// (the volume key the follower gives it; Win32, quick: a letter's share is looked up, not reached).
+    /// </summary>
+    public static bool ReadAsNetworkDrive(string folder)
+    {
+        try { return ContentScope.IsShare(VolumeKeys.For(folder).Key); }
+        catch (Exception e) when (e is not OutOfMemoryException) { return false; }
+    }
+
+    /// <summary>
     /// Whether the name index holds a folder, from the plan's answer (<see cref="IndexPlan.Coverage"/>): it is covered, or
     /// on a drive that isn't ready, which every switch lets in, so it is searched once the drive is (the folder bar offers
     /// nothing there either, and adding it to the folders searched by name would only stay behind). No answer (the demo)
@@ -828,7 +873,9 @@ public static class ContentEstimator
                         if (!reservoirs.TryGetValue(kind, out var r)) reservoirs[kind] = r = [];
                         if (r.Count < ReservoirPerKind) r.Add((id, size));
                         else if (random.NextInt64(n) is var j && j < ReservoirPerKind) r[(int)j] = (id, size);
-                        if (cloudWalker != null && cloudWalker.TryKeyOf(id, out _, out _, out _))
+                        // OneDrive never lives on a share; and the walkers share one root table, judged by the main
+                        // scope, so with Network drives on a share's root would pass the OneDrive walker too.
+                        if (cloudWalker != null && !network && cloudWalker.TryKeyOf(id, out _, out _, out _))
                         {
                             cloudCounts[kind] = cloudCounts.GetValueOrDefault(kind) + 1;
                             seenCloudCandidates++;
@@ -953,6 +1000,7 @@ public static class ContentEstimator
             settings = s.Clone();
             settings.UseMyFolders = false;
             settings.Folders = [.. onlyFolders];
+            settings.ReadNetworkDrives = false;
         }
         var snapshot = roots.Snapshot;
         return ContentScope.Build(settings, allRoots, [], folder =>
@@ -982,6 +1030,7 @@ public static class ContentEstimator
         }
         Add(s.UseMyFolders ? "1" : "0");
         foreach (var f in s.Folders) Add("f" + f);
+        if (s.ReadNetworkDrives) Add("n"); // only when on: caches made before the switch existed stay valid
         foreach (var f in s.ExcludeFolders) Add("x" + f);
         foreach (var f in s.ExtraTextExtensions) Add("e" + f);
         Add("m" + s.MaxFileSizeMB.ToString(System.Globalization.CultureInfo.InvariantCulture)); // documents over it aren't counted

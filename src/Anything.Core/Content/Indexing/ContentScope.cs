@@ -26,6 +26,7 @@ internal sealed class ContentScope
         Mode = settings.Mode;
         Kinds = settings.Kinds;
         AllRoots = allRoots;
+        NetworkDrives = settings.ReadNetworkDrives && !allRoots;
         var extras = ContentTypes.ExtraSet(settings.ExtraTextExtensions);
         _extras = extras.Count > 0 ? extras : null;
         var names = new List<string>();
@@ -49,6 +50,12 @@ internal sealed class ContentScope
     public ContentKinds Kinds { get; }
     /// <summary>Every root is an include folder (the demo); the deny-list still applies.</summary>
     public bool AllRoots { get; }
+    /// <summary>
+    /// Every share ("unc:" volume key: a mapped letter or \\server\share) is an include folder; exclusions and the
+    /// deny-list still apply. A mapped letter whose share Windows couldn't name ("path:Z:") isn't one: the root's verdict
+    /// and its stored documents' are judged from the key alone, so they always agree.
+    /// </summary>
+    public bool NetworkDrives { get; }
     /// <summary>Wildcard path exclusions need the folder's full path (the walker builds it only then).</summary>
     public bool NeedsFolderPaths => _pathRules != null;
     /// <summary>Changes whenever the set of files in scope can change (a reconcile then checks stored documents' paths).</summary>
@@ -68,6 +75,7 @@ internal sealed class ContentScope
         Mix((ulong)settings.Mode);
         Mix((ulong)settings.Kinds);
         Mix(allRootsInScope ? 1UL : 0UL);
+        if (scope.NetworkDrives) Mix(0x4E4554UL); // only when on: a store's scope from before the switch existed stays the same
         if (!allRootsInScope)
             foreach (var folder in settings.EffectiveFolders())
             {
@@ -106,6 +114,16 @@ internal sealed class ContentScope
         return _ancestors.Contains(state) ? FolderVerdict.Pending : FolderVerdict.Out;
     }
 
+    /// <summary>The verdict of a volume's own root from its key too: a share is in while network drives are read inside.</summary>
+    FolderVerdict VolumeStart(string volumeKey, ulong state)
+    {
+        var verdict = VolumeStart(state);
+        return verdict != FolderVerdict.In && NetworkDrives && IsShare(volumeKey) && !_blocked.Contains(state) ? FolderVerdict.In : verdict;
+    }
+
+    /// <summary>A share's volume key ("unc:\\SERVER\SHARE", a mapped letter's too).</summary>
+    internal static bool IsShare(string volumeKey) => volumeKey.StartsWith("unc:", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// The verdict of a folder from its parent's, its own key state and name. <paramref name="fullPath"/> is asked for
     /// only while wildcard path exclusions exist.
@@ -125,7 +143,7 @@ internal sealed class ContentScope
     public FolderVerdict RootVerdict(string volumeKey, string prefix, string displayRoot, out ulong state)
     {
         state = ContentKeys.Start(volumeKey);
-        var verdict = VolumeStart(state);
+        var verdict = VolumeStart(volumeKey, state);
         string path = displayRoot.TrimEnd('\\');
         foreach (var part in prefix.Split('\\', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -152,7 +170,7 @@ internal sealed class ContentScope
     {
         kind = ContentKind.None;
         ulong state = ContentKeys.Start(volumeKey);
-        var verdict = VolumeStart(state);
+        var verdict = VolumeStart(volumeKey, state);
         string? path = NeedsFolderPaths ? (displayRoot ?? "").TrimEnd('\\') : null;
         var rest = relativePath;
         while (!rest.IsEmpty)

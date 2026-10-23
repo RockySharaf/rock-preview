@@ -27,6 +27,7 @@ public sealed class ContentIniTests
             ModeExplicit = true,
             UseMyFolders = false,
             Folders = [@"E:\", @"\\nas\jobs"],
+            ReadNetworkDrives = true,
             ExcludeFolders = [@"E:\Temp"],
             Kinds = ContentKinds.Pdf | ContentKinds.Design,
             ExtraTextExtensions = ["log", "json"],
@@ -41,6 +42,7 @@ public sealed class ContentIniTests
         Assert.True(back.ModeExplicit);
         Assert.Equal(s.UseMyFolders, back.UseMyFolders);
         Assert.Equal(s.Folders, back.Folders);
+        Assert.True(back.ReadNetworkDrives);
         Assert.Equal(s.ExcludeFolders, back.ExcludeFolders);
         Assert.Equal(s.Kinds, back.Kinds);
         Assert.Equal(s.ExtraTextExtensions, back.ExtraTextExtensions);
@@ -58,7 +60,7 @@ public sealed class ContentIniTests
         var keys = Save(new ContentSettings { ModeExplicit = true });
         Assert.Equal(new[]
             {
-                "content_mode", "content_my_folders", "content_folders", "content_exclude_folders", "content_kinds", "content_extensions",
+                "content_mode", "content_my_folders", "content_folders", "content_network_drives", "content_exclude_folders", "content_kinds", "content_extensions",
                 "content_max_size_mb", "content_read_on_battery", "content_read_encrypted", "content_network_kbps", "content_ocr_folders",
             },
             keys.Keys);

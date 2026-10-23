@@ -522,6 +522,19 @@ public sealed class ContentPresentationTests
         Assert.Equal(int.MaxValue, ContentPresentation.RemovedCount(Est(ContentMode.DocumentsAndPictures, int.MaxValue, int.MaxValue, 0, TimeSpan.Zero)));
     }
 
+    [Fact]
+    public void The_network_question_names_the_drives_the_speed_and_the_administrator_pause()
+    {
+        Assert.Equal("Files on Z: are found by name only. Search inside it too? They're read over the network (at most 8 MB/s).",
+            ContentPresentation.NetworkOffer([@"Z:\"], 8192, elevated: false));
+        Assert.Equal("Files on S:, T: and Z: are found by name only. Search inside them too? They're read over the network (at most 2 MB/s).",
+            ContentPresentation.NetworkOffer([@"S:\", @"T:\", @"Z:\"], 2048, elevated: false));
+        Assert.StartsWith("Files on P:, Q:, R: and 2 more are found by name only.",
+            ContentPresentation.NetworkOffer([@"P:\", @"Q:\", @"R:\", @"S:\", @"T:\"], 8192, elevated: false));
+        Assert.Equal("Files on Z: are found by name only. Search inside it too? They're read over the network. " + ContentPresentation.AdminNote,
+            ContentPresentation.NetworkOffer([@"Z:\"], ContentPresentation.NoNetworkLimitKbps, elevated: true));
+    }
+
     // ---- snippets ------------------------------------------------------------------------------
 
     static ContentSnippet Snip(string text, (int, int)[] bold, ContentKind kind, int page = 0, int line = 0, string? sheet = null, DocField? field = null, int pages = 0)

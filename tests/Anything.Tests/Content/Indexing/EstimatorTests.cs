@@ -424,6 +424,23 @@ public class EstimatorTests
     }
 
     [Fact]
+    public void Network_drives_on_count_a_share_searched_by_name_as_network_files()
+    {
+        var index = new FileIndex();
+        int share = index.AddRoot(@"\\nas\jobs");
+        int jobs = index.Add("Jobs", share, FileAttributes.Directory, -1, 0, 0);
+        for (int i = 0; i < 5; i++) index.Add($"job{i}.pdf", jobs, FileAttributes.Archive, 1000, 1, 0);
+        var settings = new ContentSettings { UseMyFolders = false };
+        Assert.False(ContentEstimator.CountIndex(index, settings, CancellationToken.None).Kinds.ContainsKey(ContentKind.Pdf));
+        settings.ReadNetworkDrives = true;
+        // Counted once, as network files, never as OneDrive's (no file on the share is looked at for that).
+        var census = ContentEstimator.CountIndex(index, settings, CancellationToken.None);
+        var pdf = census.Kinds[ContentKind.Pdf];
+        Assert.Equal((5, 5, 5_000L), (pdf.Files, pdf.NetworkFiles, pdf.NetworkBytes));
+        Assert.Equal(0, census.CloudOnly);
+    }
+
+    [Fact]
     public void The_live_index_is_counted_in_scope_only()
     {
         var index = new FileIndex();
