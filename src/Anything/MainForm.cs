@@ -17,6 +17,10 @@ internal sealed partial class MainForm : Form
     readonly FlowLayoutPanel _infoBar = new();
     readonly FlowLayoutPanel _updateBar = new();  // a new version is out
     readonly Label _updateText = new() { AutoSize = true, Margin = new Padding(0, 2, 6, 2) };
+    readonly LinkLabel _updateNowLink = new() { AutoSize = true, Text = "Update now", Margin = new Padding(0, 2, 12, 2) },
+        _updateGetLink = new() { AutoSize = true, Text = "See what's new and get it", Margin = new Padding(0, 2, 12, 2) },
+        _updateCancelLink = new() { AutoSize = true, Text = "Cancel", Margin = new Padding(0, 2, 0, 2), Visible = false },
+        _updateLaterLink = new() { AutoSize = true, Text = "Not now", Margin = new Padding(0, 2, 0, 2) };
     readonly FlowLayoutPanel _leftOutBar = new(); // a whole drive is on the list of folders to leave out
     readonly Label _leftOutText = new() { AutoSize = true, UseMnemonic = false, Margin = new Padding(0, 2, 6, 2) };
     readonly LinkLabel _leftOutInclude = new() { AutoSize = true, UseMnemonic = false, Margin = new Padding(0, 2, 12, 2) };
@@ -220,20 +224,43 @@ internal sealed partial class MainForm : Form
         _updateBar.Padding = new Padding(6, 3, 6, 3);
         _updateBar.BackColor = SystemColors.Info;
         _updateBar.ForeColor = SystemColors.InfoText;
-        var get = new LinkLabel { AutoSize = true, Text = "See what's new and get it", Margin = new Padding(0, 2, 12, 2) };
-        get.LinkClicked += (_, _) => _app.OpenReleasePage();
-        var later = new LinkLabel { AutoSize = true, Text = "Not now", Margin = new Padding(0, 2, 0, 2) };
-        later.LinkClicked += (_, _) => _app.HideUpdateNotice();
-        _updateBar.Controls.AddRange([_updateText, get, later]);
+        _updateNowLink.LinkClicked += (_, _) => _app.UpdateNow();
+        _updateGetLink.LinkClicked += (_, _) => _app.OpenReleasePage();
+        _updateCancelLink.LinkClicked += (_, _) => _app.CancelUpdate();
+        _updateLaterLink.LinkClicked += (_, _) => _app.HideUpdateNotice();
+        _updateBar.Controls.AddRange([_updateText, _updateNowLink, _updateGetLink, _updateCancelLink, _updateLaterLink]);
+        // The sentence wraps in a narrow window rather than run past its edge (a reason why updating didn't work can be long).
+        _updateBar.SizeChanged += (_, _) =>
+        {
+            var max = new Size(Math.Max(1, _updateBar.ClientSize.Width - _updateBar.Padding.Horizontal - _updateText.Margin.Horizontal), 0);
+            if (_updateText.MaximumSize != max) _updateText.MaximumSize = max;
+        };
         _updateBar.Visible = false;
         UpdateUpdateBar();
     }
 
-    /// <summary>Shows the new-version bar while a newer Rock Preview is out (until "Not now").</summary>
+    /// <summary>
+    /// Shows the new-version bar while a newer Rock Preview is out (until "Not now"): Update now for the installed copy
+    /// (else the release page), how far its download is, or why it didn't work.
+    /// </summary>
     internal void UpdateUpdateBar()
     {
-        bool show = _app.ShowUpdateNotice;
-        if (show) _updateText.Text = $"Ultimate File Explorer {_app.NewVersion!.ToString(3)} is available. You have {AnythingApp.CurrentVersion.ToString(3)}.";
+        // An Update now running or that didn't work shows even after "Not now" hid the notice (it was asked for since).
+        bool show = _app.NewVersion is not null && (_app.ShowUpdateNotice || _app.UpdateProgress is not null || _app.UpdateError is not null);
+        if (show && _app.NewVersion is { } v)
+        {
+            string version = v.ToString(3);
+            bool inApp = _app.CanUpdateInApp, downloading = _app.UpdateProgress is not null;
+            _updateText.Text = _app.UpdateProgress is { } p ? $"Downloading Ultimate File Explorer {version}... {(int)(p * 100)}%"
+                : _app.UpdateError is { } error ? $"Ultimate File Explorer {version} is available, but updating to it didn't work. {error}"
+                : $"Ultimate File Explorer {version} is available. You have {AnythingApp.CurrentVersion.ToString(3)}.";
+            _updateNowLink.Text = _app.UpdateError is null ? "Update now" : "Try again";
+            _updateNowLink.Visible = inApp && !downloading;
+            _updateGetLink.Text = inApp ? "What's new" : "See what's new and get it";
+            _updateGetLink.Visible = !downloading;
+            _updateCancelLink.Visible = downloading;
+            _updateLaterLink.Visible = !downloading;
+        }
         if (_updateBar.Visible != show) _updateBar.Visible = show;
     }
 

@@ -302,6 +302,7 @@ internal sealed partial class AnythingApp : ApplicationContext
     {
         if (_exiting) return;
         _exiting = true;
+        _updateCts?.Cancel(); // an Update now still downloading stops (its partial file is deleted)
         foreach (var w in _windows.Where(x => x != _lastActive)) w.SaveStateTo(Settings);
         _lastActive?.SaveStateTo(Settings);
         Settings.Save();
@@ -388,7 +389,7 @@ internal sealed partial class AnythingApp : ApplicationContext
             menu.Items.Add(new ToolStripMenuItem("&New Search Window", null, (_, _) => NewWindow(_lastActive)));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("&Settings...", null, (_, _) => ShowSettings(null)));
-            menu.Items.Add(new ToolStripMenuItem("", null, (_, _) => OpenReleasePage()) { Name = "update", Visible = false });
+            menu.Items.Add(new ToolStripMenuItem("", null, (_, _) => { if (CanUpdateInApp) UpdateNow(); else OpenReleasePage(); }) { Name = "update", Visible = false });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("E&xit", null, (_, _) => ExitApp()));
             _tray = new NotifyIcon
@@ -494,10 +495,157 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// <summary>Whether windows show the new-version bar ("Not now" hides it until Rock Preview starts again).</summary>
     public bool ShowUpdateNotice => NewVersion is not null && NewVersion != _updateNoticeHidden;
 
+    // ---- Update now --------------------------------------------------------------------------
+
+    /// <summary>Where Update now keeps the installers it downloads (deleted once they are this version or older).</summary>
+    static string UpdatesFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Setup.DataFolderName, "Updates");
+
+    Setup.Installed? _installedCopy;
+    bool _installedLooked;
+
+    /// <summary>The installation this copy runs from (where its Settings › Apps entry says), or null (portable, another folder, the demo).</summary>
+    Setup.Installed? InstalledCopy
+    {
+        get
+        {
+            if (IsDemo) return null;
+            if (!_installedLooked)
+            {
+                _installedLooked = true;
+                _installedCopy = Setup.FindInstalled() is { } inst && Environment.ProcessPath is { } exe
+                    && AppSettings.SamePath(Path.GetDirectoryName(exe) ?? "", inst.Folder) ? inst : null;
+            }
+            return _installedCopy;
+        }
+    }
+
+    /// <summary>
+    /// Update now can update this copy: it is the installed one. A portable copy, a copy in another folder and the demo get
+    /// the release page instead.
+    /// </summary>
+    public bool CanUpdateInApp => InstalledCopy is not null;
+
+    /// <summary>Update now's download: the share received (0 to 1) while it runs, else null.</summary>
+    public double? UpdateProgress { get; private set; }
+
+    /// <summary>Why the last Update now stopped, as a sentence (shown in the bar until it is tried again), or null.</summary>
+    public string? UpdateError { get; private set; }
+
+    CancellationTokenSource? _updateCts;
+
+    /// <summary>
+    /// Update now: asks GitHub for the latest release (always the newest, however many came out since), downloads its
+    /// installer while the windows' bars show how far, checks its size and SHA-256 against GitHub's, then starts it to
+    /// update this copy in place (every choice kept) and closes. The installer waits for this copy to close, updates it
+    /// and opens the new version.
+    /// </summary>
+    public async void UpdateNow()
+    {
+        if (_exiting || UpdateProgress is not null || InstalledCopy is not { } installed) return;
+        UpdateError = null;
+        SetUpdateProgress(0);
+        var cts = _updateCts = new CancellationTokenSource();
+        try
+        {
+            string name = UpdateCheck.InstallerName(RuntimeInformation.ProcessArchitecture);
+            var release = await UpdateCheck.FetchLatestReleaseAsync(Setup.Version, name, cts.Token);
+            if (release is null || !UpdateCheck.IsNewer(release.Version, CurrentVersion))
+            {
+                SetUpdateProgress(null);
+                SetNewVersion(null); // nothing newer after all (a release taken back)
+                return;
+            }
+            if (release.Version != NewVersion)
+            {
+                // A newer one came out since the notice: that one is installed, and nothing is announced again.
+                NewVersion = release.Version;
+                Settings.LatestVersion = Settings.NotifiedVersion = release.Version.ToString(3);
+                Settings.Save();
+            }
+            if (release.Installer is null)
+                throw new InvalidOperationException("This release has no installer the app can update from: get it from its page on GitHub.");
+            int shown = 0;
+            var progress = new Progress<double>(p =>
+            {
+                int percent = (int)(p * 100);
+                if (percent == shown || cts.IsCancellationRequested || _exiting) return;
+                shown = percent;
+                SetUpdateProgress(p);
+            });
+            string setup = await UpdateDownload.DownloadAsync(release, UpdatesFolder, Setup.Version, progress, cts.Token);
+            if (_exiting) return;
+            cts.Token.ThrowIfCancellationRequested(); // cancelled as it finished: nothing is started
+            // Held open (others may read it, not change, rename or delete it) from its last check until Windows has started
+            // it: the installer that runs is the one checked. An installation for everyone asks Windows' permission here,
+            // before this copy closes: declined, nothing has changed and the app stays open.
+            await using (var held = new FileStream(setup, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (!await UpdateDownload.MatchesAsync(held, release.Installer, cts.Token))
+                    throw new InvalidDataException("The downloaded installer changed before it could be started. Try again.");
+                bool elevate = installed.AllUsers && !Program.IsElevated();
+                var start = new ProcessStartInfo(setup)
+                {
+                    UseShellExecute = elevate,
+                    Verb = elevate ? "runas" : "",
+                    WorkingDirectory = Path.GetDirectoryName(setup)!,
+                    // The installation this copy is, named: the installer updates that one, whoever's account elevates it.
+                    Arguments = CommandLine.Quote(installed.AllUsers
+                        ? ["-update", "-launch", "-dir", installed.Folder, "-allusers"]
+                        : ["-update", "-launch", "-dir", installed.Folder]),
+                };
+                try { Process.Start(start)?.Dispose(); }
+                catch (Win32Exception e) when (e.NativeErrorCode == 1223) // ERROR_CANCELLED: Windows' question declined
+                {
+                    UpdateError = "Windows' permission to update it for everyone on this PC was declined, so nothing changed.";
+                    SetUpdateProgress(null);
+                    if (_windows.Count == 0 && !_exiting) ShowSearchWindow(); // asked from the tray: the bar says it
+                    return;
+                }
+            }
+            ExitApp();
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            SetUpdateProgress(null);
+        }
+        catch (Exception ex)
+        {
+            UpdateError = ex switch
+            {
+                HttpRequestException => "GitHub couldn't be reached. Check your internet connection and try again.",
+                TaskCanceledException => "GitHub didn't answer in time. Try again in a moment.",
+                IOException or UnauthorizedAccessException => "It couldn't be saved on this PC: " + ex.Message,
+                Win32Exception => "Its installer couldn't be started: " + ex.Message,
+                _ => ex.Message,
+            };
+            SetUpdateProgress(null);
+            // Asked from the tray with no window open: one opens, so the reason shows in its bar.
+            if (_windows.Count == 0 && !_exiting) ShowSearchWindow();
+        }
+        finally
+        {
+            if (_updateCts == cts) _updateCts = null;
+            cts.Dispose();
+        }
+    }
+
+    /// <summary>Stops Update now's download (nothing of it is kept).</summary>
+    public void CancelUpdate() => _updateCts?.Cancel();
+
+    void SetUpdateProgress(double? share)
+    {
+        UpdateProgress = share;
+        if (_exiting) return;
+        UpdateTrayNotice();
+        foreach (var w in _windows) w.UpdateUpdateBar();
+    }
+
     /// <summary>Tells about a version found earlier right away, then asks GitHub when a day has passed (looked at hourly).</summary>
     void StartUpdateChecks()
     {
         if (IsDemo) return;
+        // Installers Update now downloaded for this version (the one that just updated it) or older ones go.
+        _ = Task.Run(() => UpdateDownload.CleanUp(UpdatesFolder, CurrentVersion));
         if (Settings.CheckForUpdates && UpdateCheck.ParseTag(Settings.LatestVersion) is { } known && UpdateCheck.IsNewer(known, CurrentVersion))
             SetNewVersion(known);
         _updateTimer = new System.Windows.Forms.Timer { Interval = 20_000 };
@@ -536,6 +684,7 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// <summary>Shows or clears the notice everywhere; a new version also gets one Windows notification.</summary>
     void SetNewVersion(Version? version)
     {
+        if (version != NewVersion) UpdateError = null; // an Update now that didn't work was for another version
         NewVersion = version;
         UpdateTrayNotice();
         foreach (var w in _windows) w.UpdateUpdateBar();
@@ -580,12 +729,16 @@ internal sealed partial class AnythingApp : ApplicationContext
     {
         if (_tray?.ContextMenuStrip?.Items["update"] is not ToolStripMenuItem item) return;
         item.Visible = NewVersion is not null;
-        if (NewVersion is { } v) item.Text = $"&Get Ultimate File Explorer {v.ToString(3)}...";
+        item.Enabled = UpdateProgress is null;
+        if (NewVersion is { } v)
+            item.Text = UpdateProgress is { } p ? $"Downloading Ultimate File Explorer {v.ToString(3)}... {(int)(p * 100)}%"
+                : CanUpdateInApp ? $"&Update to Ultimate File Explorer {v.ToString(3)}" : $"&Get Ultimate File Explorer {v.ToString(3)}...";
     }
 
     public void HideUpdateNotice()
     {
         _updateNoticeHidden = NewVersion;
+        UpdateError = null;
         foreach (var w in _windows) w.UpdateUpdateBar();
     }
 
@@ -616,17 +769,26 @@ internal sealed partial class AnythingApp : ApplicationContext
         if (owner is Control { IsDisposed: true }) return;
         if (UpdateCheck.IsNewer(latest, current))
         {
-            var get = new TaskDialogButton("See what's new and get it");
+            bool inApp = CanUpdateInApp;
+            var update = new TaskDialogButton("Update now");
+            var get = new TaskDialogButton(inApp ? "See what's new" : "See what's new and get it");
             var page = new TaskDialogPage
             {
                 Caption = Title,
                 Heading = $"Ultimate File Explorer {latest!.ToString(3)} is available",
-                Text = $"You have {current.ToString(3)}. Its page on GitHub has what's new and the installer.",
+                Text = inApp
+                    ? $"You have {current.ToString(3)}. Update now downloads it from GitHub and updates this copy: Ultimate File Explorer closes " +
+                      "and opens again, with your settings, index and choices kept."
+                    : $"You have {current.ToString(3)}. Its page on GitHub has what's new and the installer.",
                 Icon = TaskDialogIcon.Information,
-                Buttons = { get, new TaskDialogButton("Not now") },
-                DefaultButton = get,
+                DefaultButton = inApp ? update : get,
             };
-            if (TaskDialog.ShowDialog(owner!, page) == get) OpenReleasePage();
+            if (inApp) page.Buttons.Add(update);
+            page.Buttons.Add(get);
+            page.Buttons.Add(new TaskDialogButton("Not now"));
+            var answer = TaskDialog.ShowDialog(owner!, page);
+            if (answer == update) UpdateNow();
+            else if (answer == get) OpenReleasePage();
         }
         else
         {

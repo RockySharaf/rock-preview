@@ -14,7 +14,8 @@ namespace Anything;
 /// start-with-Windows entry and an entry in Settings &gt; Apps, whose Uninstall runs "RockPreview.exe -uninstall".
 /// Switches: -install, -uninstall, -quiet, -allusers, -dir &lt;folder&gt;, -desktop, -runasadmin, -startwithwindows,
 /// -replaceexplorer, -indexservice, -updatecheck / -noupdatecheck, -content names|documents|pictures (search inside
-/// files), -asuser &lt;SID&gt; (whose choice it is), -launch, and for -uninstall: -removedata, -confirmed with -dir (already
+/// files), -asuser &lt;SID&gt; (whose choice it is), -launch, -update [-launch] (the app's Update now: the installed copy
+/// updated in place, every choice kept, <see cref="RunUpdate"/>), and for -uninstall: -removedata, -confirmed with -dir (already
 /// asked about that copy, in Settings › About), -portable with those (Settings › About's Remove from this PC: a copy that
 /// isn't installed, whose program stays) and -ownpartdone with -parent &lt;pid&gt; (the user's own part is done: the
 /// elevated half of an uninstall for everyone, which that process waits for).
@@ -99,7 +100,7 @@ internal static partial class Setup
     /// <summary>True when this process should run setup or uninstall instead of the app.</summary>
     public static bool IsSetupLaunch(IReadOnlyList<string> args)
     {
-        if (HasSwitch(args, "install") || HasSwitch(args, "uninstall")) return true;
+        if (HasSwitch(args, "install") || HasSwitch(args, "uninstall") || HasSwitch(args, "update")) return true;
         string name = Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? "");
         return name.Contains("setup", StringComparison.OrdinalIgnoreCase) || name.Contains("install", StringComparison.OrdinalIgnoreCase);
     }
@@ -148,6 +149,7 @@ internal static partial class Setup
         try
         {
             if (HasSwitch(args, "uninstall")) return RunUninstall(o);
+            if (HasSwitch(args, "update")) return RunUpdate(o);
             if (o.Quiet)
             {
                 if (o.AllUsers && !Program.IsElevated())
@@ -244,6 +246,101 @@ internal static partial class Setup
             catch (Exception ex) { Log(ex); }
         }
         status("Ultimate File Explorer is installed.");
+    }
+
+    // ---- update in place (Update now) -------------------------------------------------------------
+
+    /// <summary>
+    /// -update -dir &lt;folder&gt; [-allusers] [-launch]: the app's Update now, run from the installer it downloaded (already
+    /// elevated by the app for an installation for everyone). Updates the installation in that folder in place, with every
+    /// choice kept as it is (shortcuts, run as administrator, start with Windows, File Explorer's place, the service,
+    /// search inside files, new-version notices), then opens it again. Nothing asks; should it fail, it says why and opens
+    /// the copy that is installed once the one that closed for the update has gone, so the app is never left closed.
+    /// </summary>
+    static int RunUpdate(Options o)
+    {
+        // The installation the app named (an elevating administrator's own per-user copy is never the one updated);
+        // without -dir, the one installed for this user, else for everyone.
+        var inst = string.IsNullOrWhiteSpace(o.Folder) ? FindInstalled() : FindInstalled(o.Folder);
+        if (inst is null || (o.AllUsers && !inst.AllUsers))
+        {
+            MessageBox.Show("Ultimate File Explorer isn't installed there any more, so there is nothing to update. Run its Setup to install it.",
+                AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            // The copy that closed for this opens again, from the folder it named, when it is still there.
+            if (o.Launch && !string.IsNullOrWhiteSpace(o.Folder) && File.Exists(o.TargetExe))
+            {
+                WaitUntilClosed(o.TargetExe, TimeSpan.FromSeconds(90));
+                LaunchInstalled(new Options { AllUsers = o.AllUsers, Folder = o.Folder });
+            }
+            return 2;
+        }
+        var u = new Options
+        {
+            AllUsers = inst.AllUsers,
+            Folder = inst.Folder,
+            DesktopShortcut = ShortcutExists(desktop: true, inst.AllUsers),
+            RunAsAdmin = InstalledRunsAsAdmin(inst.AllUsers),
+            StartWithWindows = StartsWithWindows(),
+            ReplaceExplorer = ExplorerReplacement.IsEnabled(),
+            Launch = o.Launch,
+            Quiet = true, // a copy that doesn't close when asked is ended: the update was asked for
+        };
+        int code = 0;
+        if (u.AllUsers && !Program.IsElevated())
+        {
+            // The app asks Windows before it closes; run without rights (by hand, or where Windows can't give them), it
+            // stops here rather than ask again and again.
+            code = 5;
+            MessageBox.Show("Updating Ultimate File Explorer for everyone on this PC needs administrator rights, and Windows didn't give them. " +
+                "Nothing changed: run its Setup as administrator to update it.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        else
+        {
+            try { Install(u, _ => { }); }
+            catch (Exception ex)
+            {
+                Log(ex);
+                code = 1;
+                MessageBox.Show($"Ultimate File Explorer couldn't finish updating: {ex.Message}\n\n" +
+                    "It opens again as it is now. Try Update now later, or get the new version from its page on GitHub.",
+                    AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+        if (o.Launch)
+        {
+            // The copy that closed for the update may still be saving (it holds the single-instance lock until it ends):
+            // one started before it has gone would hand over to it and close.
+            WaitUntilClosed(u.TargetExe, TimeSpan.FromSeconds(90));
+            LaunchInstalled(u);
+        }
+        return code;
+    }
+
+    /// <summary>Waits (never ends anything) until no copy of <paramref name="exe"/> runs in this session, or the time is up.</summary>
+    static void WaitUntilClosed(string exe, TimeSpan limit)
+    {
+        int session = Process.GetCurrentProcess().SessionId;
+        var sw = Stopwatch.StartNew();
+        while (sw.Elapsed < limit)
+        {
+            bool running = false;
+            foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(exe)))
+                using (p)
+                    if (p.Id != Environment.ProcessId && SessionOf(p) == session && SamePath(ImagePath(p) ?? "", exe) && IsAlive(p)) running = true;
+            if (!running) return;
+            Thread.Sleep(250);
+        }
+    }
+
+    /// <summary>Whether the installed copy's shortcuts run it as administrator (its Settings › Apps entry says).</summary>
+    static bool InstalledRunsAsAdmin(bool allUsers)
+    {
+        try
+        {
+            using var key = (allUsers ? Registry.LocalMachine : Registry.CurrentUser).OpenSubKey(UninstallKeyPath);
+            return key?.GetValue("RunAsAdministrator") is int on && on != 0;
+        }
+        catch (Exception) { return false; }
     }
 
     /// <summary>Opens the installed copy: elevated when chosen, otherwise with normal rights even from an elevated setup.</summary>
@@ -843,6 +940,16 @@ internal static partial class Setup
             : "Search, browse and preview every file instantly.", runAsAdmin);
 
     static string? ShortcutTarget(string lnk) => Shortcuts.Read(lnk)?.Path;
+
+    /// <summary>Whether the desktop (or Start menu) shortcut exists, for just this user or everyone, by today's name or the old one.</summary>
+    internal static bool ShortcutExists(bool desktop, bool allUsers)
+    {
+        var folder = desktop
+            ? (allUsers ? Environment.SpecialFolder.CommonDesktopDirectory : Environment.SpecialFolder.DesktopDirectory)
+            : (allUsers ? Environment.SpecialFolder.CommonPrograms : Environment.SpecialFolder.Programs);
+        return File.Exists(Path.Combine(Environment.GetFolderPath(folder), AppName + ".lnk"))
+            || File.Exists(Path.Combine(Environment.GetFolderPath(folder), OldShortcutName + ".lnk"));
+    }
 
     [DllImport("shell32.dll")] static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
     [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);

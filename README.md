@@ -211,8 +211,8 @@ Ultimate File Explorer doesn't patch File Explorer to change that.
    Setup also asks whether to **search inside files**: names only (the default), also inside documents, or also
    pictures' details, each with its size and first-pass time worked out from your folders. Change it, or add drives
    and network folders, any time in **Settings › Indexing**; the app offers it once if you install without choosing.
-   To update, run the new Setup: it closes the running copy (wherever it runs from), replaces it and keeps your settings
-   and earlier choices.
+   To update, click **Update now** when the app says a new version is out (see [Updates](#updates)), or run the new
+   Setup: it closes the running copy (wherever it runs from), replaces it and keeps your settings and earlier choices.
 2. Prefer no install? Download **`RockPreview.exe`** — the portable version runs from any folder or USB stick.
 
 Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall the installed version in one
@@ -245,9 +245,13 @@ its file is all there is to do.
 ### Updates
 
 Ultimate File Explorer tells you when a new version is out. Once a day it asks GitHub for its latest release; when there is a
-newer one you get a Windows notification and a bar in the window, both linking to the release page with what's new
-and the installer. Install it over the old version: settings, index and bookmarks stay. **Help › Check for Updates**
-checks right away. Turn the daily check off in Setup or **Settings › General**.
+newer one you get a Windows notification and a bar in the window. **Update now** (in the bar, **Help › Check for
+Updates** and the tray icon's menu) downloads the newest installer from GitHub, however many versions came out since,
+checks it against the size and SHA-256 GitHub gives for it, and updates the installed copy in place: the app closes and
+opens again a few seconds later, with your settings, index, bookmarks and choices (shortcuts, start with Windows, File
+Explorer's place, instant indexing, search inside files) as they were. If it can't, it says why and the version you had
+opens again. The portable copy links to the release page instead. **Help › Check for Updates** checks right away. Turn the
+daily check off in Setup or **Settings › General**.
 
 ## Keyboard shortcuts
 
@@ -361,7 +365,8 @@ column contains document text.
 Its only network connection is the check for a new version: at most once a day (and when you choose **Help › Check
 for Updates**) it asks GitHub's API for the latest release of `RockySharaf/rock-preview`. The request carries
 Ultimate File Explorer's version number and nothing about you, your PC or your files; GitHub sees it like any web request. It
-downloads nothing by itself. Turn it off in Setup or **Settings › General**.
+downloads nothing by itself: only **Update now** downloads the new installer, from the release on GitHub, and uses it only
+when its SHA-256 is the one GitHub gives. Turn the check off in Setup or **Settings › General**.
 
 The optional Ultimate File Explorer Service runs from `C:\Program Files\Rock Preview Service` (only administrators can change
 it). It answers only the Windows accounts that installed it, only on this PC, never over the network. It returns file
@@ -370,7 +375,6 @@ Preview removes it.
 
 ## Roadmap
 
-- Updating in one click, from the new-version notice
 - Code-signed releases and a Microsoft Store listing
 - ARM64 builds
 

@@ -170,7 +170,7 @@ internal sealed class SetupForm : Form
         _folder.Text = _existing?.Folder ?? o.TargetFolder;
         // A new install gets everything that makes it work best; an update keeps the choices made before. Running as
         // administrator stays off: the instant-indexing service makes it unnecessary, and it would ask at every start.
-        _desktop.Checked = o.Auto ? o.DesktopShortcut : _existing is null || ShortcutExists(desktop: true, allUsers);
+        _desktop.Checked = o.Auto ? o.DesktopShortcut : _existing is null || Setup.ShortcutExists(desktop: true, allUsers);
         _admin.Checked = o.RunAsAdmin;
         // The hotkey only works while Rock Preview runs, so a new install starts with Windows unless unticked.
         if (_hotkey is not null) _startup.Text = $"Start Ultimate File Explorer when Windows starts, so {_hotkey} always opens it";
@@ -253,15 +253,6 @@ internal sealed class SetupForm : Form
     {
         using var s = typeof(SetupForm).Assembly.GetManifestResourceStream("RockPreview.ico")!;
         return new Icon(s, size, size);
-    }
-
-    static bool ShortcutExists(bool desktop, bool allUsers)
-    {
-        var folder = desktop
-            ? (allUsers ? Environment.SpecialFolder.CommonDesktopDirectory : Environment.SpecialFolder.DesktopDirectory)
-            : (allUsers ? Environment.SpecialFolder.CommonPrograms : Environment.SpecialFolder.Programs);
-        return File.Exists(Path.Combine(Environment.GetFolderPath(folder), Setup.AppName + ".lnk"))
-            || File.Exists(Path.Combine(Environment.GetFolderPath(folder), Setup.OldShortcutName + ".lnk"));
     }
 
     // ---- search inside files ---------------------------------------------------------------------
