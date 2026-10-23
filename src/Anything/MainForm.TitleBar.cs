@@ -14,6 +14,7 @@ internal sealed partial class MainForm
 {
     readonly DragPanel _titleRow = new() { Dock = DockStyle.Top };
     readonly CaptionButtons _captionButtons = new();
+    readonly BrandBadge _brand = new() { Dock = DockStyle.Left };
 
     const int WM_NCCALCSIZE = 0x83, WM_NCHITTEST = 0x84, WM_NCMOUSEMOVE = 0xA0, WM_NCLBUTTONDOWN = 0xA1, WM_NCLBUTTONUP = 0xA2,
               WM_NCLBUTTONDBLCLK = 0xA3, WM_NCMOUSELEAVE = 0x2A2;
@@ -25,6 +26,10 @@ internal sealed partial class MainForm
         _captionButtons.BackColor = ExplorerTheme.TitleBar;
         _titleRow.Controls.Add(_tabStrip);
         _titleRow.Controls.Add(_captionButtons);
+        // Before the tabs: docked first (at the back), so the strip fills what is left.
+        _brand.BackColor = ExplorerTheme.TitleBar;
+        _titleRow.Controls.Add(_brand);
+        _brand.SendToBack();
         _titleRow.Paint += PaintTitleRow;
         _titleRow.Resize += (_, _) => PlaceCaptionButtons();
         BuildTabStrip();
@@ -44,6 +49,7 @@ internal sealed partial class MainForm
         _titleRow.Padding = new Padding(0, 0, 3 * LogicalToDeviceUnits(46), 0); // the tab strip stops at the caption buttons
         _captionButtons.GlyphSize = LogicalToDeviceUnits(10);
         _captionButtons.Maximized = WindowState == FormWindowState.Maximized;
+        _brand.Width = _brand.PreferredWidth();
         PlaceCaptionButtons();
     }
 

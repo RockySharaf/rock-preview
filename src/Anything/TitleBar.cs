@@ -85,6 +85,52 @@ internal sealed class CaptionButtons : Control
 }
 
 /// <summary>A panel whose empty space belongs to the window's title area: dragging it moves the window.</summary>
+/// <summary>
+/// The title row's start: Rock Preview's mark and name, small, so anyone looking at the window can tell it from File
+/// Explorer's. Like the strip's empty space it moves the window (the form hit-tests it as the caption).
+/// </summary>
+internal sealed class BrandBadge : Control
+{
+    const string Name_ = "Rock Preview";
+
+    public BrandBadge()
+    {
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        AccessibleName = Name_;
+        AccessibleRole = AccessibleRole.StaticText;
+    }
+
+    int MarkHeight => LogicalToDeviceUnits(15);
+
+    /// <summary>Left gap, the mark, a gap, the name, and a gap before the first tab.</summary>
+    public int PreferredWidth()
+    {
+        int markW = (int)Math.Round(MarkHeight * Anything.Preview.Brand.Aspect);
+        return LogicalToDeviceUnits(12) + markW + LogicalToDeviceUnits(7) + TextRenderer.MeasureText(Name_, Font).Width + LogicalToDeviceUnits(6);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.Clear(BackColor);
+        // The row's tabs sit on its bottom line; the badge is centred in the space above it.
+        int rowH = Height - 1, x = LogicalToDeviceUnits(12);
+        var color = ExplorerTheme.Dark ? Color.FromArgb(0x4C, 0xC2, 0xFF) : Color.FromArgb(0x00, 0x67, 0xC0);
+        if (Anything.Preview.Brand.Tinted(color, MarkHeight) is { } mark)
+        {
+            e.Graphics.DrawImage(mark, x, (rowH - mark.Height) / 2);
+            x += mark.Width + LogicalToDeviceUnits(7);
+        }
+        TextRenderer.DrawText(e.Graphics, Name_, Font, new Rectangle(x, 0, Width - x, rowH), ExplorerTheme.Text,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == 0x84 /* WM_NCHITTEST */) { m.Result = -1 /* HTTRANSPARENT: the form decides */; return; }
+        base.WndProc(ref m);
+    }
+}
+
 internal sealed class DragPanel : Panel
 {
     protected override void WndProc(ref Message m)

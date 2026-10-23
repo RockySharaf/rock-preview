@@ -20,6 +20,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Rock Preview's mark (shape only): the title bar's badge and the empty pane's watermark tint it (Brand). -->
+    <EmbeddedResource Include="RockPreviewMark.png" LogicalName="RockPreviewMark.png" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="PreviewHarness" />
     <InternalsVisibleTo Include="Anything.Tests" />
   </ItemGroup>

@@ -38,7 +38,7 @@ public sealed class PreviewPane : UserControl
     private readonly Panel _content = new() { Dock = DockStyle.Fill };
     private readonly Label _loading = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Text = "Loading…", ForeColor = Color.Gray, Visible = false };
     // What File Explorer's preview pane says when nothing is selected.
-    private readonly Label _empty = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Text = "Select a file to preview.", ForeColor = SystemColors.GrayText, UseMnemonic = false };
+    private readonly Label _empty = new EmptyPreview() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Text = "Select a file to preview.", ForeColor = SystemColors.GrayText, UseMnemonic = false };
 
     // Views are created lazily and reused.
     private ImageView? _imageView;
