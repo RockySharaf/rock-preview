@@ -628,8 +628,9 @@ internal sealed partial class MainForm
         }
         else
         {
-            var hit = _list.HitTest(_list.PointToClient(screen));
-            if (hit.Item is null) { ShowBackgroundMenu(screen); return; }
+            // Empty space (a gap between rows, the margin) is the background, as in Explorer, not the row beside it.
+            var client = _list.PointToClient(screen);
+            if (_list.HitTest(client).Item is null || _list.IsEmptySpace(client)) { ShowBackgroundMenu(screen); return; }
         }
         ShowSelectionMenu(screen, _list);
     }

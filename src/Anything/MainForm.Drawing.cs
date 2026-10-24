@@ -35,41 +35,40 @@ internal sealed partial class MainForm
         if (box < least) { pitch += least - box; box = least; }
         _rowGap = pitch - box;
         _list.RowHeight = pitch;
+        // Explorer's empty space, where a press draws a selection rectangle: 14 before the rows (18 at 125%) and the gaps.
+        _list.RowGapTop = _rowGap / 2;
+        _list.RowGapBottom = _rowGap - _rowGap / 2;
+        _list.RowMargin = LogicalToDeviceUnits(14);
         _list.Invalidate();
     }
 
     int _rowGap;
 
-    // The row whose background is still to paint, from OnDrawItem to its first cell.
-    int _rowToPaint = -1;
-    Rectangle _rowBounds;
+    /// <summary>Rows are drawn cell by cell (OnDrawSubItem), each with its part of the row's background.</summary>
+    void OnDrawItem(object? sender, DrawListViewItemEventArgs e) => e.DrawDefault = _list.View != View.Details;
 
     /// <summary>
-    /// A row's background is painted with its first cell (OnDrawSubItem): the list draws its own selection after this
-    /// and before the cells (see-through in dark mode), so painting it here would be covered.
+    /// A cell's part of its row: the background, and for a selected row its part of the row's box, as in Explorer (a
+    /// 1px border spanning the columns after the margin, and a gap to the next row) so selected neighbours stay apart.
+    /// Each cell paints only itself: Windows redraws single cells (on hover, when a matching line arrives), and a cell
+    /// painting its whole row wiped the others. Painted over what the list draws for a selected row itself.
     /// </summary>
-    void OnDrawItem(object? sender, DrawListViewItemEventArgs e)
+    void PaintRowPart(Graphics g, int index, Rectangle row, Rectangle cell, bool selected)
     {
-        if (_list.View != View.Details) { e.DrawDefault = true; return; }
-        _rowToPaint = e.ItemIndex;
-        _rowBounds = e.Bounds;
-    }
-
-    /// <summary>
-    /// A row's background: its selection is a box of its own, as in Explorer (a 1px border, and a gap to the next row),
-    /// so selected neighbours stay apart. The cells then draw their contents on it.
-    /// </summary>
-    void PaintRow(Graphics g, int index, Rectangle row, bool selected)
-    {
-        using (var bg = new SolidBrush(_list.BackColor)) g.FillRectangle(bg, row);
-        if (!selected) return;
-        bool focusedRow = _list.Focused && _list.FocusCuesShown && _list.FocusedItem?.Index == index;
-        var (back, border, _) = SelectionColors(_list.Focused, focusedRow);
-        int top = _rowGap / 2, side = Math.Max(1, LogicalToDeviceUnits(2));
-        var box = new Rectangle(row.Left + side, row.Top + top, Math.Max(1, Math.Min(row.Right, _list.ClientSize.Width) - row.Left - 2 * side),
-            Math.Max(1, row.Height - _rowGap));
-        using (var fill = new SolidBrush(back)) g.FillRectangle(fill, box);
-        using (var pen = new Pen(border)) g.DrawRectangle(pen, box.X, box.Y, box.Width - 1, box.Height - 1);
+        var state = g.Save();
+        try
+        {
+            g.SetClip(cell, System.Drawing.Drawing2D.CombineMode.Intersect);
+            using (var bg = new SolidBrush(_list.BackColor)) g.FillRectangle(bg, cell);
+            if (!selected) return;
+            bool focusedRow = _list.Focused && _list.FocusCuesShown && _list.FocusedItem?.Index == index;
+            var (back, border, _) = SelectionColors(_list.Focused, focusedRow);
+            var box = new Rectangle(row.Left + _list.RowMargin, row.Top + _list.RowGapTop, Math.Max(1, row.Width - _list.RowMargin),
+                Math.Max(1, row.Height - _list.RowGapTop - _list.RowGapBottom));
+            using (var fill = new SolidBrush(back)) g.FillRectangle(fill, box);
+            using (var pen = new Pen(border)) g.DrawRectangle(pen, box.X, box.Y, box.Width - 1, box.Height - 1);
+        }
+        finally { g.Restore(state); }
     }
 
     /// <summary>Light mode: native themed header. Dark mode: WinForms skips header text coloring for owner-drawn lists, so draw it.</summary>
@@ -91,7 +90,8 @@ internal sealed partial class MainForm
         int pad = LogicalToDeviceUnits(6);
         var flags = BaseTextFlags | TextFormatFlags.EndEllipsis
                     | (e.Header?.TextAlign == HorizontalAlignment.Right ? TextFormatFlags.Right : TextFormatFlags.Left);
-        var textRect = Rectangle.FromLTRB(r.Left + pad, r.Top, r.Right - pad, r.Bottom);
+        int indent = e.Header?.DisplayIndex == 0 ? _list.RowMargin : 0; // the leftmost title starts after the rows' margin
+        var textRect = Rectangle.FromLTRB(r.Left + pad + indent, r.Top, r.Right - pad, r.Bottom);
         TextRenderer.DrawText(g, e.Header?.Text ?? "", _list.Font, textRect, Color.FromArgb(0xDE, 0xDE, 0xDE), flags);
         if (e.Header?.Tag is ColumnDef def && def.Sortable && def.Sort == _sort)
         {
@@ -111,25 +111,21 @@ internal sealed partial class MainForm
         var def = _list.Columns[e.ColumnIndex].Tag as ColumnDef;
         var row = RowAt(e.ItemIndex);
         var g = e.Graphics;
-        if (_rowToPaint == e.ItemIndex)
-        {
-            _rowToPaint = -1;
-            PaintRow(g, e.ItemIndex, _rowBounds, e.Item?.Selected ?? false);
-        }
 
         Rectangle cell = e.Bounds;
+        var whole = _list.GetItemRect(e.ItemIndex, ItemBoundsPortion.Entire);
         if (e.ColumnIndex == 0)
         {
             // Sub-item 0 reports the whole row; compute the real cell from the display order.
             var col0 = _list.Columns[0];
-            int x = _list.GetItemRect(e.ItemIndex, ItemBoundsPortion.Entire).X;
+            int x = whole.X;
             foreach (ColumnHeader ch in _list.Columns)
                 if (ch.DisplayIndex < col0.DisplayIndex) x += ch.Width;
             cell = new Rectangle(x, e.Bounds.Y, col0.Width, e.Bounds.Height);
         }
 
-        // The background (and a selected row's box) is the row's (PaintRow); the cell draws only its contents.
         bool selected = e.Item?.Selected ?? false;
+        PaintRowPart(g, e.ItemIndex, whole, cell, selected);
         Color fore = selected ? SelectionColors(_list.Focused, false).Fore : _list.ForeColor;
         if (StartsContentMatches(e.ItemIndex))
         {
@@ -140,7 +136,8 @@ internal sealed partial class MainForm
         if (row is null || def is null) return;
 
         int pad = LogicalToDeviceUnits(4);
-        int textLeft = cell.Left + pad;
+        // The leftmost column starts after the rows' margin, its icon 6 into the box (at 125%) as in Explorer.
+        int textLeft = cell.Left == whole.Left ? cell.Left + _list.RowMargin + LogicalToDeviceUnits(5) : cell.Left + pad;
         if (e.ColumnIndex == 0)
         {
             var isz = ShellInfo.SmallIconSize;

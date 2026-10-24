@@ -79,8 +79,12 @@ internal sealed class ResultListView : ListView
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        _marquee = null;
+        _rightDownInEmpty = false;
+        StopMarqueeScroll();
         base.OnHandleDestroyed(e);
         if (_rowList != IntPtr.Zero) { ImageList_Destroy(_rowList); _rowList = IntPtr.Zero; }
+        if (_headerImages != IntPtr.Zero) { ImageList_Destroy(_headerImages); _headerImages = IntPtr.Zero; }
     }
 
     IntPtr _rowList;
@@ -115,8 +119,27 @@ internal sealed class ResultListView : ListView
     public bool FocusCuesShown => ShowFocusCues;
 
     const uint ILC_COLOR32 = 0x20;
+    const int WM_MOUSEMOVE = 0x200, WM_LBUTTONDOWN = 0x201, WM_LBUTTONUP = 0x202, WM_LBUTTONDBLCLK = 0x203,
+              WM_RBUTTONDOWN = 0x204, WM_RBUTTONUP = 0x205, WM_CAPTURECHANGED = 0x215, MK_CONTROL = 0x8;
+    const int LVM_SCROLL = Native.LVM_FIRST + 20, LVM_GETTOPINDEX = Native.LVM_FIRST + 39, LVM_SETSELECTIONMARK = Native.LVM_FIRST + 67;
+    const int WM_HSCROLL = 0x114, WM_VSCROLL = 0x115, WM_MOUSEWHEEL = 0x20A, WM_MOUSEHWHEEL = 0x20E;
+    const int HDM_SETIMAGELIST = 0x1200 + 8;
+    const uint HDI_IMAGE = 0x0020;
+    const int HDF_IMAGE = 0x0800;
+    static Point PointOf(IntPtr lParam) => new(unchecked((short)(long)lParam), unchecked((short)((long)lParam >> 16)));
     [DllImport("comctl32.dll")] static extern IntPtr ImageList_Create(int cx, int cy, uint flags, int initial, int grow);
     [DllImport("comctl32.dll")] static extern bool ImageList_Destroy(IntPtr himl);
+    [DllImport("comctl32.dll")] static extern int ImageList_Add(IntPtr himl, IntPtr image, IntPtr mask);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr hdc, ref BITMAPINFOHEADER info, uint usage, out IntPtr bits, IntPtr section, uint offset);
+    [StructLayout(LayoutKind.Sequential)]
+    struct BITMAPINFOHEADER
+    {
+        public int biSize, biWidth, biHeight;
+        public short biPlanes, biBitCount;
+        public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant;
+    }
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
+    [DllImport("user32.dll")] static extern int GetScrollPos(IntPtr hwnd, int bar);
 
     public void AttachSystemImageList()
     {
@@ -235,9 +258,348 @@ internal sealed class ResultListView : ListView
             TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
     }
 
+    // ---- Explorer's empty space and selection rectangle -------------------------------------------
+
+    int _rowMargin;
+
+    /// <summary>
+    /// The empty margin before each row's box (pixels), part of the first column as in Explorer: the leftmost column's
+    /// title starts after it too.
+    /// </summary>
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public int RowMargin
+    {
+        get => _rowMargin;
+        set
+        {
+            if (value == _rowMargin) return;
+            _rowMargin = value;
+            IndentHeader();
+        }
+    }
+
+    /// <summary>The empty gap above and below each row's box (pixels).</summary>
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public int RowGapTop { get; set; }
+
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public int RowGapBottom { get; set; }
+
+    /// <summary>
+    /// Whether <paramref name="p"/> (client) is outside every row's box, as in Explorer: the margin before the rows, the
+    /// gaps between them, past the last column and below the last row. A press there selects with a rectangle.
+    /// </summary>
+    public bool IsEmptySpace(Point p)
+    {
+        if (!IsHandleCreated || p.Y < RowsTop) return false; // the column headers
+        int index = IndexAtY(p.Y);
+        if (index < 0 || index >= VirtualListSize) return true;
+        int x = p.X + HorizontalScroll(), top = RowTop(index);
+        return x < _rowMargin || x >= ColumnsWidth() || p.Y < top + RowGapTop || p.Y >= top + Pitch - RowGapBottom;
+    }
+
+    /// <summary>A rectangle being drawn from empty space: what it started from and what it covers now.</summary>
+    sealed class Marquee
+    {
+        public Point Anchor;               // where it started, in the rows' own coordinates (it scrolls with them)
+        public Point Pointer;              // the pointer now, client
+        public bool Shown;                 // moved past the drag size: a rectangle, not a click
+        public bool Toggle;                // Ctrl: the rows it covers change, the others keep theirs
+        public Dictionary<int, bool> Was = []; // with Ctrl, a row's state before the rectangle first covered it
+        public int First = -1, Last = -1;  // the rows it covers now
+        public Rectangle Drawn;            // where it was drawn last (client)
+    }
+
+    Marquee? _marquee;
+    System.Windows.Forms.Timer? _marqueeScroll;
+
+    /// <summary>Explorer's selection rectangle (measured from its own view): a #0078D7 border around #0066CC at a third.</summary>
+    static readonly Color MarqueeBorder = Color.FromArgb(0x00, 0x78, 0xD7), MarqueeFill = Color.FromArgb(0x55, 0x00, 0x66, 0xCC);
+
+    int Pitch => _rowHeight > 0 ? _rowHeight : VirtualListSize > 0 ? Math.Max(1, GetItemRect(TopRow).Height) : 1;
+    int TopRow => (int)Native.SendMessage(Handle, LVM_GETTOPINDEX, IntPtr.Zero, IntPtr.Zero);
+    int RowsTop => HeaderHandle is var header && header != IntPtr.Zero && GetWindowRect(header, out var hr) ? hr.Bottom - hr.Top : 0;
+    int RowTop(int index) => RowsTop + (index - TopRow) * Pitch;
+    int IndexAtY(int y) => (int)Math.Floor((double)(y - RowsTop) / Pitch) + TopRow;
+    int HorizontalScroll() => GetScrollPos(Handle, 0 /* SB_HORZ */);
+    int ColumnsWidth() { int w = 0; foreach (ColumnHeader c in Columns) w += c.Width; return w; }
+    Point ToRows(Point client) => new(client.X + HorizontalScroll(), client.Y - RowsTop + TopRow * Pitch);
+    Point ToClient(Point rows) => new(rows.X - HorizontalScroll(), rows.Y + RowsTop - TopRow * Pitch);
+
+    void BeginMarquee(Point p, bool ctrl)
+    {
+        _rightDownInEmpty = false;
+        Focus();
+        var marquee = new Marquee { Anchor = ToRows(p), Pointer = p, Toggle = ctrl };
+        if (!ctrl)
+        {
+            SetAllSelected(false); // a press on empty space clears the selection, as in Explorer
+            SetSelectionMark(-1);
+        }
+        _marquee = marquee;
+        Capture = true;
+    }
+
+    void TrackMarquee(Point p)
+    {
+        var marquee = _marquee!;
+        marquee.Pointer = p;
+        var anchor = ToClient(marquee.Anchor);
+        var drag = SystemInformation.DragSize;
+        if (!marquee.Shown && Math.Abs(p.X - anchor.X) <= drag.Width / 2 && Math.Abs(p.Y - anchor.Y) <= drag.Height / 2) return;
+        marquee.Shown = true;
+
+        // The rows whose boxes it touches: in the rows' coordinates, a row's box is [i*pitch + gap, (i+1)*pitch - gap).
+        var now = ToRows(p);
+        int x0 = Math.Min(now.X, marquee.Anchor.X), x1 = Math.Max(now.X, marquee.Anchor.X);
+        int y0 = Math.Min(now.Y, marquee.Anchor.Y), y1 = Math.Max(now.Y, marquee.Anchor.Y);
+        int pitch = Pitch, first = -1, last = -1;
+        if (x1 >= _rowMargin && x0 < ColumnsWidth() && VirtualListSize > 0)
+        {
+            first = Math.Max(0, (int)Math.Floor((double)(y0 - pitch + RowGapBottom) / pitch) + 1);
+            last = Math.Min(VirtualListSize - 1, (int)Math.Floor((double)(y1 - RowGapTop) / pitch));
+            if (first > last) first = last = -1;
+        }
+        SelectCovered(marquee, first, last);
+
+        // Drawn again where it was and where it is (the list repaints that, and WM_PAINT draws it on top).
+        var rect = MarqueeRect(marquee);
+        Invalidate(Rectangle.Union(marquee.Drawn, rect));
+        marquee.Drawn = rect;
+        bool outside = p.Y < RowsTop || p.Y >= ClientSize.Height;
+        if (outside && _marqueeScroll == null)
+        {
+            _marqueeScroll = new System.Windows.Forms.Timer { Interval = 50 };
+            _marqueeScroll.Tick += (_, _) => ScrollMarquee();
+            _marqueeScroll.Start();
+        }
+        else if (!outside) StopMarqueeScroll();
+    }
+
+    /// <summary>Selects the rows from <paramref name="first"/> to <paramref name="last"/> (or flips them, with Ctrl), changing only what changed.</summary>
+    void SelectCovered(Marquee marquee, int first, int last)
+    {
+        int lo = marquee.First < 0 ? first : first < 0 ? marquee.First : Math.Min(first, marquee.First);
+        int hi = marquee.Last < 0 ? last : last < 0 ? marquee.Last : Math.Max(last, marquee.Last);
+        if (lo < 0) return;
+        for (int i = lo; i <= hi; i++)
+        {
+            bool covered = first >= 0 && i >= first && i <= last;
+            bool now = IsItemSelected(i);
+            bool want = covered;
+            if (marquee.Toggle)
+            {
+                // A row it never covered before still has its own state: that is the one to flip.
+                if (!marquee.Was.TryGetValue(i, out bool was)) marquee.Was[i] = was = now;
+                want = was != covered;
+            }
+            if (now != want) SetSelected(i, want);
+        }
+        if (last >= 0)
+        {
+            // The focus goes with the pointer's end of it, as in Explorer; Shift+click and Shift+arrows extend from
+            // the end it started at.
+            bool down = marquee.Anchor.Y <= ToRows(marquee.Pointer).Y;
+            SetFocusedIndex(down ? last : first);
+            SetSelectionMark(down ? first : last);
+        }
+        marquee.First = first;
+        marquee.Last = last;
+    }
+
+    void SetSelectionMark(int index) => Native.SendMessage(Handle, LVM_SETSELECTIONMARK, IntPtr.Zero, (IntPtr)index);
+
+    /// <summary>The results are a different list now (a new search, a new order): a rectangle being drawn ends.</summary>
+    public void CancelMarquee() => EndMarquee();
+
+    /// <summary>
+    /// The results are about to be refreshed while a rectangle is held: the rows it changed go back as they were, so
+    /// the selection the refresh keeps is the one from before it; RowsReplaced then applies it again.
+    /// </summary>
+    public void RowsReplacing()
+    {
+        if (_marquee is not { } marquee) return;
+        if (marquee.Toggle)
+        {
+            foreach (var (i, was) in marquee.Was)
+                if (i < VirtualListSize && IsItemSelected(i) != was) SetSelected(i, was);
+        }
+        else if (marquee.First >= 0)
+        {
+            for (int i = marquee.First; i <= marquee.Last && i < VirtualListSize; i++) SetSelected(i, false);
+        }
+    }
+
+    /// <summary>
+    /// The same results again, refreshed while a rectangle is held (files changed, a folder still loading): what it
+    /// covers is selected again over the rows as they are now.
+    /// </summary>
+    public void RowsReplaced()
+    {
+        if (_marquee is not { } marquee) return;
+        marquee.Was.Clear();
+        marquee.First = marquee.Last = -1;
+        if (!marquee.Toggle) SetAllSelected(false);
+        if (marquee.Shown) { Invalidate(); marquee.Drawn = Rectangle.Empty; marquee.Shown = false; }
+        TrackMarquee(marquee.Pointer);
+    }
+
+    /// <summary>Past the top or bottom while held: the rows scroll a row at a time and the rectangle follows.</summary>
+    void ScrollMarquee()
+    {
+        if (_marquee is not { } marquee) { StopMarqueeScroll(); return; }
+        int dy = marquee.Pointer.Y < RowsTop ? -Pitch : marquee.Pointer.Y >= ClientSize.Height ? Pitch : 0;
+        if (dy == 0) { StopMarqueeScroll(); return; }
+        Native.SendMessage(Handle, LVM_SCROLL, IntPtr.Zero, (IntPtr)dy);
+        Invalidate(); // the scrolled pixels carried the rectangle along: drawn again from scratch
+        marquee.Drawn = Rectangle.Empty;
+        TrackMarquee(marquee.Pointer);
+    }
+
+    void StopMarqueeScroll()
+    {
+        _marqueeScroll?.Dispose();
+        _marqueeScroll = null;
+    }
+
+    void EndMarquee()
+    {
+        var marquee = _marquee;
+        if (marquee == null) return;
+        _marquee = null; // before the capture goes: WM_CAPTURECHANGED comes back here
+        StopMarqueeScroll();
+        if (Capture) Capture = false;
+        if (marquee.Shown) Invalidate(marquee.Drawn);
+    }
+
+    Rectangle MarqueeRect(Marquee marquee)
+    {
+        var a = ToClient(marquee.Anchor);
+        var r = Rectangle.FromLTRB(Math.Min(a.X, marquee.Pointer.X), Math.Min(a.Y, marquee.Pointer.Y), Math.Max(a.X, marquee.Pointer.X) + 1, Math.Max(a.Y, marquee.Pointer.Y) + 1);
+        return Rectangle.Intersect(r, new Rectangle(0, RowsTop, ClientSize.Width, Math.Max(0, ClientSize.Height - RowsTop)));
+    }
+
+    /// <summary>The rectangle over the part of the list just painted (drawn only there, so it never darkens twice).</summary>
+    void DrawMarquee(Rectangle painted)
+    {
+        if (_marquee is not { Shown: true } marquee) return;
+        var r = MarqueeRect(marquee);
+        if (r.Width <= 0 || r.Height <= 0) return;
+        using var g = CreateGraphics();
+        g.SetClip(painted);
+        using (var fill = new SolidBrush(MarqueeFill)) g.FillRectangle(fill, r);
+        using (var pen = new Pen(MarqueeBorder)) g.DrawRectangle(pen, r.X, r.Y, r.Width - 1, r.Height - 1);
+    }
+
+    IntPtr _headerImages;
+    int _headerImageWidth;
+
+    /// <summary>
+    /// The leftmost column's title starts after the rows' margin, as in Explorer: the header shows a blank image that
+    /// wide before it (the dark header, drawn by the window, leaves the same room).
+    /// </summary>
+    public void IndentHeader()
+    {
+        IntPtr header = HeaderHandle;
+        if (header == IntPtr.Zero || Columns.Count == 0) return;
+        if (_rowMargin > 0 && (_headerImages == IntPtr.Zero || _headerImageWidth != _rowMargin))
+        {
+            if (_headerImages != IntPtr.Zero) ImageList_Destroy(_headerImages);
+            // An image that draws nothing: every pixel black at an alpha of 1 in 255. (All zero, the list takes it as
+            // having no alpha and draws a black dash; a masked one drew its mask colour.)
+            _headerImages = ImageList_Create(_rowMargin, 1, ILC_COLOR32, 1, 0);
+            var info = new BITMAPINFOHEADER { biSize = 40, biWidth = _rowMargin, biHeight = -1, biPlanes = 1, biBitCount = 32 };
+            IntPtr hbm = CreateDIBSection(IntPtr.Zero, ref info, 0, out IntPtr bits, IntPtr.Zero, 0);
+            if (hbm != IntPtr.Zero)
+            {
+                for (int i = 0; i < _rowMargin; i++) Marshal.WriteInt32(bits, i * 4, 0x01000000);
+                ImageList_Add(_headerImages, hbm, IntPtr.Zero);
+                DeleteObject(hbm);
+            }
+            _headerImageWidth = _rowMargin;
+            Native.SendMessage(header, HDM_SETIMAGELIST, IntPtr.Zero, _headerImages);
+        }
+        int leftmost = Columns.Cast<ColumnHeader>().OrderBy(c => c.DisplayIndex).First().Index;
+        for (int i = 0; i < Columns.Count; i++)
+        {
+            var item = new Native.HDITEM { mask = Native.HDI_FORMAT | HDI_IMAGE };
+            Native.SendMessage(header, Native.HDM_GETITEMW, (IntPtr)i, ref item);
+            bool indent = i == leftmost && _rowMargin > 0;
+            int fmt = indent ? item.fmt | HDF_IMAGE : item.fmt & ~HDF_IMAGE;
+            if (fmt == item.fmt && (!indent || item.iImage == 0)) continue;
+            item.fmt = fmt;
+            item.iImage = 0;
+            Native.SendMessage(header, Native.HDM_SETITEMW, (IntPtr)i, ref item);
+        }
+    }
+
+    bool _rightDownInEmpty;
+    Point _rightDownAt;
+
+    /// <summary>
+    /// While a rectangle is held, keys don't reach the window (Esc there would close the search or the window) or move
+    /// the list under it: Esc ends the rectangle, the rest wait for the release.
+    /// </summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (_marquee == null) return base.ProcessCmdKey(ref msg, keyData);
+        if ((keyData & Keys.KeyCode) == Keys.Escape) EndMarquee();
+        return true;
+    }
+
+    protected override void OnColumnReordered(ColumnReorderedEventArgs e)
+    {
+        base.OnColumnReordered(e);
+        if (!e.Cancel && IsHandleCreated) BeginInvoke(IndentHeader); // the order changes after this event
+    }
+
     protected override void WndProc(ref Message m)
     {
         if (ShellContextMenu.HandleMenuMessage(ref m)) return;
+        switch (m.Msg)
+        {
+            case WM_LBUTTONDOWN when _marquee == null && IsEmptySpace(PointOf(m.LParam)):
+                BeginMarquee(PointOf(m.LParam), ((long)m.WParam & MK_CONTROL) != 0);
+                return;
+            case WM_LBUTTONDBLCLK when _marquee == null && IsEmptySpace(PointOf(m.LParam)):
+                return; // nothing there to open (not the row beside the gap)
+            case WM_RBUTTONDOWN when _marquee == null && IsEmptySpace(PointOf(m.LParam)):
+                // As in Explorer: the selection goes (not with Ctrl) and the release shows the background menu.
+                Focus();
+                if (((long)m.WParam & MK_CONTROL) == 0) { SetAllSelected(false); SetSelectionMark(-1); }
+                _rightDownInEmpty = true;
+                _rightDownAt = PointOf(m.LParam);
+                Capture = true; // its release comes back here, wherever it is (as the list's own press does)
+                return;
+            case WM_RBUTTONUP when _rightDownInEmpty:
+                _rightDownInEmpty = false;
+                Capture = false;
+                ItemContextMenu?.Invoke(PointToScreen(_rightDownAt)); // where it was pressed, off the rows: the background menu
+                return;
+            case WM_CAPTURECHANGED when _rightDownInEmpty:
+                _rightDownInEmpty = false; // the mouse went elsewhere first: no menu for that press
+                break;
+            case WM_MOUSEWHEEL or WM_MOUSEHWHEEL or WM_VSCROLL or WM_HSCROLL when _marquee is { Shown: true } held:
+                // The list scrolls the drawn rectangle along with the rows: drawn again, and the rows it covers now.
+                base.WndProc(ref m);
+                Invalidate();
+                held.Drawn = Rectangle.Empty;
+                TrackMarquee(held.Pointer);
+                return;
+            case WM_MOUSEMOVE when _marquee != null: // the list has the mouse until the release, wherever it is
+                TrackMarquee(PointOf(m.LParam));
+                return;
+            case WM_LBUTTONUP when _marquee != null:
+                EndMarquee();
+                return;
+            case WM_CAPTURECHANGED when _marquee != null:
+                EndMarquee();
+                break;
+            case 0x000F /* WM_PAINT */ when _marquee is { Shown: true } && GetUpdateRect(Handle, out var dirtyRect, false):
+                base.WndProc(ref m);
+                DrawMarquee(Rectangle.FromLTRB(dirtyRect.Left, dirtyRect.Top, dirtyRect.Right, dirtyRect.Bottom));
+                return;
+        }
         if (m.Msg == Native.WM_CONTEXTMENU)
         {
             long lp = m.LParam.ToInt64();

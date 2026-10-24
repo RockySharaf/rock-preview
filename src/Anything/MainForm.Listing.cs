@@ -242,6 +242,7 @@ internal sealed partial class MainForm
     void DropListingResults()
     {
         if (!ExplorerShown || _listing != null || _resultIndex is not { } index || ReferenceEquals(index, _app.IndexManager.Index)) return;
+        _list.CancelMarquee();
         _ids = [];
         _resultIndex = null;
         _rows.Clear();

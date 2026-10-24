@@ -879,6 +879,7 @@ internal sealed partial class MainForm : Form
         finally { _list.EndUpdate(); }
         _rows.Clear();
         UpdateSortIndicator();
+        _list.IndentHeader();
         _list.Invalidate();
     }
 
@@ -992,6 +993,9 @@ internal sealed partial class MainForm : Form
     void ApplyResults(SearchResults results, string query, SearchOptions options, SearchReason reason, FileIndex index, long generation)
     {
         if (_pendingNewQuery) { reason = SearchReason.NewQuery; _pendingNewQuery = false; }
+        // A selection rectangle being drawn: a new search or order makes it meaningless (otherwise it follows below).
+        if (reason is SearchReason.NewQuery or SearchReason.Resort) _list.CancelMarquee();
+        else _list.RowsReplacing(); // the selection kept below is the one from before the rectangle
 
         // Remember focus/selection by id so they survive the refresh (only meaningful within one id generation).
         int focusedId = -1;
@@ -1038,6 +1042,7 @@ internal sealed partial class MainForm : Form
             _suppress = false;
         }
         _list.Invalidate();
+        _list.RowsReplaced();
         if (ThumbnailMode)
         {
             _grid.SetCount(_ids.Length, reset: reason == SearchReason.NewQuery);
