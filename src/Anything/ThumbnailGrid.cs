@@ -245,6 +245,9 @@ internal sealed class ThumbnailGrid : Control
         return new Rectangle(spare + col * c.Width, (int)Math.Clamp(y, int.MinValue / 4, int.MaxValue / 4), c.Width, c.Height);
     }
 
+    /// <summary>The item at <paramref name="p"/> (client coordinates), or -1.</summary>
+    public int IndexAt(Point p) => HitTest(p);
+
     int HitTest(Point p)
     {
         var c = Cell;

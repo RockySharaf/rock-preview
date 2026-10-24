@@ -37,6 +37,9 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
 - **🗂️ The real Explorer, built in**: not a look-alike. Rock Preview hosts Windows' own Explorer file view and
   navigation pane, so context menus, drag and drop, rename, thumbnails and shell extensions all just work. It can
   replace File Explorer too: folders, This PC and Win+E open in it.
+- **Drag and drop with any app**: drag files to Outlook, mail, chat and upload pages, or drop Outlook's mails and
+  attachments, and files from anywhere, on a folder. Dropping copies; hold **Shift** to move (**Ctrl** copies, **Alt**
+  makes a shortcut, as in Windows). Drag pinned folders in the navigation pane up or down to reorder them.
 - **👁️ Preview anything**: select a file and see it, without opening another app.
 - **🔎 Search inside files**: the words in PDFs, Office documents, emails and design files, and pictures' details, on
   your own folders and, if you switch it on, your network drives.
@@ -55,8 +58,9 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
   Drives that appear while the app runs are added within seconds; SUBST drives are skipped so nothing shows up twice.
 - Also search any folder, including `\\server\share`, even inside a drive or folder you leave out.
   **Settings › Indexing** shows every drive with how many items it holds.
-- Results update as you type, across every drive. Select folders first to search only inside them: the search box
-  says where it looks ("Search images").
+- Results update as you type. The start of the search box says where they come from: **Everything** in blue, or the
+  folder you opened ("Downloads"). Opening a folder searches inside it; `Alt+X` always searches everything; click the
+  box's **Everything** / folder label to switch. Select folders first to search only inside them ("images").
 - Powerful query language: wildcards, regular expressions, AND / OR / NOT, and functions for size, dates, type,
   extension, attributes, parent folder and more ([syntax below](#search-syntax)).
 - As much about each file as Everything shows: besides size, dates modified and created and attributes, the
@@ -217,6 +221,10 @@ Rock Preview doesn't patch File Explorer to change that.
    and network folders, any time in **Settings › Indexing**; the app offers it once if you install without choosing.
    To update, click **Update now** when the app says a new version is out (see [Updates](#updates)), or run the new
    Setup: it closes the running copy (wherever it runs from), replaces it and keeps your settings and earlier choices.
+   An older copy is replaced wherever it is, under either name (an install from when the app was called Ultimate File
+   Explorer moves to the Rock Preview folder): its shortcuts, start with Windows and Settings › Apps entry go, your
+   taskbar pin opens the new one, and your settings and search index stay (the app checks the index when it starts and
+   builds it again if it can't use it).
 2. Prefer no install? Download **`RockPreview.exe`** — the portable version runs from any folder or USB stick.
 
 Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall the installed version in one
@@ -244,7 +252,9 @@ its file is all there is to do.
 > *Instant indexing for all drives*: it installs the small **Rock Preview Service** and Windows asks for permission one
 > time. After that Rock Preview runs as a normal app (no more prompts) and the service reads the drives for it, like
 > Everything's service. You can also turn it on later from the yellow bar or **Settings › Indexing**. Without it,
-> Rock Preview still works: it indexes by scanning folders, which is slower the first time.
+> Rock Preview still works: it indexes by scanning folders, which is slower the first time. Each update replaces the
+> service too (stopped, replaced and started again; Windows asks for permission); if that was declined, the app offers
+> it in its yellow bar when it starts.
 
 ### Updates
 
@@ -273,11 +283,12 @@ daily check off in Setup or **Settings › General**.
 | `Ctrl+Shift+Z` | Every file in the folder and its subfolders, as a list |
 | `Ctrl+Shift+N` | New folder |
 | `Alt+Enter` | Properties |
+| `Ctrl+P` | Print the selected files |
 | `F5` | Refresh |
 | `Ctrl+I` `Ctrl+B` `Ctrl+U` `Ctrl+R` | Match case / whole word / path / regex |
 | `Ctrl+1` … `Ctrl+8`, `Ctrl+9` | Sort by Name, Path, Size, Extension, Type, Date Modified, Date Created, Attributes; Date Recently Changed |
 | `Ctrl+D` | Bookmark the current search |
-| `Ctrl+P` | Settings (also the gear on the command bar; its arrow has the rest of Explorer's **⋯** menu) |
+| `Ctrl+,` | Settings (also the gear on the command bar; its arrow has the rest of Explorer's **⋯** menu) |
 | `Ctrl+N` | New window |
 | `Esc` | Clear the search / back to the folder |
 | `F1` | Search syntax help |

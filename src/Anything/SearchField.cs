@@ -4,15 +4,21 @@ namespace Anything;
 
 /// <summary>
 /// Windows 11 File Explorer's search box: a rounded field hosting a borderless TextBox, with the magnifier on the
-/// right (a clear button once there is text) and an accent underline while focused.
+/// right (a clear button once there is text) and an accent underline while focused. At its start, where a search
+/// looks: "Everything" in blue, or the folder.
 /// </summary>
 internal sealed class SearchField : Control
 {
     readonly TextBox _box;
+    readonly ScopeChip _chip = new();
+    readonly ToolTip _tip = new();
     bool _hover, _glyphHover, _glyphDown;
 
     /// <summary>The clear (×) button was clicked.</summary>
     public event Action? ClearClicked;
+
+    /// <summary>The scope chip was clicked (only while it can switch).</summary>
+    public event Action? ScopeClicked;
 
     public SearchField(TextBox box)
     {
@@ -30,7 +36,23 @@ internal sealed class SearchField : Control
         box.LostFocus += (_, _) => ApplyColors();
         box.MouseEnter += (_, _) => SetHover(true);
         box.MouseLeave += (_, _) => SetHover(ClientRectangle.Contains(PointToClient(MousePosition)));
+        _chip.Click += (_, _) => { if (_chip.Clickable) ScopeClicked?.Invoke(); };
+        Controls.Add(_chip);
         ApplyColors();
+    }
+
+    /// <summary>Where a search looks: <paramref name="text"/> ("Everything" in blue, or a folder's name) and what clicking it does.</summary>
+    public void SetScope(string text, bool everything, bool clickable, string tip)
+    {
+        if (_chip.Text == text && _chip.Everything == everything && _chip.Clickable == clickable && _chip.AccessibleName == tip) return;
+        _chip.Text = text;
+        _chip.Everything = everything;
+        _chip.Clickable = clickable;
+        _chip.Cursor = clickable ? Cursors.Hand : Cursors.Default;
+        _chip.AccessibleName = tip;
+        _tip.SetToolTip(_chip, tip);
+        PerformLayout();
+        _chip.Invalidate();
     }
 
     /// <summary>The field's height for the current DPI (32 logical, like Explorer).</summary>
@@ -41,6 +63,8 @@ internal sealed class SearchField : Control
     {
         _box.BackColor = _box.Focused ? ExplorerTheme.FieldFillFocused : ExplorerTheme.FieldFill;
         _box.ForeColor = ExplorerTheme.Text;
+        _chip.BackColor = _box.BackColor;
+        _chip.Invalidate();
         Invalidate();
     }
 
@@ -56,8 +80,12 @@ internal sealed class SearchField : Control
     protected override void OnLayout(LayoutEventArgs levent)
     {
         base.OnLayout(levent);
-        int left = LogicalToDeviceUnits(11);
         int right = GlyphRect.Width + LogicalToDeviceUnits(4);
+        // The chip at the start, at most about half the field, so a long folder name leaves room to type.
+        int inset = LogicalToDeviceUnits(5), chipH = Math.Max(1, Height - 2 * inset);
+        int chipW = Math.Min(_chip.PreferredChipWidth(), Math.Max(LogicalToDeviceUnits(40), (Width - right) * 45 / 100));
+        _chip.SetBounds(inset, (Height - chipH) / 2, chipW, chipH);
+        int left = _chip.Right + LogicalToDeviceUnits(7);
         int h = _box.PreferredHeight;
         _box.SetBounds(left, Math.Max(0, (Height - h) / 2 + LogicalToDeviceUnits(1)), Math.Max(10, Width - left - right), h);
     }
@@ -143,5 +171,78 @@ internal sealed class SearchField : Control
         _glyphDown = false;
         Invalidate();
         if (GlyphRect.Contains(e.Location)) ClearClicked?.Invoke();
+    }
+}
+
+/// <summary>
+/// The search box's scope: "Everything" in blue, or the folder a search looks inside (with a folder mark); a button
+/// that switches between the two.
+/// </summary>
+internal sealed class ScopeChip : Control
+{
+    bool _hover, _down;
+
+    public ScopeChip()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        SetStyle(ControlStyles.Selectable, false);
+        TabStop = false;
+        AccessibleRole = AccessibleRole.PushButton;
+    }
+
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool Everything { get; set; } = true;
+
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool Clickable { get; set; }
+
+    int Pad => LogicalToDeviceUnits(8);
+    int GlyphSize => LogicalToDeviceUnits(12);
+
+    /// <summary>The whole text, its padding and (for a folder) the folder mark.</summary>
+    public int PreferredChipWidth() =>
+        2 * Pad + (Everything ? 0 : GlyphSize + LogicalToDeviceUnits(5)) + TextRenderer.MeasureText(Text, Font, Size.Empty, TextFormatFlags.NoPrefix).Width;
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(BackColor);
+        var blue = ExplorerTheme.Blue;
+        int lift = Clickable && (_hover || _down) ? 0x14 : 0;
+        Color fill = Everything ? Color.FromArgb((ExplorerTheme.Dark ? 0x2E : 0x1C) + lift, blue)
+            : Color.FromArgb((ExplorerTheme.Dark ? 0x18 : 0x0F) + lift, ExplorerTheme.Text);
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        ExplorerTheme.FillRounded(g, new Rectangle(0, 0, Width - 1, Height - 1), LogicalToDeviceUnits(4), fill);
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.Default;
+        int x = Pad;
+        if (!Everything)
+        {
+            ExplorerTheme.DrawGlyph(g, ExplorerTheme.GFolder, new Rectangle(x, 0, GlyphSize, Height), GlyphSize, ExplorerTheme.SecondaryText);
+            x += GlyphSize + LogicalToDeviceUnits(5);
+        }
+        TextRenderer.DrawText(g, Text, Font, new Rectangle(x, 0, Math.Max(0, Width - x - Pad / 2), Height), Everything ? blue : ExplorerTheme.Text,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _hover = true; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hover = _down = false; Invalidate(); }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button == MouseButtons.Left) { _down = true; Invalidate(); }
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        _down = false;
+        Invalidate();
+    }
+
+    protected override void OnTextChanged(EventArgs e)
+    {
+        base.OnTextChanged(e);
+        Invalidate();
     }
 }

@@ -12,7 +12,7 @@ namespace Anything.Explorer;
 /// 8px indent, and the group dividers (a double-height first row with a line at a quarter of its height). Context
 /// menus, rename, drag and drop, icons, overlays and change notifications are all the shell's own.
 /// </summary>
-internal sealed class NavigationTree : Control
+internal sealed partial class NavigationTree : Control
 {
     // Explorer's own pane (window styles read from a live Explorer: 0x5621922D / extended 0x3C15): chevrons always
     // shown (no fade), full-row "Explorer" theme selection, no lines, even row heights, no horizontal scrolling, rich
@@ -122,6 +122,7 @@ internal sealed class NavigationTree : Control
             ApplyExplorerMetrics();
             ResizeTree();
             AddRoots();
+            BeginInvoke(() => { if (_hwndTree != IntPtr.Zero) ShellDragDrop.CopyFirstInside(_hwndTree); }); // drops copy unless a key says move
             Error = null;
             if (_deferredSelect != null) { var s = _deferredSelect; _deferredSelect = null; SelectFolder(s); }
         }
@@ -154,6 +155,7 @@ internal sealed class NavigationTree : Control
 
     void ReleaseTree()
     {
+        _pinDrag = null;
         CancelPending();
         _raiseTimer.Stop();
         _raisePending = null;
@@ -850,10 +852,14 @@ internal sealed class NavigationTree : Control
     /// </summary>
     sealed class TreeHook(NavigationTree host) : NativeWindow
     {
+        /// <summary>A message the tree gets as if the hook weren't there (a pinned folder's drag handed back to it).</summary>
+        public void Pass(ref Message m) => DefWndProc(ref m);
+
         const int TVM_INSERTITEMW = 0x1132;
 
         protected override void WndProc(ref Message m)
         {
+            if (host.HandlePinDragMessage(ref m)) return;
             if (m.Msg == TVM_SETITEMHEIGHT && host.RowHeight() is > 0 and var h && m.WParam != (IntPtr)h)
             {
                 m.WParam = (IntPtr)h;

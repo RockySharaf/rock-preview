@@ -36,6 +36,7 @@ internal sealed partial class MainForm
             new ToolStripSeparator(),
             Item("&Open", OpenSelected, display: "Enter"),
             Item("Open &Path", OpenSelectedPath, display: "Ctrl+Enter"),
+            Item("&Print", PrintAny, Keys.Control | Keys.P),
             new ToolStripSeparator(),
             Item("&Export...", Export, Keys.Control | Keys.S),
             new ToolStripSeparator(),
@@ -168,7 +169,7 @@ internal sealed partial class MainForm
         _miRunAsAdmin = Item("Run as &Administrator...", _app.RestartElevated);
         tools.DropDownItems.AddRange(
         [
-            Item("&Settings...", () => _app.ShowSettings(this), Keys.Control | Keys.P),
+            Item("&Settings...", () => _app.ShowSettings(this), Keys.Control | Keys.Oemcomma, "Ctrl+,"),
             new ToolStripSeparator(),
             Item("Re&build Index", () =>
             {
@@ -195,7 +196,7 @@ internal sealed partial class MainForm
         var selectNone = Item("Select none", SelectNoneAny);
         var invert = Item("Invert selection", InvertSelectionAny);
         var properties = Item("Properties", PropertiesAny, display: "Alt+Enter");
-        var settings = Item("Settings", () => _app.ShowSettings(this), display: "Ctrl+P");
+        var settings = Item("Settings", () => _app.ShowSettings(this), display: "Ctrl+,");
         // The way to the real File Explorer (useful when Rock Preview replaces it): this location, in a File Explorer window.
         var inExplorer = Item("Open in File Explorer", OpenInFileExplorer);
         selectAll.Image = MenuIcon(ExplorerIcons.SelectAll);
@@ -522,6 +523,21 @@ internal sealed partial class MainForm
         if (!ExplorerShown) { Properties(); return; }
         if (_explorer.SelectedCount > 0) _explorer.InvokeVerbOnSelection("properties");
         else if (_explorer.CurrentPath is { } folder) FileOps.Properties(this, [folder]);
+    }
+
+    /// <summary>
+    /// Ctrl+P: the selected files printed by their own programs, like the context menu's Print. A big selection asks
+    /// first, since each file goes to the printer.
+    /// </summary>
+    void PrintAny()
+    {
+        const int Ask = 5;
+        int count = ExplorerShown ? _explorer.SelectedCount : _list.SelectedIndices.Count;
+        if (count == 0) { _statusRight.Text = "Select the files to print"; return; }
+        if (count > Ask && MessageBox.Show(this, $"Print {count:N0} files?", "Print", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+            return;
+        bool ok = ExplorerShown ? _explorer.InvokeVerbOnSelection("print") : SelectedPaths(100_000) is { Count: > 0 } paths && ShellContextMenu.InvokeVerb(this, paths, "print");
+        if (!ok) _statusRight.Text = count == 1 ? "This file can't be printed from here" : "These files can't be printed from here";
     }
 
     void CopyFullName()

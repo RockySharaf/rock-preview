@@ -61,6 +61,7 @@ static class Program
             if (cmd.Exit) return 0;
 
             ApplicationConfiguration.Initialize();
+            Application.OleRequired(); // drag and drop: Windows' folder view and navigation pane register their drop targets as they start
             AppSettings.MigrateFromAnything(cmd.Demo); // the app used to be called "Anything"
             // Theme must be chosen before any window exists; the full settings load happens in AnythingApp.Create.
             Application.SetColorMode(AppSettings.ColorModeFor(AppSettings.Load(AppSettings.DefaultPath(cmd.Demo)).Theme));

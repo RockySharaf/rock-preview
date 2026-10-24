@@ -83,6 +83,13 @@ internal sealed partial class MainForm
         public string ZapLabel = "";
         public List<string> SelScope = [];
         public bool UseSelScope;
+        /// <summary>
+        /// Searches look everywhere though a folder is open (Alt+X, or the scope chip), until another folder is opened;
+        /// otherwise they look inside the open folder.
+        /// </summary>
+        public bool SearchEverywhere;
+        /// <summary>The tab has opened a folder already: the next one opened scopes searches to it.</summary>
+        public bool Navigated;
         public (SortKey Key, bool Descending)? SortBeforeZap, SortFromFolder;
         public bool ExplorerStart;
         public string? ExplorerLocation;

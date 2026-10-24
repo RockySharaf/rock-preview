@@ -104,7 +104,31 @@ internal sealed partial class AnythingApp : ApplicationContext
         StartContent();
         HandleCommandLine(cmd, initial: true);
         StartUpdateChecks();
+        CheckServiceVersion();
         RefreshDrives();
+    }
+
+    /// <summary>
+    /// The installed service's release when it is older than this one (an update that couldn't replace it, or one from
+    /// before updates did): the windows' info bar offers to update it. Null when it is current or not installed.
+    /// </summary>
+    public Version? OutdatedService { get; private set; }
+
+    /// <summary>Looks at the installed service (off the UI thread: the service manager can be slow to answer).</summary>
+    void CheckServiceVersion()
+    {
+        if (IsDemo) return;
+        Task.Run(() =>
+        {
+            Version? old = null;
+            try { if (IndexService.NeedsUpdate()) old = IndexService.InstalledProgramVersion() ?? new Version(0, 0); }
+            catch (Exception) { }
+            Post(() =>
+            {
+                OutdatedService = old;
+                foreach (var w in _windows) w.OnIndexStateChanged();
+            });
+        });
     }
 
     static Icon LoadIcon()
@@ -262,9 +286,11 @@ internal sealed partial class AnythingApp : ApplicationContext
         _lastActive = w;
     }
 
-    public void ShowSearchWindow()
+    /// <summary>The last window, in front with its search box focused; <paramref name="everything"/> (Alt+X) = ready to search everything.</summary>
+    public void ShowSearchWindow(bool everything = false)
     {
         var w = _lastActive ?? _windows.LastOrDefault() ?? CreateWindow(null);
+        if (everything) w.SearchEverything();
         ShowWindow(w);
     }
 
@@ -331,9 +357,10 @@ internal sealed partial class AnythingApp : ApplicationContext
     }
 
     /// <summary>
-    /// Turns on instant indexing for good: installs (or updates) the Rock Preview service (Windows asks for permission
-    /// this once), then restarts indexing from the database so the drives are read through it: what offline network
-    /// drives had is kept, and everything stays searchable meanwhile. Rock Preview itself keeps running as a normal app.
+    /// Turns on instant indexing for good: installs (or updates: stops, replaces and starts again) the Rock Preview
+    /// service (Windows asks for permission this once), then restarts indexing from the database so the drives are read
+    /// through it: what offline network drives had is kept, and everything stays searchable meanwhile. Rock Preview
+    /// itself keeps running as a normal app.
     /// </summary>
     public async void TurnOnInstantIndexing(IWin32Window? owner)
     {
@@ -358,6 +385,7 @@ internal sealed partial class AnythingApp : ApplicationContext
             MessageBox.Show(owner, "Rock Preview couldn't turn on instant indexing.", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
+        OutdatedService = null;
         for (int i = 0; i < 40 && !Anything.Core.Indexing.VolumeService.IsRunning(); i++) await Task.Delay(250);
         try { IndexManager.Start(Settings.Index); }
         catch (Exception ex)
@@ -383,7 +411,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         {
             if (_tray is not null) return;
             var menu = new ContextMenuStrip();
-            var show = new ToolStripMenuItem("&Search Rock Preview...", null, (_, _) => ShowSearchWindow()) { ShortcutKeyDisplayString = ActiveHotkey };
+            var show = new ToolStripMenuItem("&Search Rock Preview...", null, (_, _) => ShowSearchWindow(everything: true)) { ShortcutKeyDisplayString = ActiveHotkey };
             show.Font = new Font(show.Font, FontStyle.Bold);
             menu.Items.Add(show);
             menu.Items.Add(new ToolStripMenuItem("&New Search Window", null, (_, _) => NewWindow(_lastActive)));
@@ -458,7 +486,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         IntPtr fg = Native.GetForegroundWindow();
         var active = _windows.FirstOrDefault(x => x.Visible && x.IsHandleCreated && x.Handle == fg);
         if (active is not null) active.Hide();
-        else ShowSearchWindow();
+        else ShowSearchWindow(everything: true);
         Tried(active is null ? GettingStarted.Show : GettingStarted.Hide);
     }
 
@@ -589,8 +617,9 @@ internal sealed partial class AnythingApp : ApplicationContext
                     Verb = elevate ? "runas" : "",
                     WorkingDirectory = Path.GetDirectoryName(setup)!,
                     // The installation this copy is, named: the installer updates that one, whoever's account elevates it.
+                    // For everyone it runs elevated, maybe as an administrator's account: it is told whose update it is.
                     Arguments = CommandLine.Quote(installed.AllUsers
-                        ? ["-update", "-launch", "-dir", installed.Folder, "-allusers"]
+                        ? ["-update", "-launch", "-dir", installed.Folder, "-allusers", "-asuser", System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value]
                         : ["-update", "-launch", "-dir", installed.Folder]),
                 };
                 try { Process.Start(start)?.Dispose(); }

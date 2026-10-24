@@ -15,6 +15,8 @@ internal sealed partial class MainForm : Form
     readonly TextBox _search = new();
     readonly ComboBox _filter = new();
     readonly FlowLayoutPanel _infoBar = new();
+    readonly Label _infoLabel = new();
+    readonly LinkLabel _infoAction = new();
     readonly FlowLayoutPanel _updateBar = new();  // a new version is out
     readonly Label _updateText = new() { AutoSize = true, Margin = new Padding(0, 2, 6, 2) };
     readonly LinkLabel _updateNowLink = new() { AutoSize = true, Text = "Update now", Margin = new Padding(0, 2, 12, 2) },
@@ -52,6 +54,7 @@ internal sealed partial class MainForm : Form
     long _lastSearchMs;
     bool _pendingNewQuery;
     bool _loaded, _suppress, _statusPending, _infoDismissed;
+    bool _searchFirst; // shown by Alt+X: the search box keeps the focus, not the file view
     int _colDpi = 96;
     Rectangle? _initialBounds;
     bool _initialMaximized;
@@ -168,6 +171,7 @@ internal sealed partial class MainForm : Form
         _search.KeyDown += OnSearchKeyDown;
         _searchField = new SearchField(_search) { Dock = DockStyle.Right, Width = 300 };
         _searchField.ClearClicked += CloseSearch;
+        _searchField.ScopeClicked += ToggleSearchScope;
         _addressGap.BackColor = ExplorerTheme.Chrome;
 
         _filter.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -201,17 +205,14 @@ internal sealed partial class MainForm : Form
         _infoBar.Padding = new Padding(6, 3, 6, 3);
         _infoBar.BackColor = SystemColors.Info;
         _infoBar.ForeColor = SystemColors.InfoText;
-        var label = new Label
-        {
-            AutoSize = true,
-            Text = "Instant indexing is off, so Rock Preview is scanning folders (slower). Turn it on once and it stays on: Windows asks for permission one time.",
-            Margin = new Padding(0, 2, 6, 2),
-        };
-        var restart = new LinkLabel { AutoSize = true, Text = "Turn on instant indexing", Margin = new Padding(0, 2, 12, 2) };
-        restart.LinkClicked += (_, _) => _app.TurnOnInstantIndexing(this);
+        _infoLabel.AutoSize = true;
+        _infoLabel.Margin = new Padding(0, 2, 6, 2);
+        _infoAction.AutoSize = true;
+        _infoAction.Margin = new Padding(0, 2, 12, 2);
+        _infoAction.LinkClicked += (_, _) => _app.TurnOnInstantIndexing(this);
         var dismiss = new LinkLabel { AutoSize = true, Text = "Dismiss", Margin = new Padding(0, 2, 0, 2) };
         dismiss.LinkClicked += (_, _) => { _infoDismissed = true; UpdateInfoBar(); };
-        _infoBar.Controls.AddRange([label, restart, dismiss]);
+        _infoBar.Controls.AddRange([_infoLabel, _infoAction, dismiss]);
         _infoBar.Visible = false;
     }
 
@@ -318,7 +319,7 @@ internal sealed partial class MainForm : Form
         _list.RetrieveVirtualItem += OnRetrieveVirtualItem;
         _list.CacheVirtualItems += OnCacheVirtualItems;
         _list.DrawColumnHeader += OnDrawColumnHeader;
-        _list.DrawItem += (_, e) => e.DrawDefault = _list.View != View.Details;
+        _list.DrawItem += OnDrawItem;
         _list.DrawSubItem += OnDrawSubItem;
         _list.ColumnClick += (_, e) => SortByColumn(e.Column);
         _list.ColumnReordered += (_, _) => BeginInvoke(SaveColumnState);
@@ -330,12 +331,8 @@ internal sealed partial class MainForm : Form
         {
             if (e.Button == MouseButtons.Left && _list.HitTest(e.Location).Item is not null) OpenSelected();
         };
-        _list.ItemDrag += (_, _) =>
-        {
-            var paths = SelectedPaths(20000);
-            if (paths.Count > 0)
-                _list.DoDragDrop(new DataObject(DataFormats.FileDrop, paths.ToArray()), DragDropEffects.Copy | DragDropEffects.Move | DragDropEffects.Link);
-        };
+        _list.ItemDrag += (_, _) => DragSelection(_list);
+        ShellDragDrop.AcceptDrops(_list, screen => DropFolderAt(_list, screen));
         _list.HeaderContextMenu += ShowHeaderMenu;
         _list.ItemContextMenu += ShowItemMenu;
         _list.SelectedIndexChanged += (_, _) => { QueuePreview(); if (ThumbnailMode) _grid.Invalidate(); };
@@ -382,15 +379,53 @@ internal sealed partial class MainForm : Form
         _grid.Navigate += (i, shift, ctrl) => SelectFromGrid(i, shift, ctrl, toggle: false);
         _grid.ItemActivated += _ => OpenSelected();
         _grid.ItemContextMenu += pt => ShowSelectionMenu(pt, _grid);
-        _grid.ItemDrag += () =>
-        {
-            var paths = SelectedPaths(20000);
-            if (paths.Count > 0)
-                _grid.DoDragDrop(new DataObject(DataFormats.FileDrop, paths.ToArray()), DragDropEffects.Copy | DragDropEffects.Move | DragDropEffects.Link);
-        };
+        _grid.ItemDrag += () => DragSelection(_grid);
+        ShellDragDrop.AcceptDrops(_grid, screen => DropFolderAt(_grid, screen));
         _grid.ZoomRequested += notches => SetViewMode(Math.Clamp(Math.Max(48, _app.Settings.ThumbnailSize) + notches * 24, 48, 512));
         _grid.ForwardKeyDown += OnListKeyDown;
         _grid.ForwardKeyPress += OnListKeyPress;
+    }
+
+    /// <summary>The files dragged out of the results now (a drop back onto their own folder does nothing).</summary>
+    List<string>? _draggingOut;
+
+    /// <summary>
+    /// Drags the selected files out as the shell's own data, so any program takes them as it takes Explorer's (Outlook
+    /// attaches them); copying unless a key says otherwise (Shift moves).
+    /// </summary>
+    void DragSelection(Control source)
+    {
+        var paths = SelectedPaths(20000);
+        if (paths.Count == 0) return;
+        _draggingOut = paths;
+        try
+        {
+            if (ShellDragDrop.DragOut(source.Handle, paths)) return;
+            var data = new DataObject(DataFormats.FileDrop, paths.ToArray());
+            data.SetData("Preferred DropEffect", new MemoryStream(BitConverter.GetBytes(ShellDragDrop.DROPEFFECT_COPY)));
+            source.DoDragDrop(data, DragDropEffects.Copy | DragDropEffects.Move | DragDropEffects.Link);
+        }
+        finally { _draggingOut = null; }
+    }
+
+    /// <summary>
+    /// Where a drop on the results goes: the folder under the pointer, or else the folder they are from ("every file
+    /// in" one folder, or a search inside the open folder); nowhere for a search of everything.
+    /// </summary>
+    string? DropFolderAt(Control view, Point screen)
+    {
+        var p = view.PointToClient(screen);
+        int index = view == _grid ? _grid.IndexAt(p) : _list.HitTest(p).Item?.Index ?? -1;
+        string? folder = null;
+        if (index >= 0 && index < _ids.Length && ResultsCurrent && _resultIndex!.IsAlive(_ids[index]) && _resultIndex.IsDirectory(_ids[index]))
+            folder = _resultIndex.GetFullPath(_ids[index]);
+        else if (_zapActive && _zapRoots.Count == 1) folder = _zapRoots[0];
+        else folder = SearchFolder;
+        // Files dragged from here onto their own folder (or onto themselves) would only be copied next to themselves.
+        if (folder != null && _draggingOut is { } own && own.All(f => Setup.SamePath(f, folder)
+                || Path.GetDirectoryName(f.TrimEnd('\\')) is { } parent && Setup.SamePath(parent, folder)))
+            return null;
+        return folder;
     }
 
     string? PathOf(int id)
@@ -585,8 +620,8 @@ internal sealed partial class MainForm : Form
         OpenStartLocation();
         RunSearch(SearchReason.NewQuery);
         UpdateStatus();
-        // Like File Explorer, start in the file view (Ctrl+E / Ctrl+F go to the search box).
-        if (_browsing) BeginInvoke(() => _explorer.FocusView());
+        // Like File Explorer, start in the file view (Ctrl+E / Ctrl+F go to the search box); Alt+X starts in the search box.
+        if (_browsing && !_searchFirst) BeginInvoke(() => _explorer.FocusView());
         else ActiveControl = _search;
     }
 
@@ -606,6 +641,7 @@ internal sealed partial class MainForm : Form
         base.OnDpiChanged(e);
         if (_loaded) BeginInvoke(BuildColumns);
         if (_loaded) BeginInvoke(ApplyChromeMetrics);
+        if (_loaded) BeginInvoke(ApplyRowHeight);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -645,6 +681,29 @@ internal sealed partial class MainForm : Form
     {
         _search.Text = text;
         _search.SelectionStart = _search.TextLength;
+    }
+
+    /// <summary>
+    /// Alt+X: ready for a new search over everything, in the details list, whatever the window was showing (the open
+    /// folder, every file in it, thumbnails). Opening a folder scopes searches to it again.
+    /// </summary>
+    public void SearchEverything()
+    {
+        if (!_loaded)
+        {
+            _tab.SearchEverywhere = _searchFirst = true;
+            if (_app.Settings.ThumbnailSize > 0) _app.Settings.ThumbnailSize = 0;
+            return;
+        }
+        if (_zapActive) ExitZap(rerun: true);
+        bool rescope = SearchFolder != null || _useSelScope;
+        _selScope = [];
+        _useSelScope = false;
+        _tab.SearchEverywhere = true;
+        if (_app.Settings.ThumbnailSize > 0) SetViewMode(0);
+        UpdateSearchPlaceholder();
+        if (rescope && _search.TextLength > 0) RunSearch(SearchReason.NewQuery);
+        QueueStatusUpdate();
     }
 
     public void FocusSearch(bool selectAll)
@@ -707,10 +766,6 @@ internal sealed partial class MainForm : Form
         foreach (var t in _tabs) t.Explorer.OpenFoldersInPlace = s.UseInsteadOfExplorer; // Windows' "open folder" would start Rock Preview again
         _filter.Visible = s.FiltersVisible;
         _status.Visible = s.StatusBarVisible;
-        bool old = _suppress;
-        _suppress = true;
-        _scope.Checked = s.ScopeSearchToFolder;
-        _suppress = old;
         if (_loaded) ApplyNavPaneVisibility();
         ApplyFont();
         if (_loaded)
@@ -762,13 +817,25 @@ internal sealed partial class MainForm : Form
             _searchFont = custom;
             oldSearch?.Dispose();
         }
-        _list.Invalidate();
+        ApplyRowHeight();
     }
 
+    /// <summary>Instant indexing that is off (turn it on), or a service older than this release (update it: its fixes, and its name).</summary>
     void UpdateInfoBar()
     {
-        bool show = !_infoDismissed && !_app.IsDemo && !_app.IndexManager.IsElevated && !_app.IndexManager.UsesService
-                    && _app.Settings.Index.IndexNtfsVolumes; // the demo index isn't real indexing
+        bool outdated = _app.OutdatedService is not null;
+        bool off = !_app.IndexManager.IsElevated && !_app.IndexManager.UsesService && _app.Settings.Index.IndexNtfsVolumes;
+        bool show = !_infoDismissed && !_app.IsDemo && (outdated || off); // the demo index isn't real indexing
+        if (show)
+        {
+            string version = _app.OutdatedService is { Major: > 0 } v ? $" ({v.ToString(3)})" : "";
+            string text = outdated
+                ? $"Rock Preview's background service is an older version{version}. Update it to this one: Windows asks for permission one time."
+                : "Instant indexing is off, so Rock Preview is scanning folders (slower). Turn it on once and it stays on: Windows asks for permission one time.";
+            string action = outdated ? "Update the service" : "Turn on instant indexing";
+            if (_infoLabel.Text != text) _infoLabel.Text = text;
+            if (_infoAction.Text != action) _infoAction.Text = action;
+        }
         if (_infoBar.Visible != show) _infoBar.Visible = show;
     }
 

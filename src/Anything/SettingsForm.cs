@@ -290,9 +290,9 @@ internal sealed partial class SettingsForm : Form
     {
         var index = _app.IndexManager;
         bool service = !_app.IsDemo && IndexService.IsInstalled();
-        // An older service (setup's update declined, say) still works, but reads only fixed drives.
+        // An older service (setup's update declined, say) still works, but without this release's fixes.
         bool outdated = service && IndexService.NeedsUpdate();
-        string status = index.UsesService && outdated ? "On, through an older Rock Preview Service. Update it to read USB drives instantly too, and dates accessed; Windows asks for permission once."
+        string status = index.UsesService && outdated ? "On, through an older version of the Rock Preview Service. Update it to this one for its fixes; Windows asks for permission once."
             : index.UsesService ? "On: the Rock Preview Service reads your drives, so every change shows up at once."
             : index.IsElevated ? "On, because Rock Preview runs as administrator."
             : service && outdated ? "The Rock Preview Service isn't answering. Updating it usually brings it back; Windows asks for permission once."

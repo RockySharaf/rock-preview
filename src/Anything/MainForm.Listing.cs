@@ -47,7 +47,7 @@ internal sealed partial class MainForm
         if (_zapActive) return _zapRoots;
         if (_search.TextLength == 0) return [];
         if (_useSelScope && _selScope.Count > 0) return _selScope;
-        if (_browsing && _scope.Checked && _explorer.CurrentPath is { } folder) return [folder];
+        if (SearchFolder is { } folder) return [folder];
         return [];
     }
 

@@ -7,12 +7,69 @@ internal sealed partial class MainForm
     const TextFormatFlags BaseTextFlags = TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter
                                           | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping;
 
-    static (Color Back, Color Fore) SelectionColors(bool active)
+    /// <summary>
+    /// Explorer's selected rows, measured from its own Details view (the same whatever the accent colour): a 1px border
+    /// around the fill, the keyboard-focused row's black (light) or grey (dark); while the list hasn't the focus, grey
+    /// without a border.
+    /// </summary>
+    static (Color Back, Color Border, Color Fore) SelectionColors(bool active, bool focusedRow)
     {
         if (Application.IsDarkModeEnabled)
-            return active ? (Color.FromArgb(0x26, 0x4F, 0x78), Color.White) : (Color.FromArgb(0x3C, 0x3C, 0x3C), Color.Gainsboro);
-        // Explorer-style light selection (what Everything uses with visual styles on).
-        return active ? (Color.FromArgb(0xCC, 0xE8, 0xFF), SystemColors.WindowText) : (Color.FromArgb(0xD9, 0xD9, 0xD9), SystemColors.WindowText);
+            return !active ? (Color.FromArgb(0x3C, 0x3C, 0x3C), Color.FromArgb(0x3C, 0x3C, 0x3C), Color.Gainsboro)
+                : focusedRow ? (Color.FromArgb(0x50, 0x50, 0x50), Color.FromArgb(0xC3, 0xC3, 0xC3), Color.White)
+                : (Color.FromArgb(0x62, 0x62, 0x62), Color.FromArgb(0x60, 0xCD, 0xFF), Color.White);
+        return !active ? (Color.FromArgb(0xD9, 0xD9, 0xD9), Color.FromArgb(0xD9, 0xD9, 0xD9), SystemColors.WindowText)
+            : (Color.FromArgb(0xCC, 0xE8, 0xFF), focusedRow ? Color.Black : Color.FromArgb(0x00, 0x78, 0xD4), SystemColors.WindowText);
+    }
+
+    /// <summary>
+    /// Explorer's Details rows, measured from its own view: 30 apart at 100% with each item 25 high (37 and 31 at 125%),
+    /// so selected rows stay apart; Explorer's compact view packs them closer. Taller when the font is bigger.
+    /// </summary>
+    void ApplyRowHeight()
+    {
+        float scale = DeviceDpi / 96f;
+        bool compact = ExplorerTheme.CompactView;
+        int pitch = (int)((compact ? 22 : 30) * scale), box = (int)((compact ? 20 : 25) * scale);
+        int least = TextRenderer.MeasureText("Ag", _list.Font).Height + (int)(2 * scale); // a bigger font: taller rows
+        if (box < least) { pitch += least - box; box = least; }
+        _rowGap = pitch - box;
+        _list.RowHeight = pitch;
+        _list.Invalidate();
+    }
+
+    int _rowGap;
+
+    // The row whose background is still to paint, from OnDrawItem to its first cell.
+    int _rowToPaint = -1;
+    Rectangle _rowBounds;
+
+    /// <summary>
+    /// A row's background is painted with its first cell (OnDrawSubItem): the list draws its own selection after this
+    /// and before the cells (see-through in dark mode), so painting it here would be covered.
+    /// </summary>
+    void OnDrawItem(object? sender, DrawListViewItemEventArgs e)
+    {
+        if (_list.View != View.Details) { e.DrawDefault = true; return; }
+        _rowToPaint = e.ItemIndex;
+        _rowBounds = e.Bounds;
+    }
+
+    /// <summary>
+    /// A row's background: its selection is a box of its own, as in Explorer (a 1px border, and a gap to the next row),
+    /// so selected neighbours stay apart. The cells then draw their contents on it.
+    /// </summary>
+    void PaintRow(Graphics g, int index, Rectangle row, bool selected)
+    {
+        using (var bg = new SolidBrush(_list.BackColor)) g.FillRectangle(bg, row);
+        if (!selected) return;
+        bool focusedRow = _list.Focused && _list.FocusCuesShown && _list.FocusedItem?.Index == index;
+        var (back, border, _) = SelectionColors(_list.Focused, focusedRow);
+        int top = _rowGap / 2, side = Math.Max(1, LogicalToDeviceUnits(2));
+        var box = new Rectangle(row.Left + side, row.Top + top, Math.Max(1, Math.Min(row.Right, _list.ClientSize.Width) - row.Left - 2 * side),
+            Math.Max(1, row.Height - _rowGap));
+        using (var fill = new SolidBrush(back)) g.FillRectangle(fill, box);
+        using (var pen = new Pen(border)) g.DrawRectangle(pen, box.X, box.Y, box.Width - 1, box.Height - 1);
     }
 
     /// <summary>Light mode: native themed header. Dark mode: WinForms skips header text coloring for owner-drawn lists, so draw it.</summary>
@@ -54,6 +111,11 @@ internal sealed partial class MainForm
         var def = _list.Columns[e.ColumnIndex].Tag as ColumnDef;
         var row = RowAt(e.ItemIndex);
         var g = e.Graphics;
+        if (_rowToPaint == e.ItemIndex)
+        {
+            _rowToPaint = -1;
+            PaintRow(g, e.ItemIndex, _rowBounds, e.Item?.Selected ?? false);
+        }
 
         Rectangle cell = e.Bounds;
         if (e.ColumnIndex == 0)
@@ -66,10 +128,9 @@ internal sealed partial class MainForm
             cell = new Rectangle(x, e.Bounds.Y, col0.Width, e.Bounds.Height);
         }
 
+        // The background (and a selected row's box) is the row's (PaintRow); the cell draws only its contents.
         bool selected = e.Item?.Selected ?? false;
-        Color back = _list.BackColor, fore = _list.ForeColor;
-        if (selected) (back, fore) = SelectionColors(_list.Focused);
-        using (var brush = new SolidBrush(back)) g.FillRectangle(brush, cell);
+        Color fore = selected ? SelectionColors(_list.Focused, false).Fore : _list.ForeColor;
         if (StartsContentMatches(e.ItemIndex))
         {
             // Above the first result matched only inside files: those matched by name come first.

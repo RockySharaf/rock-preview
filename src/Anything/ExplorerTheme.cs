@@ -49,6 +49,23 @@ internal static class ExplorerTheme
     public static Color MenuBorder => Dark ? Color.FromArgb(0x40, 0x40, 0x40) : Color.FromArgb(0xE0, 0xE0, 0xE0);
     public static Color MenuHover => Hover;
 
+    /// <summary>Windows' default blue for text and marks, whatever the user's accent: "Everything" in the search box, the brand.</summary>
+    public static Color Blue => Dark ? Color.FromArgb(0x4C, 0xC2, 0xFF) : Color.FromArgb(0x00, 0x67, 0xC0);
+
+    /// <summary>Explorer's View › Compact view: its lists' rows closer together.</summary>
+    public static bool CompactView
+    {
+        get
+        {
+            try
+            {
+                using var adv = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced");
+                return adv?.GetValue("UseCompactMode") is int compact && compact != 0;
+            }
+            catch (Exception) { return false; }
+        }
+    }
+
     static Color? s_accentLight, s_accentDark;
 
     /// <summary>AccentFillColorDefault: the user's accent (SystemAccentColorDark1 in light, Light2 in dark).</summary>

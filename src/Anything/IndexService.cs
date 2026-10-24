@@ -25,11 +25,11 @@ internal static class IndexService
     const string VersionValue = "Version";
 
     /// <summary>
-    /// Bumped only when the service itself changes (not with every Rock Preview release), so updating Rock Preview
-    /// asks for administrator permission again only when the service really needs it. 2: frees memory after a scan.
-    /// 3: the new name (Rock Preview Service) in Windows' Services list. 4: reads USB drives formatted NTFS
-    /// too, lets go of a drive when asked (so it can be safely removed at once) and never waits on a busy change journal.
-    /// 5: sends each file's date accessed too (protocol 2; older apps still get protocol 1).
+    /// The service's own code, recorded with it: bumped when the service itself changes. 2: frees memory after a scan.
+    /// 3: the new name in Windows' Services list. 4: reads USB drives formatted NTFS too, lets go of a drive when asked
+    /// (so it can be safely removed at once) and never waits on a busy change journal. 5: sends each file's date accessed
+    /// too (protocol 2; older apps still get protocol 1). Every release also replaces an older service program
+    /// (<see cref="NeedsUpdate"/>), so its name and description follow the app's.
     /// </summary>
     public const int ServiceVersion = 5;
 
@@ -64,8 +64,25 @@ internal static class IndexService
         catch (Exception) { return 1; }
     }
 
-    /// <summary>Installed but older than this copy of Rock Preview's service code.</summary>
-    public static bool NeedsUpdate() => InstalledVersion() is > 0 and < ServiceVersion;
+    /// <summary>The Rock Preview release the installed service's program is (its file version); null when it can't be read.</summary>
+    public static Version? InstalledProgramVersion()
+    {
+        try
+        {
+            if (!File.Exists(InstalledExe)) return null;
+            var v = System.Diagnostics.FileVersionInfo.GetVersionInfo(InstalledExe);
+            return new Version(v.FileMajorPart, v.FileMinorPart, Math.Max(0, v.FileBuildPart));
+        }
+        catch (Exception) { return null; }
+    }
+
+    /// <summary>
+    /// Installed, and older than this copy of Rock Preview: its service code (<see cref="ServiceVersion"/>), or its program.
+    /// Every release replaces the service's program too (Windows asks for permission once), so the service is always the
+    /// version the app is: its fixes, and its name and description in Windows' Services list.
+    /// </summary>
+    public static bool NeedsUpdate() => InstalledVersion() is > 0 and var v
+        && (v < ServiceVersion || InstalledProgramVersion() is { } program && program < AnythingApp.CurrentVersion);
 
     // ---- install / uninstall (administrator) ---------------------------------------------------
 

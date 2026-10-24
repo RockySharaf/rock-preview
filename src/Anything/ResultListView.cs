@@ -73,8 +73,50 @@ internal sealed class ResultListView : ListView
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        AttachSystemImageList();
+        if (_rowHeight > 0) ApplyRowHeight();
+        else AttachSystemImageList();
     }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        base.OnHandleDestroyed(e);
+        if (_rowList != IntPtr.Zero) { ImageList_Destroy(_rowList); _rowList = IntPtr.Zero; }
+    }
+
+    IntPtr _rowList;
+    int _rowHeight;
+
+    /// <summary>The rows' height in pixels (0: the list's own). Icons are drawn from the system image list either way.</summary>
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public int RowHeight
+    {
+        get => _rowHeight;
+        set
+        {
+            if (value == _rowHeight) return;
+            _rowHeight = value;
+            if (IsHandleCreated) ApplyRowHeight();
+        }
+    }
+
+    /// <summary>
+    /// A report view's rows are as tall as its small image list's images and a pixel: an empty list that tall sets them.
+    /// </summary>
+    void ApplyRowHeight()
+    {
+        IntPtr old = _rowList;
+        _rowList = _rowHeight > 1 ? ImageList_Create(1, _rowHeight - 1, ILC_COLOR32, 1, 0) : IntPtr.Zero;
+        if (_rowList != IntPtr.Zero) Native.SendMessage(Handle, Native.LVM_SETIMAGELIST, (IntPtr)Native.LVSIL_SMALL, _rowList);
+        else AttachSystemImageList();
+        if (old != IntPtr.Zero) ImageList_Destroy(old);
+    }
+
+    /// <summary>Whether Windows shows keyboard focus now (after Tab or arrow keys, not after a click), like Explorer's focus border.</summary>
+    public bool FocusCuesShown => ShowFocusCues;
+
+    const uint ILC_COLOR32 = 0x20;
+    [DllImport("comctl32.dll")] static extern IntPtr ImageList_Create(int cx, int cy, uint flags, int initial, int grow);
+    [DllImport("comctl32.dll")] static extern bool ImageList_Destroy(IntPtr himl);
 
     public void AttachSystemImageList()
     {

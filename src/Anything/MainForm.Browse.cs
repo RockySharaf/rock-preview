@@ -28,7 +28,6 @@ internal sealed partial class MainForm
                                _zapEverydayItem = new("Everyday files only");
     readonly ToolStripButton _cmdEveryday = new("Everyday files"); // shown with "every file in": hides code and system files
     readonly ToolStripSeparator _sepSearch = new();
-    readonly CheckBox _scope = new();          // not shown: "search this folder only" state (Search options menu)
     readonly SplitContainer _body = new();     // navigation pane | files + preview
     readonly Panel _navPanel = new();
     readonly List<(ToolStripItem Item, string? Svg, char Glyph)> _glyphItems = [];
@@ -78,7 +77,7 @@ internal sealed partial class MainForm
         Cmd(_cmdCloseSearch, ExplorerIcons.CloseSearch, ExplorerTheme.GClose, "Close search", "Close search (Esc)", CloseSearch);
         Cmd(_thumbsButton, ExplorerIcons.IconsSmall, ExplorerTheme.GGrid, "Thumbnails", "", null);
         Cmd(_cmdEveryday, ExplorerIcons.AddressGallery, ExplorerTheme.GPhoto, "Everyday files", "", ToggleEverydayFiles);
-        Cmd(_cmdMore, null, ExplorerTheme.GSettings, null, "Settings (Ctrl+P). More commands under the arrow", null);
+        Cmd(_cmdMore, null, ExplorerTheme.GSettings, null, "Settings (Ctrl+,). More commands under the arrow", null);
         Cmd(_cmdPreview, ExplorerIcons.DetailsPane, ExplorerTheme.GPane, "Preview", "Show or hide the preview pane (Alt+P)", TogglePreview);
         _cmdPreview.Alignment = ToolStripItemAlignment.Right;
         _cmdMore.AccessibleName = "Settings";
@@ -155,12 +154,6 @@ internal sealed partial class MainForm
         };
         _breadcrumb = new BreadcrumbBar(_address) { Dock = DockStyle.Fill, MenuRenderer = ToolStripManager.Renderer };
         _breadcrumb.NavigateRequested += location => OpenFolder(location);
-
-        _scope.CheckedChanged += (_, _) =>
-        {
-            if (_suppress) return;
-            SetScope(selection: false, openFolder: _scope.Checked);
-        };
 
         // Navigation pane | files + preview.
         _navPanel.Dock = DockStyle.Fill;
@@ -249,12 +242,38 @@ internal sealed partial class MainForm
         if (show) SetNavPaneWidth();
     }
 
+    /// <summary>
+    /// The search box's scope chip: "Everything" in blue, or where a search looks ("Downloads", "3 folders"), shown
+    /// while typing too. Clicking it switches between the open folder and everything.
+    /// </summary>
     void UpdateSearchPlaceholder()
     {
-        if (_search.TextLength > 0) return; // not shown; keeps typing free of shell calls
-        if (_zapActive) { _search.PlaceholderText = $"Search {_zapLabel}"; return; }
-        _search.PlaceholderText = ScopeLabel() is { } where ? $"Search {where}" : "Search everything";
+        bool fromSelection = false;
+        string? where = _zapActive ? _zapLabel : ScopeLabel(out fromSelection);
+        string? folder = _browsing && _explorer.CurrentPath != null ? _explorer.CurrentDisplayName : null;
+        // Folders selected with nothing typed yet: the selection says where (select none to change it).
+        bool selected = fromSelection && _search.TextLength == 0;
+        string tip = _zapActive ? $"Searching the files in {where}"
+            : selected ? $"Searching only in the selected {where}"
+            : where != null ? $"Searching only in {where}. Click to search everything"
+            : folder != null ? $"Searching everything. Click to search only in {folder}"
+            : "Searching everything";
+        _searchField.SetScope(where ?? "Everything", everything: where == null, clickable: !_zapActive && !selected && (where != null || folder != null), tip);
+        if (_search.TextLength == 0) _search.PlaceholderText = where is null ? "Search everything" : $"Search {where}";
     }
+
+    /// <summary>The scope chip was clicked: everything, or back to the open folder.</summary>
+    void ToggleSearchScope()
+    {
+        if (_zapActive) return;
+        bool everywhere = ScopeLabel() == null;
+        if (everywhere && !(_browsing && _explorer.CurrentPath != null)) return;
+        SetScope(selection: false, openFolder: everywhere);
+        if (_search.TextLength == 0 && ExplorerShown) _explorer.FocusView(); else _search.Focus();
+    }
+
+    /// <summary>The open folder a search looks inside: the tab's folder, unless Alt+X or the scope chip said everywhere.</summary>
+    string? SearchFolder => _browsing && !_tab.SearchEverywhere && _explorer.CurrentPath is { Length: > 0 } folder ? folder : null;
 
     /// <summary>
     /// A search typed while folders are selected in the view looks only inside them ("Search images"); with none
@@ -290,23 +309,25 @@ internal sealed partial class MainForm
     const int MaxScopeFolders = 64;
 
     /// <summary>Where a search looks, for the search box and status bar ("images", "3 folders"); null = everywhere.</summary>
-    string? ScopeLabel()
+    string? ScopeLabel() => ScopeLabel(out _);
+
+    string? ScopeLabel(out bool selection)
     {
         var folders = _search.TextLength == 0 ? (ExplorerShown ? SelectedFolders() : []) : _useSelScope ? _selScope : [];
-        if (folders.Count > 0) return ZapLabel(folders);
-        if (_browsing && _scope.Checked && _explorer.CurrentPath != null) return _explorer.CurrentDisplayName;
+        selection = folders.Count > 0;
+        if (selection) return ZapLabel(folders);
+        if (SearchFolder != null) return _explorer.CurrentDisplayName;
         return null;
     }
 
-    /// <summary>Search options: inside the selected folders, inside the open folder (remembered), or everywhere.</summary>
+    /// <summary>
+    /// Search options and the scope chip: inside the selected folders, inside the open folder, or everywhere (for this
+    /// tab, until it opens another folder).
+    /// </summary>
     void SetScope(bool selection, bool openFolder)
     {
         _useSelScope = selection && _selScope.Count > 0;
-        bool old = _suppress;
-        _suppress = true;
-        _scope.Checked = openFolder;
-        _suppress = old;
-        _app.Settings.ScopeSearchToFolder = openFolder;
+        _tab.SearchEverywhere = !openFolder;
         UpdateSearchPlaceholder();
         RunSearch(SearchReason.NewQuery);
         QueueStatusUpdate();
@@ -379,11 +400,11 @@ internal sealed partial class MainForm
         var items = _cmdSearchOptions.DropDownItems;
         items.Clear();
         if (_selScope.Count > 0)
-            items.Add(new ToolStripMenuItem($"Search in {ZapLabel(_selScope).Replace("&", "&&")}", null, (_, _) => SetScope(selection: true, openFolder: _scope.Checked)) { Checked = _useSelScope });
+            items.Add(new ToolStripMenuItem($"Search in {ZapLabel(_selScope).Replace("&", "&&")}", null, (_, _) => SetScope(selection: true, openFolder: !_tab.SearchEverywhere)) { Checked = _useSelScope });
         bool canScope = _browsing && _explorer.CurrentPath != null;
         string here = _explorer.CurrentDisplayName ?? "this folder";
-        items.Add(new ToolStripMenuItem($"Search in {here.Replace("&", "&&")}", null, (_, _) => SetScope(selection: false, openFolder: true)) { Checked = !_useSelScope && canScope && _scope.Checked, Enabled = canScope });
-        items.Add(new ToolStripMenuItem("Search everywhere", null, (_, _) => SetScope(selection: false, openFolder: false)) { Checked = !_useSelScope && (!canScope || !_scope.Checked) });
+        items.Add(new ToolStripMenuItem($"Search in {here.Replace("&", "&&")}", null, (_, _) => SetScope(selection: false, openFolder: true)) { Checked = !_useSelScope && SearchFolder != null, Enabled = canScope });
+        items.Add(new ToolStripMenuItem("Search everywhere", null, (_, _) => SetScope(selection: false, openFolder: false)) { Checked = !_useSelScope && SearchFolder == null });
         items.Add(new ToolStripSeparator());
         var kind = new ToolStripMenuItem("Kind", MenuIcon("windows.searchfilterkind"));
         for (int i = 0; i < Filters.All.Length; i++)
@@ -579,6 +600,12 @@ internal sealed partial class MainForm
 
     void OnExplorerNavigated(FolderTab tab)
     {
+        // An opened folder is where searches look again (Alt+X's "everything" lasts until one is opened, the same one
+        // too). A new tab's first folder doesn't count, so a window Alt+X opens still searches everything.
+        if (tab.Navigated) tab.SearchEverywhere = false;
+        tab.Navigated = true;
+        // Each folder gets a new view, with Windows' own drop target: copying is made its first choice too.
+        BeginInvoke(() => { if (tab.Explorer.IsHandleCreated) ShellDragDrop.CopyFirstInside(tab.Explorer.Handle); });
         if (tab != _tab)
         {
             // A tab in the background moved on by itself (its folder was deleted, say): only its name and icon change.
@@ -744,7 +771,7 @@ internal sealed partial class MainForm
         if (_zapActive) return ZapFilter();
         if (_useSelScope && _selScope.Count > 0)
             return _selScope.Count == 1 ? Quote(WithSlash(_selScope[0])) : "<" + string.Join(" | ", _selScope.Select(f => Quote(WithSlash(f)))) + ">";
-        if (_browsing && _scope.Checked && _explorer.CurrentPath is { Length: > 0 } folder)
+        if (SearchFolder is { } folder)
             return Quote(WithSlash(folder));
         return null;
     }

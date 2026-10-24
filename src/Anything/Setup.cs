@@ -25,7 +25,10 @@ internal static partial class Setup
     public const string AppName = "Rock Preview";
     /// <summary>The settings and index folders: named Rock Preview all along, so updating keeps them.</summary>
     public const string DataFolderName = "Rock Preview";
-    /// <summary>Shortcuts named while the app was called that (1.5 to 1.7.4); replaced by ones named AppName.</summary>
+    /// <summary>
+    /// The app's name from 1.5 to 1.7.4: its shortcuts and the folder it installed into by itself, which are replaced by
+    /// ones named AppName.
+    /// </summary>
     public const string OldShortcutName = "Ultimate File Explorer";
     public const string ExeName = "RockPreview.exe";
     const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\RockPreview";
@@ -87,6 +90,19 @@ internal static partial class Setup
     public static string DefaultFolder(bool allUsers) => allUsers
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), AppName)
         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", AppName);
+
+    /// <summary>The folder versions 1.5 to 1.7.6 installed into by themselves, named after the app's name then.</summary>
+    static string OldDefaultFolder(bool allUsers) => allUsers
+        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), OldShortcutName)
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", OldShortcutName);
+
+    /// <summary>
+    /// Where an update or a setup puts an existing installation: its own folder, unless that is the Ultimate File
+    /// Explorer folder an older version chose by itself for just this user, which moves to the Rock Preview one. One for
+    /// everyone stays: the PC's other accounts may open their folders or start Windows with the program there.
+    /// </summary>
+    public static string FolderFor(Installed inst) =>
+        !inst.AllUsers && SamePath(inst.Folder, OldDefaultFolder(allUsers: false)) ? DefaultFolder(allUsers: false) : inst.Folder;
 
     public static string Version
     {
@@ -179,6 +195,7 @@ internal static partial class Setup
     {
         string source = Environment.ProcessPath ?? throw new InvalidOperationException("Can't find the setup program.");
         string folder = o.TargetFolder, exe = o.TargetExe;
+        var older = OlderCopies(o); // before this install's Settings › Apps entry takes the place of theirs
 
         status("Closing Rock Preview...");
         CloseRunning(exe, o.Quiet, anyFolder: true, again: "install again");
@@ -232,7 +249,9 @@ internal static partial class Setup
         catch (Exception) { }
         SHChangeNotify(0x08000000 /* SHCNE_ASSOCCHANGED */, 0, IntPtr.Zero, IntPtr.Zero);
         // Instant indexing: the Rock Preview service, installed once (Windows asks for permission unless setup already runs
-        // as administrator). An existing service is kept unless its own code changed (IndexService.ServiceVersion).
+        // as administrator). An older one is stopped, replaced and started again (IndexService.NeedsUpdate), so it is
+        // always this release: its fixes, and its name and description in Windows' Services list. Declined, the app
+        // offers it again when it starts.
         bool updateService = global::Anything.IndexService.NeedsUpdate();
         if ((o.IndexService && !global::Anything.IndexService.IsInstalled()) || updateService)
         {
@@ -245,7 +264,132 @@ internal static partial class Setup
             }
             catch (Exception ex) { Log(ex); }
         }
+        if (older.Count > 0)
+        {
+            status("Removing older copies...");
+            RetireOlderCopies(o, exe, older);
+        }
         status("Rock Preview is installed.");
+    }
+
+    // ---- older copies ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// This user's older copies an install replaces: in the folders older versions installed into by themselves, under
+    /// either name, and the one this user's Settings › Apps entry names. None when an administrator's account runs the
+    /// install for someone else (its copies aren't theirs), and never a copy for everyone: the PC's other accounts may
+    /// open their folders or start Windows with it, so it stays where it is (an update for everyone updates it there).
+    /// </summary>
+    static List<string> OlderCopies(Options o)
+    {
+        var found = new List<string>();
+        // An install for everyone runs elevated: it knows whose it is only when told (-asuser).
+        string? me = CurrentUserSid();
+        bool mine = string.Equals(o.AsUser, me, StringComparison.OrdinalIgnoreCase) || (!o.AllUsers && string.IsNullOrEmpty(o.AsUser));
+        if (!mine) return found;
+        void Add(string? folder)
+        {
+            if (!string.IsNullOrWhiteSpace(folder) && !SamePath(folder, o.TargetFolder) && !found.Any(f => SamePath(f, folder))) found.Add(folder);
+        }
+        Add(OldDefaultFolder(allUsers: false));
+        Add(DefaultFolder(allUsers: false));
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(UninstallKeyPath);
+            Add(key?.GetValue("InstallLocation") as string);
+        }
+        catch (Exception) { }
+        return found;
+    }
+
+    /// <summary>
+    /// Removes the older copies this install replaces (<see cref="OlderCopies"/>), leaving one that is newer than this
+    /// one: folders open with this copy if they opened with it, its start with Windows starts this one, a taskbar pin
+    /// opens this one, and its other shortcuts, Settings › Apps entry and program go. The settings and the index are
+    /// shared by every copy, so they stay: the app checks the index when it starts and builds it again if it can't use it.
+    /// </summary>
+    static void RetireOlderCopies(Options o, string exe, List<string> older)
+    {
+        var current = System.Version.Parse(Version);
+        foreach (string folder in older)
+        {
+            string old = Path.Combine(folder, ExeName);
+            try
+            {
+                if (File.Exists(old))
+                {
+                    var v = FileVersionInfo.GetVersionInfo(old);
+                    if (new System.Version(v.FileMajorPart, v.FileMinorPart, Math.Max(0, v.FileBuildPart)) > current) continue;
+                    // Folders that open with it (a quiet install leaves that choice as it is) open with this copy instead;
+                    // only when it is the one they open with: a verb it left behind another file manager doesn't count.
+                    try { if (ExplorerReplacement.RegisteredExe() is { } registered && SamePath(registered, old)) ExplorerReplacement.Enable(exe); }
+                    catch (Exception ex) { Log(ex); }
+                    if (ExplorerReplacement.References(old)) continue; // its program stays while folders could still run it
+                    DeleteShortcutsTo(old, Environment.SpecialFolder.Programs);
+                    DeleteShortcutsTo(old, Environment.SpecialFolder.DesktopDirectory);
+                    RepointTaskbarPins(old, exe, o.RunAsAdmin);
+                    MoveStartupEntry(old, exe);
+                    WaitUntilClosed(old, TimeSpan.FromSeconds(30)); // the copy that closed for this may still be saving
+                }
+                // Its Settings › Apps entry, when it still names that folder (this install's took its place otherwise).
+                using (var key = Registry.CurrentUser.OpenSubKey(UninstallKeyPath))
+                    if (key?.GetValue("InstallLocation") is string location && SamePath(location, folder))
+                        Registry.CurrentUser.DeleteSubKeyTree(UninstallKeyPath, false);
+                DeleteProgram(folder);
+            }
+            catch (Exception ex) { Log(ex); }
+        }
+    }
+
+    /// <summary>Taskbar pins that open <paramref name="old"/> open <paramref name="exe"/> instead, staying where they are (with their arguments).</summary>
+    static void RepointTaskbarPins(string old, string exe, bool runAsAdmin)
+    {
+        string pins = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "Microsoft", "Internet Explorer", "Quick Launch", "User Pinned", "TaskBar");
+        if (!Directory.Exists(pins)) return;
+        foreach (string lnk in Directory.EnumerateFiles(pins, "*.lnk"))
+        {
+            try
+            {
+                if (Shortcuts.Read(lnk) is { } link && SamePath(link.Path, old))
+                    Shortcuts.Create(lnk, exe, link.Arguments, ShortcutDescription(), runAsAdmin);
+            }
+            catch (Exception ex) { Log(ex); }
+        }
+    }
+
+    /// <summary>Start with Windows for an older copy starts this one instead, under today's name, on or off as it was in Task Manager.</summary>
+    static void MoveStartupEntry(string old, string exe)
+    {
+        var moved = RemoveStartupEntries(old).FirstOrDefault(e => UninstallRules.RunsProgram(e.Command, old));
+        if (moved is null || StartsWithWindows()) return; // this install has its own entry already
+        try
+        {
+            using var run = Registry.CurrentUser.CreateSubKey(RunKeyPath);
+            run.SetValue(RunValue, "\"" + exe + "\" -startup");
+            if (moved.Approved is { } state)
+            {
+                using var approved = Registry.CurrentUser.CreateSubKey(StartupApprovedRunKeyPath);
+                approved.SetValue(RunValue, state, RegistryValueKind.Binary);
+            }
+        }
+        catch (Exception ex) { Log(ex); }
+    }
+
+    /// <summary>An older copy's program (and an unfinished update's .new beside it), then its folder when nothing else is in it.</summary>
+    static void DeleteProgram(string folder)
+    {
+        foreach (string file in new[] { ExeName, ExeName + ".new" }.Select(n => Path.Combine(folder, n)))
+        {
+            // The copy that closed for this install may take a moment to let go of its file.
+            for (int i = 0; i < 20 && File.Exists(file); i++)
+            {
+                try { File.SetAttributes(file, FileAttributes.Normal); File.Delete(file); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { if (i == 19) Log(e); else Thread.Sleep(250); }
+            }
+        }
+        try { if (Directory.Exists(folder) && !Directory.EnumerateFileSystemEntries(folder).Any()) Directory.Delete(folder); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     // ---- update in place (Update now) -------------------------------------------------------------
@@ -254,7 +398,8 @@ internal static partial class Setup
     /// -update -dir &lt;folder&gt; [-allusers] [-launch]: the app's Update now, run from the installer it downloaded (already
     /// elevated by the app for an installation for everyone). Updates the installation in that folder in place, with every
     /// choice kept as it is (shortcuts, run as administrator, start with Windows, File Explorer's place, the service,
-    /// search inside files, new-version notices), then opens it again. Nothing asks; should it fail, it says why and opens
+    /// search inside files, new-version notices), then opens it again. Nothing asks (but Windows, when the instant-indexing
+    /// service is updated too); should it fail, it says why and opens
     /// the copy that is installed once the one that closed for the update has gone, so the app is never left closed.
     /// </summary>
     static int RunUpdate(Options o)
@@ -274,10 +419,12 @@ internal static partial class Setup
             }
             return 2;
         }
+        // A copy in the Ultimate File Explorer folder an older version chose by itself moves to the Rock Preview one.
         var u = new Options
         {
             AllUsers = inst.AllUsers,
-            Folder = inst.Folder,
+            Folder = FolderFor(inst),
+            AsUser = o.AsUser, // for everyone: whose Update now it was (an administrator's account may have elevated it)
             DesktopShortcut = ShortcutExists(desktop: true, inst.AllUsers),
             RunAsAdmin = InstalledRunsAsAdmin(inst.AllUsers),
             StartWithWindows = StartsWithWindows(),
@@ -309,8 +456,12 @@ internal static partial class Setup
         if (o.Launch)
         {
             // The copy that closed for the update may still be saving (it holds the single-instance lock until it ends):
-            // one started before it has gone would hand over to it and close.
-            WaitUntilClosed(u.TargetExe, TimeSpan.FromSeconds(90));
+            // one started before it has gone would hand over to it and close. When the move to the new folder didn't
+            // happen, the copy that is still where it was opens.
+            string was = Path.Combine(inst.Folder, ExeName);
+            WaitUntilClosed(was, TimeSpan.FromSeconds(90));
+            if (!SamePath(was, u.TargetExe)) WaitUntilClosed(u.TargetExe, TimeSpan.FromSeconds(30));
+            if (!File.Exists(u.TargetExe) && File.Exists(was)) u.Folder = inst.Folder;
             LaunchInstalled(u);
         }
         return code;
@@ -934,10 +1085,11 @@ internal static partial class Setup
 
     // ---- shortcuts --------------------------------------------------------------------------------
 
-    static void CreateShortcut(string lnk, string exe, bool runAsAdmin) =>
-        Shortcuts.Create(lnk, exe, "", ConfiguredHotkey() is { } hotkey
-            ? $"Search, browse and preview every file instantly. Press {hotkey} to open it from anywhere."
-            : "Search, browse and preview every file instantly.", runAsAdmin);
+    static void CreateShortcut(string lnk, string exe, bool runAsAdmin) => Shortcuts.Create(lnk, exe, "", ShortcutDescription(), runAsAdmin);
+
+    static string ShortcutDescription() => ConfiguredHotkey() is { } hotkey
+        ? $"Search, browse and preview every file instantly. Press {hotkey} to open it from anywhere."
+        : "Search, browse and preview every file instantly.";
 
     static string? ShortcutTarget(string lnk) => Shortcuts.Read(lnk)?.Path;
 

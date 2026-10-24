@@ -167,7 +167,7 @@ internal sealed class SetupForm : Form
         // Initial state: an existing installation is updated in place; otherwise the options passed in.
         bool allUsers = _existing?.AllUsers ?? o.AllUsers;
         (allUsers ? _everyone : _justMe).Checked = true;
-        _folder.Text = _existing?.Folder ?? o.TargetFolder;
+        _folder.Text = _existing is { } existing ? Setup.FolderFor(existing) : o.TargetFolder;
         // A new install gets everything that makes it work best; an update keeps the choices made before. Running as
         // administrator stays off: the instant-indexing service makes it unnecessary, and it would ask at every start.
         _desktop.Checked = o.Auto ? o.DesktopShortcut : _existing is null || Setup.ShortcutExists(desktop: true, allUsers);
