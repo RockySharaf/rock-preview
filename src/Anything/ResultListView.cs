@@ -123,6 +123,8 @@ internal sealed class ResultListView : ListView
               WM_RBUTTONDOWN = 0x204, WM_RBUTTONUP = 0x205, WM_CAPTURECHANGED = 0x215, MK_CONTROL = 0x8;
     const int LVM_SCROLL = Native.LVM_FIRST + 20, LVM_GETTOPINDEX = Native.LVM_FIRST + 39, LVM_SETSELECTIONMARK = Native.LVM_FIRST + 67;
     const int WM_HSCROLL = 0x114, WM_VSCROLL = 0x115, WM_MOUSEWHEEL = 0x20A, WM_MOUSEHWHEEL = 0x20E;
+    const int ReflectedNotify = 0x2000 + 0x004E, NM_CUSTOMDRAW = -12; // WM_REFLECT + WM_NOTIFY
+    const int CDDS_PREPAINT = 0x1, CDDS_POSTPAINT = 0x2, CDRF_NOTIFYPOSTPAINT = 0x10;
     const int HDM_SETIMAGELIST = 0x1200 + 8;
     const uint HDI_IMAGE = 0x0020;
     const int HDF_IMAGE = 0x0800;
@@ -138,6 +140,8 @@ internal sealed class ResultListView : ListView
         public short biPlanes, biBitCount;
         public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant;
     }
+    [StructLayout(LayoutKind.Sequential)] struct NMHDR { public nint hwndFrom; public nuint idFrom; public int code; }
+    [StructLayout(LayoutKind.Sequential)] struct NMCUSTOMDRAW { public NMHDR hdr; public int dwDrawStage; public nint hdc; } // (the rest isn't read)
     [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
     [DllImport("user32.dll")] static extern int GetScrollPos(IntPtr hwnd, int bar);
 
@@ -362,7 +366,7 @@ internal sealed class ResultListView : ListView
         }
         SelectCovered(marquee, first, last);
 
-        // Drawn again where it was and where it is (the list repaints that, and WM_PAINT draws it on top).
+        // Drawn again where it was and where it is (the list repaints that, with the rectangle on top).
         var rect = MarqueeRect(marquee);
         Invalidate(Rectangle.Union(marquee.Drawn, rect));
         marquee.Drawn = rect;
@@ -479,14 +483,17 @@ internal sealed class ResultListView : ListView
         return Rectangle.Intersect(r, new Rectangle(0, RowsTop, ClientSize.Width, Math.Max(0, ClientSize.Height - RowsTop)));
     }
 
-    /// <summary>The rectangle over the part of the list just painted (drawn only there, so it never darkens twice).</summary>
-    void DrawMarquee(Rectangle painted)
+    /// <summary>
+    /// The rectangle over the rows the list has just drawn into its paint buffer (<paramref name="hdc"/>), so it reaches
+    /// the screen with them. Drawn over the window after the rows instead, it was missing (or half drawn) in any frame
+    /// the screen showed in between: 8 to 10 times a second while the pointer moved.
+    /// </summary>
+    void DrawMarquee(IntPtr hdc)
     {
         if (_marquee is not { Shown: true } marquee) return;
         var r = MarqueeRect(marquee);
         if (r.Width <= 0 || r.Height <= 0) return;
-        using var g = CreateGraphics();
-        g.SetClip(painted);
+        using var g = Graphics.FromHdc(hdc);
         using (var fill = new SolidBrush(MarqueeFill)) g.FillRectangle(fill, r);
         using (var pen = new Pen(MarqueeBorder)) g.DrawRectangle(pen, r.X, r.Y, r.Width - 1, r.Height - 1);
     }
@@ -595,9 +602,12 @@ internal sealed class ResultListView : ListView
             case WM_CAPTURECHANGED when _marquee != null:
                 EndMarquee();
                 break;
-            case 0x000F /* WM_PAINT */ when _marquee is { Shown: true } && GetUpdateRect(Handle, out var dirtyRect, false):
+            case ReflectedNotify when _marquee is { Shown: true } && m.LParam != 0
+                                      && Marshal.PtrToStructure<NMCUSTOMDRAW>(m.LParam) is { hdr.code: NM_CUSTOMDRAW } draw:
+                // The list paints into a buffer and copies it to the screen at once: the rectangle goes in after the rows.
+                if (draw.dwDrawStage == CDDS_POSTPAINT) { DrawMarquee(draw.hdc); m.Result = 0; return; }
                 base.WndProc(ref m);
-                DrawMarquee(Rectangle.FromLTRB(dirtyRect.Left, dirtyRect.Top, dirtyRect.Right, dirtyRect.Bottom));
+                if (draw.dwDrawStage == CDDS_PREPAINT) m.Result |= CDRF_NOTIFYPOSTPAINT;
                 return;
         }
         if (m.Msg == Native.WM_CONTEXTMENU)
