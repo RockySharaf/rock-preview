@@ -183,8 +183,9 @@ internal sealed partial class MainForm
         tab.Listing = listing;
         tab.ListingNames = names;
         tab.ZapSearchRoots = roots;
-        listing.Changed += () => _app.Post(() => OnListingChanged(tab, listing));
-        listing.StateChanged += () => _app.Post(() => OnListingStateChanged(tab, listing));
+        // To the window the tab is in then (it can move to another).
+        listing.Changed += () => _app.Post(() => tab.Window?.OnListingChanged(tab, listing));
+        listing.StateChanged += () => _app.Post(() => tab.Window?.OnListingStateChanged(tab, listing));
         listing.Start();
     }
 

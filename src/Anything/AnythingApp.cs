@@ -259,9 +259,10 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// <summary>The window used last among those on screen (a window closed into the background doesn't count).</summary>
     MainForm? RecentWindow() => _lastActive is { Visible: true, IsDisposed: false } w ? w : _windows.LastOrDefault(x => x.Visible);
 
-    public MainForm CreateWindow(MainForm? source)
+    /// <summary>A new window, like <paramref name="source"/>; with <paramref name="tab"/>, for that tab from <paramref name="source"/> (not shown yet).</summary>
+    public MainForm CreateWindow(MainForm? source, MainForm.FolderTab? tab = null)
     {
-        var w = new MainForm(this, source);
+        var w = new MainForm(this, source, tab);
         _windows.Add(w);
         w.Activated += (_, _) => _lastActive = w;
         w.FormClosed += (_, _) =>

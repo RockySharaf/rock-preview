@@ -62,18 +62,28 @@ internal sealed partial class MainForm : Form
 
     internal bool ForceClose;
 
-    public MainForm(AnythingApp app, MainForm? source)
+    /// <summary>
+    /// A window like <paramref name="source"/> (columns, search options, size), or as Settings say. With
+    /// <paramref name="tab"/>, a tab from another window (<paramref name="source"/>) is its tab, with its own options.
+    /// </summary>
+    public MainForm(AnythingApp app, MainForm? source, FolderTab? tab = null)
     {
         _app = app;
         _ui = TaskScheduler.FromCurrentSynchronizationContext();
         var s = app.Settings;
+        _tab = tab ?? new FolderTab();
+        _adopted = tab is not null;
 
         if (source is not null)
         {
             source.SaveColumnState();
             foreach (var (k, v) in source._cols) _cols[k] = new ColumnSetting { Visible = v.Visible, Width = v.Width, Position = v.Position };
-            (_matchCase, _wholeWord, _matchPath, _diacritics, _regex) = (source._matchCase, source._wholeWord, source._matchPath, source._diacritics, source._regex);
-            (_filterIndex, _sort, _desc) = (source._filterIndex, source._sort, source._desc);
+            if (tab is null)
+            {
+                (_matchCase, _wholeWord, _matchPath, _diacritics, _regex) = (source._matchCase, source._wholeWord, source._matchPath, source._diacritics, source._regex);
+                (_filterIndex, _sort, _desc) = (source._filterIndex, source._sort, source._desc);
+            }
+            else TakeContentState(tab, source);
             var b = source.WindowState == FormWindowState.Normal ? source.Bounds : source.RestoreBounds;
             _initialBounds = new Rectangle(b.X + 24, b.Y + 24, b.Width, b.Height);
             TopMost = source.TopMost;
@@ -625,11 +635,16 @@ internal sealed partial class MainForm : Form
         SetNavPaneWidth();
         _loaded = true;
         ApplyViewMode();
-        OpenStartLocation();
-        RunSearch(SearchReason.NewQuery);
+        if (_adopted) ShowTab(_tab); // as it was in the window it came from
+        else
+        {
+            OpenStartLocation();
+            RunSearch(SearchReason.NewQuery);
+        }
         UpdateStatus();
         // Like File Explorer, start in the file view (Ctrl+E / Ctrl+F go to the search box); Alt+X starts in the search box.
-        if (_browsing && !_searchFirst) BeginInvoke(() => _explorer.FocusView());
+        if (_adopted) BeginInvoke(FocusTabContent);
+        else if (_browsing && !_searchFirst) BeginInvoke(() => _explorer.FocusView());
         else ActiveControl = _search;
     }
 
@@ -752,7 +767,7 @@ internal sealed partial class MainForm : Form
 
     public void SaveStateTo(AppSettings s)
     {
-        if (!_loaded) return;
+        if (!_loaded || _tabs.Count == 0) return; // a window whose last tab went to another window has nothing to keep
         s.WindowBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
         s.Maximized = WindowState == FormWindowState.Maximized;
         s.AlwaysOnTop = TopMost;

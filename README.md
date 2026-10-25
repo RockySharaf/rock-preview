@@ -147,8 +147,12 @@ Like Windows 11 File Explorer, one window holds several folders and searches as 
   another order.
 - Each tab keeps its own folder, Back/Forward history, search, results, sort and Thumbnails view. Switching is instant:
   the other tabs stay open in the background, nothing loads again.
-- Right-click a tab to duplicate it, open it in a new window, or close the others. Right-click folders in the search
-  results to open them in new tabs.
+- **Drag a tab out of the strip**, as in Chrome, and it opens as a window of its own where you let go; the window
+  follows the pointer while you drag. Drag it onto another Rock Preview window's tabs to move it there instead, then
+  on along that strip to place it. A window's only tab brings the window along, so two windows become one. The tab
+  moves as it is: its folder, Back/Forward, selection and scroll position, search and results, without loading again.
+- Right-click a tab to duplicate it, open its folder in a new window, move the tab itself to a new window, or close
+  the others. Right-click folders in the search results to open them in new tabs.
 - Folders opened from Windows (when Rock Preview replaces File Explorer) and **Win+E** open as a new tab in
   the window you used last. **Settings › General › Open folders in tabs** turns that off for a new window each time.
 

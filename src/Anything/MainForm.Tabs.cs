@@ -8,13 +8,15 @@ namespace Anything;
 /// Tabs, like Windows 11 File Explorer's: several folders and searches in one window. Each tab has its own Explorer
 /// view (so its own Back/Forward history) and its own search, results, Thumbnails and sort; the window's chrome (address
 /// row, command bar, navigation pane, results list, preview pane, status bar) shows the active tab. The other tabs'
-/// views stay alive, hidden, so switching back is instant and the folder doesn't load again.
+/// views stay alive, hidden, so switching back is instant and the folder doesn't load again. A tab can move to another
+/// window, view and all (MainForm.TearOff.cs).
 /// </summary>
 internal sealed partial class MainForm
 {
     readonly TabStrip _tabStrip = new() { Dock = DockStyle.Fill };
     readonly List<FolderTab> _tabs = [];
-    FolderTab _tab = new(); // the active tab
+    FolderTab _tab;         // the active tab
+    readonly bool _adopted; // the window opened for a tab from another window, which it shows as it was there
     bool _searchPending;    // a search was started and its results haven't arrived yet
 
     // The active tab's state, under the names it had as the window's own fields before there were tabs: the rest of
@@ -49,9 +51,20 @@ internal sealed partial class MainForm
     string? _explorerLocation { get => _tab.ExplorerLocation; set => _tab.ExplorerLocation = value; }
 
     /// <summary>One tab: its Explorer view, and what the window shows for it while it is the active tab.</summary>
-    sealed class FolderTab : ITabStripItem
+    internal sealed class FolderTab : ITabStripItem
     {
         public readonly ExplorerHost Explorer = new() { Dock = DockStyle.Fill, Visible = false };
+
+        public FolderTab()
+        {
+            // The view reports to the window the tab is in now, as tabs move between windows.
+            Explorer.Navigated += () => Window?.OnExplorerNavigated(this);
+            Explorer.SelectionChanged += () => Window?.OnTabSelectionChanged(this);
+            Explorer.NavigationFailed += msg => Window?.OnTabNavigationFailed(this, msg);
+        }
+
+        /// <summary>The window the tab is in.</summary>
+        public MainForm? Window;
         public string SearchText = "";
         public int[] Ids = [];
         public long ResultGeneration;
@@ -119,23 +132,28 @@ internal sealed partial class MainForm
         _tabStrip.NewTabClicked += () => NewTab();
         _tabStrip.TabMoved += MoveTab;
         _tabStrip.TabMenuRequested += ShowTabMenu;
+        _tabStrip.TabDraggedOut += (i, pointer, hold) => TearOff(_tabs[i], pointer, hold);
     }
 
-    /// <summary>Hooks a tab's Explorer view up to the window and puts it with the other views, hidden until it shows.</summary>
+    /// <summary>Takes a tab into the window (a new one, or one from another window): its Explorer view goes with the other views, hidden until it shows.</summary>
     void AttachTab(FolderTab t)
     {
-        var host = t.Explorer;
-        host.OpenFoldersInPlace = _app.Settings.UseInsteadOfExplorer;
-        host.Navigated += () => OnExplorerNavigated(t);
-        host.SelectionChanged += () =>
-        {
-            if (t != _tab) return;
-            QueuePreview();
-            QueueStatusUpdate();
-            UpdateSearchPlaceholder();
-        };
-        host.NavigationFailed += msg => { if (t == _tab) _statusRight.Text = msg; };
-        _split.Panel1.Controls.Add(host);
+        t.Window = this;
+        t.Explorer.OpenFoldersInPlace = _app.Settings.UseInsteadOfExplorer;
+        _split.Panel1.Controls.Add(t.Explorer);
+    }
+
+    void OnTabSelectionChanged(FolderTab t)
+    {
+        if (t != _tab) return;
+        QueuePreview();
+        QueueStatusUpdate();
+        UpdateSearchPlaceholder();
+    }
+
+    void OnTabNavigationFailed(FolderTab t, string message)
+    {
+        if (t == _tab) _statusRight.Text = message;
     }
 
     /// <summary>Opens a tab at the end of the strip and shows it: at <paramref name="location"/>, or Home like Explorer's new tabs.</summary>
@@ -169,12 +187,21 @@ internal sealed partial class MainForm
     void SelectTab(FolderTab t)
     {
         if (t == _tab || !_tabs.Contains(t)) return;
-        var old = _tab;
         bool focusContent = ContainsFocus && !_search.Focused; // typing in the search box carries on there
-        _breadcrumb.EndEdit();
+        LeaveTab(_tab);
+        _tab = t;
+        ShowTab(t);
+        if (focusContent) FocusTabContent();
+    }
 
-        // Leave the old tab. A search that hasn't finished is done again when it comes back, and results nobody sees
-        // (its folder view is showing) are let go: they would be searched again anyway once they are needed.
+    /// <summary>
+    /// Leaves the active tab, for another tab or another window. A search that hasn't finished is done again when it
+    /// shows again, and results nobody sees (its folder view is showing) are let go: they would be searched again anyway
+    /// once they are needed.
+    /// </summary>
+    void LeaveTab(FolderTab old)
+    {
+        _breadcrumb.EndEdit();
         RememberListPosition(old);
         if (_searchPending) { old.Stale = true; old.StaleNewQuery |= _pendingNewQuery; }
         _cts?.Cancel();
@@ -186,8 +213,11 @@ internal sealed partial class MainForm
         if (ExplorerShown && old.Ids.Length > 0) { old.Ids = []; old.ResultIndex = null; old.Stale = true; }
         old.Explorer.Visible = false;
         _hintDelay.Stop(); // the folder that was to stay open 3 seconds isn't the one showing now
+    }
 
-        _tab = t;
+    /// <summary>Shows the active tab: its view, its search, and its results where it left them.</summary>
+    void ShowTab(FolderTab t)
+    {
         _rows.Clear();
         _suppress = true;
         try
@@ -210,7 +240,6 @@ internal sealed partial class MainForm
             t.Stale = t.StaleNewQuery = false;
             RunSearch(reason);
         }
-        if (focusContent) FocusTabContent();
     }
 
     /// <summary>Remembers the active tab's place in its results (by id, so it survives the results being refreshed).</summary>
@@ -339,7 +368,8 @@ internal sealed partial class MainForm
             if (_tabs.IndexOf(_tab) > at) SelectTab(t);
             CloseTabs(_tabs.Skip(at + 1));
         });
-        others.Enabled = _tabs.Count > 1;
+        var move = Item("Move tab to new window", () => MoveTabToNewWindow(t));
+        others.Enabled = move.Enabled = _tabs.Count > 1;
         right.Enabled = index < _tabs.Count - 1;
         var m = new ContextMenuStrip();
         m.Items.AddRange(
@@ -352,6 +382,7 @@ internal sealed partial class MainForm
                 w.OpenAsExplorer(TabLocation(t));
                 _app.ShowWindow(w);
             }),
+            move,
             new ToolStripSeparator(),
             Item("Close tab", () => CloseTab(t), display: "Ctrl+W"),
             others,

@@ -114,6 +114,12 @@ internal sealed partial class MainForm
 
     TabContent ContentTab() => ContentTab(_tab);
 
+    /// <summary>A tab from another window keeps its Match inside files and what its results said about it there.</summary>
+    void TakeContentState(FolderTab t, MainForm from)
+    {
+        if (from._tabContent.TryGetValue(t, out var c)) _tabContent.AddOrUpdate(t, c);
+    }
+
     /// <summary>The search's SearchOptions.MatchContent: the tab's toggle, while search inside files is on.</summary>
     bool ContentMatchOn() => _app.ContentOn && ContentTab().MatchContent;
 

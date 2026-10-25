@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using Anything.Core;
 using Anything.Interop;
 
 namespace Anything;
@@ -13,12 +14,25 @@ internal interface ITabStripItem
     char Glyph { get; }
 }
 
+/// <summary>A tab dragged out of its strip, which its window carries on (MainForm.TearOff.cs) until the button goes up.</summary>
+internal interface ITabDrag
+{
+    /// <summary>The pointer moved, to this point on screen.</summary>
+    void Move(Point screen);
+    /// <summary>The button went up there.</summary>
+    void Drop(Point screen);
+    /// <summary>A strip lost the pointer: to the strip the drag moved on to, or to something else, which ends the drag.</summary>
+    void CaptureLost(TabStrip strip);
+}
+
 /// <summary>
 /// Windows 11 File Explorer's tabs, in the strip at the top of the window: each open folder or search as a tab (its
 /// icon, its name and a close button), then the + button. The selected tab takes the address row's colour and joins
 /// the row under it; the others sit on the strip, separated by thin lines. Sizes were measured from Explorer: tabs 8px
 /// below the top with 8px rounded corners, up to 240px wide, the close button 22px from the tab's edge. The strip's
 /// empty space still moves the window: those points are left to the form (HTTRANSPARENT), which reports them as caption.
+/// A tab dragged along the strip changes places; dragged out of it (<see cref="TabTearOff.DetachMargin"/> past an edge)
+/// it is handed to the window (<see cref="TabDraggedOut"/>), which carries it on as <see cref="Drag"/>.
 /// </summary>
 internal sealed class TabStrip : Control
 {
@@ -32,6 +46,7 @@ internal sealed class TabStrip : Control
     int _dragIndex = -1;
     bool _dragging;
     Point _dragStart;
+    PointF _hold; // where the pointer holds the dragged tab (TabTearOff.HoldAt)
     string? _tipText;
     Font? _font;
     int _fontDpi;
@@ -55,6 +70,14 @@ internal sealed class TabStrip : Control
     public event Action<int, int>? TabMoved;
     /// <summary>Right click on a tab: (tab, screen point).</summary>
     public event Action<int, Point>? TabMenuRequested;
+    /// <summary>A pressed tab was dragged out of the strip: (tab, the pointer on screen, where the pointer holds the tab).</summary>
+    public event Action<int, Point, PointF>? TabDraggedOut;
+
+    /// <summary>
+    /// The tab being carried outside the strips, if any: the strip that has the pointer captured passes the pointer on to
+    /// it until the button goes up. There is one pointer, so one such drag at a time.
+    /// </summary>
+    internal static ITabDrag? Drag { get; set; }
 
     /// <summary>The tabs, read as they are now each time the strip paints (the owner keeps the list).</summary>
     [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
@@ -83,12 +106,20 @@ internal sealed class TabStrip : Control
     int TabTop => S(8);
 
     /// <summary>Tabs share the width equally, up to 240 each, keeping room for the + button and some space to drag by.</summary>
-    int TabWidth()
+    int TabWidth() => TabWidth(_tabs.Count);
+
+    int TabWidth(int count)
     {
-        int n = Math.Max(1, _tabs.Count);
+        int n = Math.Max(1, count);
         int room = Width - S(8) - S(42) - S(40);
         return Math.Clamp(room / n, S(40), S(240));
     }
+
+    /// <summary>A tab's place on screen.</summary>
+    public Rectangle TabBoundsOnScreen(int index) => RectangleToScreen(TabRect(index));
+
+    /// <summary>The slot a tab coming in from another window at this point (on screen) takes among the tabs.</summary>
+    public int SlotForNewTab(Point screen) => TabTearOff.SlotAt(PointToClient(screen).X, S(8), TabWidth(_tabs.Count + 1), _tabs.Count + 1);
 
     Rectangle TabRect(int i)
     {
@@ -252,18 +283,41 @@ internal sealed class TabStrip : Control
             m.Result = TabAt(p) >= 0 || AddRect().Contains(p) ? HTCLIENT : HTTRANSPARENT;
             return;
         }
+        if (m.Msg == WM_MOUSEMOVE) _leftDown = ((long)m.WParam & MK_LBUTTON) != 0;
         base.WndProc(ref m);
     }
+
+    const int WM_MOUSEMOVE = 0x200, MK_LBUTTON = 0x1;
+    /// <summary>
+    /// The left button as the move being handled reports it (MK_LBUTTON). WinForms' e.Button reads the button's state
+    /// at the time instead, which a posted move doesn't carry.
+    /// </summary>
+    bool _leftDown;
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        if (_dragIndex >= 0 && e.Button == MouseButtons.Left)
+        if (Drag is { } drag)
         {
+            if (_leftDown) drag.Move(PointToScreen(e.Location));
+            return;
+        }
+        if (_dragIndex >= 0 && _leftDown)
+        {
+            if (TabDraggedOut is { } draggedOut && TabTearOff.LeavesStrip(ClientRectangle, e.Location, S(TabTearOff.DetachMargin)))
+            {
+                // Out of the strip: the window takes the tab on from here (into a window of its own, or another strip).
+                int index = _dragIndex;
+                ClearPress();
+                HideToolTip();
+                Invalidate();
+                draggedOut(index, PointToScreen(e.Location), _hold);
+                return;
+            }
             if (_dragging || Math.Abs(e.X - _dragStart.X) >= SystemInformation.DragSize.Width)
             {
                 _dragging = true; // the tab follows the pointer
-                int to = Math.Clamp((e.X - S(8)) / Math.Max(1, TabWidth()), 0, _tabs.Count - 1);
+                int to = TabTearOff.SlotAt(e.X, S(8), TabWidth(), _tabs.Count);
                 if (to != _dragIndex)
                 {
                     int from = _dragIndex;
@@ -297,13 +351,24 @@ internal sealed class TabStrip : Control
         _tip.SetToolTip(this, text);
     }
 
+    void HideToolTip()
+    {
+        _tipText = null;
+        _tip.SetToolTip(this, null);
+    }
+
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
         (_hover, _hoverClose, _hoverAdd) = (-1, false, false);
-        _tipText = null;
-        _tip.SetToolTip(this, null);
+        HideToolTip();
         Invalidate();
+    }
+
+    void ClearPress()
+    {
+        _pressed = _dragIndex = -1;
+        _pressedClose = _pressedAdd = _dragging = false;
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -318,6 +383,7 @@ internal sealed class TabStrip : Control
             _pressedClose = _hoverClose;
             if (!_pressedClose)
             {
+                _hold = TabTearOff.HoldAt(TabRect(_hover), e.Location);
                 if (_hover != _selected) TabClicked?.Invoke(_hover);
                 _dragIndex = _hover;
                 _dragStart = e.Location;
@@ -330,10 +396,18 @@ internal sealed class TabStrip : Control
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (Drag is { } drag && e.Button == MouseButtons.Left)
+        {
+            Drag = null;
+            ClearPress();
+            SetHover(e.Location);
+            Invalidate();
+            drag.Drop(PointToScreen(e.Location));
+            return;
+        }
         int pressed = _pressed;
         bool pressedClose = _pressedClose, pressedAdd = _pressedAdd;
-        _pressed = _dragIndex = -1;
-        _pressedClose = _pressedAdd = _dragging = false;
+        ClearPress();
         SetHover(e.Location);
         Invalidate();
         if (e.Button == MouseButtons.Left)
@@ -343,6 +417,35 @@ internal sealed class TabStrip : Control
         }
         else if (e.Button == MouseButtons.Middle && pressed >= 0 && pressed == _hover) CloseClicked?.Invoke(pressed);
         else if (e.Button == MouseButtons.Right && _hover >= 0) TabMenuRequested?.Invoke(_hover, PointToScreen(e.Location));
+    }
+
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        if (Capture) return;
+        // Another window took the pointer while a tab was pressed (WinForms lets it go itself only after the button is up).
+        if (_pressed >= 0 || _pressedAdd)
+        {
+            ClearPress();
+            Invalidate();
+        }
+        Drag?.CaptureLost(this);
+    }
+
+    /// <summary>
+    /// The tab at <paramref name="index"/> came in under the pointer from another window, still held: this strip takes
+    /// the pointer and drags it on, along the strip or out of it again.
+    /// </summary>
+    public void ContinueDrag(int index, PointF hold)
+    {
+        if ((uint)index >= (uint)_tabs.Count) return;
+        _pressed = _hover = _dragIndex = index;
+        _pressedClose = _pressedAdd = _hoverClose = _hoverAdd = false;
+        _dragging = true;
+        _hold = hold;
+        HideToolTip();
+        Capture = true;
+        Invalidate();
     }
 
     protected override void Dispose(bool disposing)
