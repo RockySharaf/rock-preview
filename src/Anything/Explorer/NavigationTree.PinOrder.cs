@@ -7,45 +7,60 @@ namespace Anything.Explorer;
 /// host Explorer gives it (ExplorerFrame's ordering callback is private), so the pane does it itself: a drag that starts
 /// on a pinned folder shows Explorer's insert line between the pinned folders, and the drop pins them again in the new
 /// order (<see cref="QuickAccessPins"/>), which File Explorer then shows too. Dragged out of the pinned folders, it
-/// becomes the tree's own drag again (to copy the folder somewhere, say); a click stays a click.
+/// becomes the tree's own drag again (to copy the folder somewhere, say). Presses and clicks stay the tree's own: the
+/// pane takes over only once the tree says a drag begins (its TVN_BEGINDRAG to its parent).
 /// </summary>
 internal sealed partial class NavigationTree
 {
-    const int WM_KEYDOWN = 0x100, WM_MOUSEMOVE = 0x200, WM_LBUTTONDOWN = 0x201, WM_LBUTTONUP = 0x202, WM_CAPTURECHANGED = 0x215;
-    const int TVM_GETITEMRECT = 0x1104, TVM_HITTEST = 0x1111, TVM_SETINSERTMARK = 0x111A, TVM_SETINSERTMARKCOLOR = 0x1125;
-    const int TVHT_ONITEMICON = 0x2, TVHT_ONITEMLABEL = 0x4, TVHT_ONITEMINDENT = 0x8, TVHT_ONITEMRIGHT = 0x20, TVHT_ONITEMSTATEICON = 0x40;
+    const int WM_KEYDOWN = 0x100, WM_MOUSEMOVE = 0x200, WM_LBUTTONUP = 0x202, WM_CAPTURECHANGED = 0x215, WM_NOTIFY = 0x4E;
+    const int TVM_GETITEMRECT = 0x1104, TVM_SETINSERTMARK = 0x111A, TVM_SETINSERTMARKCOLOR = 0x1125;
+    const int TVN_BEGINDRAGW = -456;
+    const int NmTreeViewSize = 152, NmTreeViewItemNew = 96; // NMTREEVIEWW (x64): its size, itemNew.hItem
 
-    /// <summary>A pinned folder being dragged: the pinned rows in order, which one, and the gap it would drop into.</summary>
-    sealed class PinDrag(List<IntPtr> rows, List<string> paths, int from, Message down)
+    /// <summary>
+    /// A pinned folder being dragged: the pinned rows in order, which one, the gap it would drop into, and (a copy of) the
+    /// tree's TVN_BEGINDRAG, handed back should it become the tree's own drag.
+    /// </summary>
+    sealed class PinDrag(List<IntPtr> rows, List<string> paths, int from, byte[] beginDrag)
     {
         public readonly List<IntPtr> Rows = rows;
         public readonly List<string> Paths = paths;
         public readonly int From = from;
-        public readonly Message Down = down;
+        public readonly byte[] BeginDrag = beginDrag;
         public int Gap = -1;
     }
 
     PinDrag? _pinDrag;
-    bool _passingDown;
+    EscapeCancelsDrag? _escapeFilter;
 
-    /// <summary>The tree's mouse and key messages while a pinned folder may be dragged; true when handled here.</summary>
+    /// <summary>
+    /// Esc cancels the drag wherever the keyboard is, as in Explorer: the press that starts a drag doesn't always move
+    /// the focus into the tree, and Esc anywhere else would close the search or the window.
+    /// </summary>
+    sealed class EscapeCancelsDrag(NavigationTree host) : IMessageFilter
+    {
+        public bool PreFilterMessage(ref Message m)
+        {
+            if (m.Msg != WM_KEYDOWN || (int)m.WParam != 0x1B || host._pinDrag == null) return false;
+            host.EndPinDrag(drop: false);
+            return true;
+        }
+    }
+
+    /// <summary>The tree's mouse and key messages while a pinned folder is dragged; true when handled here.</summary>
     bool HandlePinDragMessage(ref Message m)
     {
+        if (_pinDrag == null) return false;
         switch (m.Msg)
         {
-            case WM_LBUTTONDOWN when _pinDrag == null && !_passingDown:
-                return BeginPinDrag(m);
-            case WM_MOUSEMOVE when _pinDrag != null:
+            case WM_MOUSEMOVE:
                 if (((long)m.WParam & 0x1 /* MK_LBUTTON */) == 0) { EndPinDrag(drop: false); return true; } // its release went elsewhere
                 TrackPinDrag(new Point(unchecked((short)(long)m.LParam), unchecked((short)((long)m.LParam >> 16))));
                 return true;
-            case WM_LBUTTONUP when _pinDrag != null:
+            case WM_LBUTTONUP:
                 EndPinDrag(drop: true);
                 return true;
-            case WM_KEYDOWN when _pinDrag != null && (int)m.WParam == 0x1B: // Esc
-                EndPinDrag(drop: false);
-                return true;
-            case WM_CAPTURECHANGED when _pinDrag != null && m.LParam != _hwndFocus:
+            case WM_CAPTURECHANGED when m.LParam != _hwndFocus:
                 EndPinDrag(drop: false);
                 return false;
         }
@@ -53,34 +68,24 @@ internal sealed partial class NavigationTree
     }
 
     /// <summary>
-    /// A press on a pinned folder's row: Windows decides whether it is a click or a drag. A click goes on to the tree
-    /// (with its button release); a drag of a pinned folder is reordered here, any other drag is the tree's.
+    /// The tree begins dragging a row (<paramref name="notify"/>, its TVN_BEGINDRAG): a pinned folder's drag is reordered
+    /// here (true: the tree's parent never sees it), any other drag is the tree's own. The press before it is the tree's,
+    /// so a click stays a click: holding presses back to tell clicks from drags lost the clicks (the tree then got a press
+    /// whose button was already up, and the shell never reported the click, so the folder didn't open).
     /// </summary>
-    bool BeginPinDrag(Message m)
+    bool BeginPinDrag(IntPtr notify)
     {
-        if (_hwndFocus == IntPtr.Zero) return false;
-        var pt = new POINT { X = unchecked((short)(long)m.LParam), Y = unchecked((short)((long)m.LParam >> 16)) };
-        var hit = new TVHITTESTINFO { pt = pt };
-        IntPtr item = SendMessage(_hwndFocus, TVM_HITTEST, IntPtr.Zero, ref hit);
-        const int onRow = TVHT_ONITEMICON | TVHT_ONITEMLABEL | TVHT_ONITEMINDENT | TVHT_ONITEMRIGHT | TVHT_ONITEMSTATEICON;
-        if (item == IntPtr.Zero || (hit.flags & onRow) == 0) return false;
+        if (_hwndFocus == IntPtr.Zero || _pinDrag != null) return false;
+        IntPtr item = Marshal.ReadIntPtr(notify, NmTreeViewItemNew);
+        if (item == IntPtr.Zero) return false;
         IntPtr parent = SendMessage(_hwndFocus, TVM_GETNEXTITEM, (IntPtr)3 /* TVGN_PARENT */, item);
         if (parent == IntPtr.Zero || !IsFlatRow(parent)) return false; // not one of Quick access's folders
-
-        var screen = pt;
-        ClientToScreen(_hwndFocus, ref screen);
-        if (!DragDetect(_hwndFocus, screen))
-        {
-            // A click: the tree gets its press now and the release Windows took while it watched.
-            PostMessage(_hwndFocus, WM_LBUTTONUP, IntPtr.Zero, m.LParam);
-            return false;
-        }
 
         // Which rows are the pinned folders: the first ones under Quick access, in Windows' order (frequent folders follow).
         var pins = QuickAccessPins.Read();
         // Let go while the shell answered (outside the tree, maybe): no drag. The button as it is now, the left one as set up.
         if ((GetAsyncKeyState(GetSystemMetrics(23 /* SM_SWAPBUTTON */) != 0 ? 0x02 : 0x01) & 0x8000) == 0) return true;
-        if (pins == null) { PassDown(m); return true; }
+        if (pins == null) return false;
         var rows = new List<IntPtr>();
         var text = Marshal.AllocHGlobal(522);
         try
@@ -95,13 +100,12 @@ internal sealed partial class NavigationTree
         }
         finally { Marshal.FreeHGlobal(text); }
         int from = rows.IndexOf(item);
-        if (from < 0 || rows.Count != pins.Count || rows.Count < 2)
-        {
-            PassDown(m); // a frequent folder (or the pins are changing): the tree's own drag
-            return true;
-        }
+        if (from < 0 || rows.Count != pins.Count || rows.Count < 2) return false; // a frequent folder (or the pins are changing)
 
-        _pinDrag = new PinDrag(rows, pins.ConvertAll(p => p.Path), from, m);
+        var beginDrag = new byte[NmTreeViewSize];
+        Marshal.Copy(notify, beginDrag, 0, beginDrag.Length);
+        _pinDrag = new PinDrag(rows, pins.ConvertAll(p => p.Path), from, beginDrag);
+        Application.AddMessageFilter(_escapeFilter ??= new EscapeCancelsDrag(this));
         SendMessage(_hwndFocus, TVM_SETINSERTMARKCOLOR, IntPtr.Zero, (IntPtr)ColorTranslator.ToWin32(ExplorerTheme.Text));
         SetCapture(_hwndFocus);
         GetCursorPos(out var now);
@@ -120,9 +124,8 @@ internal sealed partial class NavigationTree
         GetClientRect(_hwndFocus, out var client);
         if (p.X < client.Left || p.X >= client.Right || p.Y < first.Top - rowH || p.Y > last.Bottom + rowH)
         {
-            var down = drag.Down;
             EndPinDrag(drop: false);
-            PassDown(down); // the button is still down and the pointer far away: the tree starts dragging the folder
+            HandBackDrag(drag.BeginDrag); // the button is still down and the pointer far away: the tree drags the folder
             return;
         }
         int gap = drag.Rows.Count;
@@ -142,6 +145,7 @@ internal sealed partial class NavigationTree
         var drag = _pinDrag;
         if (drag == null) return;
         _pinDrag = null; // before ReleaseCapture, whose WM_CAPTURECHANGED comes back here
+        if (_escapeFilter != null) Application.RemoveMessageFilter(_escapeFilter);
         SendMessage(_hwndFocus, TVM_SETINSERTMARK, IntPtr.Zero, IntPtr.Zero);
         if (GetCapture() == _hwndFocus) ReleaseCapture();
         if (!drop || drag.Gap < 0) return;
@@ -189,13 +193,18 @@ internal sealed partial class NavigationTree
         timer.Start();
     }
 
-    /// <summary>Gives the tree the press it was held back from (a drag that isn't a reorder).</summary>
-    void PassDown(Message down)
+    /// <summary>The tree's parent gets the TVN_BEGINDRAG it was held back from: the shell's own drag of the folder.</summary>
+    void HandBackDrag(byte[] beginDrag)
     {
-        if (_hook == null) return;
-        _passingDown = true;
-        try { _hook.Pass(ref down); }
-        finally { _passingDown = false; }
+        if (_parentHook == null) return;
+        var notify = Marshal.AllocHGlobal(beginDrag.Length);
+        try
+        {
+            Marshal.Copy(beginDrag, 0, notify, beginDrag.Length);
+            var m = Message.Create(_parentHook.Handle, WM_NOTIFY, Marshal.ReadIntPtr(notify, 8) /* NMHDR.idFrom */, notify);
+            _parentHook.Pass(ref m);
+        }
+        finally { Marshal.FreeHGlobal(notify); }
     }
 
     bool IsFlatRow(IntPtr item)
@@ -217,13 +226,6 @@ internal sealed partial class NavigationTree
         finally { Marshal.FreeHGlobal(buffer); }
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    struct TVHITTESTINFO { public POINT pt; public int flags; public IntPtr hItem; }
-
-    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref TVHITTESTINFO lParam);
-    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
-    [DllImport("user32.dll")] static extern bool DragDetect(IntPtr hwnd, POINT pt);
-    [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hwnd, ref POINT pt);
     [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr hwnd, ref POINT pt);
     [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT pt);
     [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr hwnd, out RECT rect);

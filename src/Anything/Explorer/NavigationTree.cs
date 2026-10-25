@@ -56,6 +56,7 @@ internal sealed partial class NavigationTree : Control
     readonly HashSet<IntPtr> _tallRows = [];                               // rows we made double height
     string[] _group0 = [], _group2 = [];   // display names of the roots before / after the pinned folders
     TreeHook? _hook;
+    TreeParentHook? _parentHook;
     bool _groupLayoutQueued, _scrolledOnce;
     IntPtr _dividerPen;
     int _dividerPenWidth;
@@ -156,6 +157,7 @@ internal sealed partial class NavigationTree : Control
     void ReleaseTree()
     {
         _pinDrag = null;
+        if (_escapeFilter != null) Application.RemoveMessageFilter(_escapeFilter);
         CancelPending();
         _raiseTimer.Stop();
         _raisePending = null;
@@ -168,6 +170,8 @@ internal sealed partial class NavigationTree : Control
         ReleaseRoots();
         _hook?.ReleaseHandle();
         _hook = null;
+        _parentHook?.ReleaseHandle();
+        _parentHook = null;
         _tallRows.Clear();
         if (_hwndTree != IntPtr.Zero && IsWindow(_hwndTree)) DestroyWindow(_hwndTree);
         _hwndTree = _hwndFocus = IntPtr.Zero;
@@ -715,6 +719,11 @@ internal sealed partial class NavigationTree : Control
         if (_hwndFocus == IntPtr.Zero) return;
         _hook ??= new TreeHook(this);
         if (_hook.Handle != _hwndFocus) { _hook.ReleaseHandle(); _hook.AssignHandle(_hwndFocus); }
+        if (_hwndTree != IntPtr.Zero && _hwndTree != _hwndFocus)
+        {
+            _parentHook ??= new TreeParentHook(this);
+            if (_parentHook.Handle != _hwndTree) { _parentHook.ReleaseHandle(); _parentHook.AssignHandle(_hwndTree); }
+        }
         SendMessage(_hwndFocus, TVM_SETEXTENDEDSTYLE, (IntPtr)ExplorerExtendedStyle, (IntPtr)ExplorerExtendedStyle);
         SendMessage(_hwndFocus, TVM_SETINDENT, (IntPtr)LogicalToDeviceUnits(8), IntPtr.Zero);
         int h = RowHeight();
@@ -852,9 +861,6 @@ internal sealed partial class NavigationTree : Control
     /// </summary>
     sealed class TreeHook(NavigationTree host) : NativeWindow
     {
-        /// <summary>A message the tree gets as if the hook weren't there (a pinned folder's drag handed back to it).</summary>
-        public void Pass(ref Message m) => DefWndProc(ref m);
-
         const int TVM_INSERTITEMW = 0x1132;
 
         protected override void WndProc(ref Message m)
@@ -878,6 +884,25 @@ internal sealed partial class NavigationTree : Control
             }
             base.WndProc(ref m);
             if (m.Msg == TVM_INSERTITEMW) host.QueueGroupLayout();
+        }
+    }
+
+    /// <summary>The tree's parent, the shell's NamespaceTreeControl window: a pinned folder's TVN_BEGINDRAG is the pane's.</summary>
+    sealed class TreeParentHook(NavigationTree host) : NativeWindow
+    {
+        /// <summary>A message the window gets as if the hook weren't there (a pinned folder's drag handed back to it).</summary>
+        public void Pass(ref Message m) => DefWndProc(ref m);
+
+        protected override void WndProc(ref Message m)
+        {
+            // NMHDR (x64): hwndFrom @0, idFrom @8, code @16.
+            if (m.Msg == WM_NOTIFY && m.LParam != IntPtr.Zero && Marshal.ReadIntPtr(m.LParam) == host._hwndFocus
+                && Marshal.ReadInt32(m.LParam, 16) == TVN_BEGINDRAGW && host.BeginPinDrag(m.LParam))
+            {
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            base.WndProc(ref m);
         }
     }
 
