@@ -21,7 +21,7 @@ Press **`Alt+X`** in any app to open it.
 
 **[⬇ Download Rock Preview](https://github.com/RockySharaf/rock-preview/releases/latest)** · [Features](#features) · [Search syntax](#search-syntax) · [Build from source](#build-from-source)
 
-<img src="docs/images/explorer.png" alt="Rock Preview, a file explorer for Windows: the Windows 11 Explorer view with large thumbnails and the preview pane" width="900">
+<img src="docs/images/explorer.png" alt="Rock Preview, a file explorer for Windows: a folder of PDF, Excel, Word, PowerPoint, CorelDRAW, Illustrator, Photoshop, TIFF, JPEG and text files shown as thumbnails, with the Photoshop file in the preview pane" width="900">
 
 </div>
 
