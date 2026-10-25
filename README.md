@@ -70,6 +70,9 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
   and design files, and optionally pictures' details (size, DPI, RGB or CMYK, date taken, camera, keywords). A
   **Matching text** column shows the line each file matched, and the preview opens at the match with the words
   highlighted ([more below](#search-inside-files)).
+- Select results as in File Explorer: press in the list's empty space (the margin on the left, the gaps between rows,
+  the space after the last column) and drag. A blue box selects every row it touches; hold **Ctrl** to add rows to the
+  selection or take selected ones out, and drag past the top or bottom to scroll the list along.
 - Sort by any column, highlight matches, bookmarks for saved searches, export results to CSV / TXT.
 - `rockpreview-cli` for scripting searches from the command line.
 
