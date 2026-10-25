@@ -61,6 +61,10 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
 - Results update as you type. The start of the search box says where they come from: **Everything** in blue, or the
   folder you opened ("Downloads"). Opening a folder searches inside it; `Alt+X` always searches everything; click the
   box's **Everything** / folder label to switch. Select folders first to search only inside them ("images").
+- **Search options**, on the command bar while you search, sets where to look, the kind of file (Audio, Compressed,
+  Document, Executable, Folder, Picture, Video) and how words match (case, whole word, path, diacritics, regex). While a
+  kind is chosen the button shows it ("Video", with its icon) and splits in two, like Windows' split buttons: the
+  **×** half shows every kind again with one click. Each tab keeps its own kind.
 - Powerful query language: wildcards, regular expressions, AND / OR / NOT, and functions for size, dates, type,
   extension, attributes, parent folder and more ([syntax below](#search-syntax)).
 - As much about each file as Everything shows: besides size, dates modified and created and attributes, the

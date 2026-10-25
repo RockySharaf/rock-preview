@@ -55,20 +55,22 @@ internal static class Columns
     };
 }
 
-internal sealed record FilterDef(string Name, string Search);
+/// <summary>A kind of file (Search options › Kind): its name, the search it adds, what it shows ("videos") and its icon.</summary>
+internal sealed record FilterDef(string Name, string Search, string Shown = "", char Glyph = ExplorerTheme.GFilter);
 
 internal static class Filters
 {
+    // Icons from Segoe Fluent Icons: Audio, ZipFolder, Document, AppIconDefault, Folder, Picture, Video.
     public static readonly FilterDef[] All =
     [
         new("Everything", ""),
-        new("Audio", "audio:"),
-        new("Compressed", "zip:"),
-        new("Document", "doc:"),
-        new("Executable", "exe:"),
-        new("Folder", "folder:"),
-        new("Picture", "pic:"),
-        new("Video", "video:"),
+        new("Audio", "audio:", "audio files", ''),
+        new("Compressed", "zip:", "compressed files", ''),
+        new("Document", "doc:", "documents", ''),
+        new("Executable", "exe:", "programs", ''),
+        new("Folder", "folder:", "folders", ExplorerTheme.GFolder),
+        new("Picture", "pic:", "pictures", ''),
+        new("Video", "video:", "videos", ''),
     ];
 
     public static int IndexOf(string name)

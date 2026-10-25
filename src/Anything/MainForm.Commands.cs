@@ -237,6 +237,7 @@ internal sealed partial class MainForm
         _miDiacritics.Checked = _diacritics;
         _miRegex.Checked = _regex;
         for (int i = 0; i < _miFilterItems.Count; i++) _miFilterItems[i].Checked = i == _filterIndex;
+        SyncSearchOptionsButton();
         foreach (var (item, key) in _miSortItems) item.Checked = key == _sort;
         _miAscending.Checked = !_desc;
         _miDescending.Checked = _desc;

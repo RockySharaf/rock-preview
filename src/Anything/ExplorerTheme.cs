@@ -159,12 +159,33 @@ internal static class ExplorerTheme
         return path;
     }
 
-    public static void FillRounded(Graphics g, Rectangle r, float radius, Color color)
+    /// <summary>A rectangle rounded on one side only (a half of a split button); square on the other.</summary>
+    public static GraphicsPath RoundedRect(RectangleF r, float radius, bool left, bool right)
+    {
+        if (left && right) return RoundedRect(r, radius);
+        var path = new GraphicsPath();
+        float d = Math.Min(radius * 2, Math.Min(r.Width, r.Height));
+        if (d <= 0.5f || !left && !right) { path.AddRectangle(r); return path; }
+        if (left) path.AddArc(r.X, r.Y, d, d, 180, 90);
+        else path.AddLine(r.X, r.Bottom, r.X, r.Y);
+        if (right)
+        {
+            path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        }
+        else path.AddLine(r.Right, r.Y, r.Right, r.Bottom);
+        if (left) path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    public static void FillRounded(Graphics g, Rectangle r, float radius, Color color, bool left = true, bool right = true)
     {
         if (r.Width <= 0 || r.Height <= 0) return;
         var old = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = RoundedRect(new RectangleF(r.X, r.Y, r.Width - 0.5f, r.Height - 0.5f), radius);
+        // The square side reaches the edge, so the two halves of a split button meet it exactly.
+        using var path = RoundedRect(new RectangleF(r.X, r.Y, r.Width - (right ? 0.5f : 0f), r.Height - 0.5f), radius, left, right);
         using var brush = new SolidBrush(color);
         g.FillPath(brush, path);
         g.SmoothingMode = old;
@@ -316,6 +337,7 @@ internal sealed class ExplorerToolStrip : ToolStrip
             bool iconOnly = item.DisplayStyle == ToolStripItemDisplayStyle.Image || string.IsNullOrEmpty(item.Text);
             int width;
             if (Kind == ExplorerBarKind.Navigation || Kind == ExplorerBarKind.Status) width = height;
+            else if (item is ExplorerSplitPart) width = S(32);
             else if (iconOnly) width = S(40) + (item is ToolStripSplitButton sb ? sb.DropDownButtonWidth : 0); // the gear's arrow
             else
             {
@@ -323,8 +345,37 @@ internal sealed class ExplorerToolStrip : ToolStrip
                 width = S(12) + S(16) + S(8) + text + S(8) + (ExplorerRenderer.HasChevron(item) ? S(16) : 0);
             }
             item.Size = new Size(width, height);
-            if (Kind == ExplorerBarKind.Command) item.Margin = new Padding(S(4), 0, S(4), 0);
+            // The two halves of a split button touch (ExplorerSplitPart draws the gap between them).
+            if (Kind == ExplorerBarKind.Command)
+                item.Margin = new Padding(item is ExplorerSplitPart ? 0 : S(4), 0, NextIsPart(item) ? 0 : S(4), 0);
         }
+    }
+
+    bool NextIsPart(ToolStripItem item)
+    {
+        int i = Items.IndexOf(item);
+        return i >= 0 && i + 1 < Items.Count && Items[i + 1] is ExplorerSplitPart { Available: true };
+    }
+}
+
+/// <summary>
+/// The second half of a split button made of two items, joined to the item just before it on the bar: like Windows'
+/// split buttons, one shape with a thin gap between the halves, each with its own click, tooltip and accessible name.
+/// It shows only while there is something on for it to clear (Search options' kind of file, say), so the pair is
+/// filled like a button that is on.
+/// </summary>
+internal sealed class ExplorerSplitPart : ToolStripButton
+{
+    /// <summary>Whether this half shows joined to the item before it: both on the bar itself, not in its overflow.</summary>
+    public bool Joined => Available && Placement == ToolStripItemPlacement.Main && Owner is { } o
+                          && o.Items.IndexOf(this) is var i && i > 0 && o.Items[i - 1].Placement == ToolStripItemPlacement.Main;
+
+    /// <summary>The second half joined to <paramref name="item"/>, or null when it has none showing.</summary>
+    public static ExplorerSplitPart? Of(ToolStripItem item)
+    {
+        if (item.Owner is not { } o) return null;
+        int i = o.Items.IndexOf(item);
+        return i >= 0 && i + 1 < o.Items.Count && o.Items[i + 1] is ExplorerSplitPart { Joined: true } part ? part : null;
     }
 }
 
@@ -406,11 +457,19 @@ internal sealed class ExplorerRenderer : ToolStripRenderer
 
     static void DrawItemBack(Graphics g, ToolStripItem item, bool isChecked)
     {
+        // A split button made of two items: one shape, filled while it shows, each half lit on its own when hovered.
+        bool second = item is ExplorerSplitPart { Joined: true }, first = !second && ExplorerSplitPart.Of(item) != null;
         Color? c = item.Pressed ? ExplorerTheme.Pressed
                  : item.Selected && item.Enabled ? ExplorerTheme.Hover
-                 : isChecked ? ExplorerTheme.Checked : null;
+                 : isChecked || first || second ? ExplorerTheme.Checked : null;
         if (c is null) return;
-        ExplorerTheme.FillRounded(g, BackRect(item), S(item, 4), c.Value);
+        var r = BackRect(item);
+        if (second)
+        {
+            int gap = Math.Max(1, S(item, 1));
+            r = Rectangle.FromLTRB(r.Left + gap, r.Top, r.Right, r.Bottom);
+        }
+        ExplorerTheme.FillRounded(g, r, S(item, 4), c.Value, left: !second, right: !first);
     }
 
     protected override void OnRenderButtonBackground(ToolStripItemRenderEventArgs e)

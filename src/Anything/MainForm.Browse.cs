@@ -21,6 +21,8 @@ internal sealed partial class MainForm
     readonly ToolStripDropDownButton _cmdNew = new("New"), _cmdSort = new("Sort"), _cmdView = new("View"),
                                      _cmdSearchOptions = new("Search options");
     readonly ToolStripSplitButton _cmdMore = new(); // a gear: Settings; its arrow, the rest (Explorer's "See more")
+    readonly ExplorerSplitPart _cmdClearKind = new(); // Search options' other half while a kind is chosen: every kind again
+    (int Filter, int Dpi) _searchOptionsLook = (-1, 0); // what Search options' icon was drawn for
     readonly ToolStripButton _cmdCut = new(), _cmdCopy = new(), _cmdPaste = new(), _cmdRename = new(), _cmdShare = new(),
                              _cmdDelete = new(), _cmdCloseSearch = new("Close search"), _cmdPreview = new("Preview");
     readonly ToolStripSplitButton _thumbsButton = new("Thumbnails");
@@ -94,6 +96,15 @@ internal sealed partial class MainForm
         _cmdView.DropDownItems.Add(new ToolStripMenuItem("(view)"));
         _cmdSearchOptions.DropDownItems.Add(new ToolStripMenuItem("(search)"));
 
+        // While a kind of file is chosen, Search options shows it ("Video") and becomes a split button: its × goes back
+        // to every kind (see SyncSearchOptionsButton). Its icon is drawn in ApplyChromeMetrics.
+        _cmdClearKind.DisplayStyle = ToolStripItemDisplayStyle.Image;
+        _cmdClearKind.ImageScaling = ToolStripItemImageScaling.None;
+        _cmdClearKind.AutoToolTip = false;
+        _cmdClearKind.AccessibleName = "Clear kind";
+        _cmdClearKind.Available = false;
+        _cmdClearKind.Click += (_, _) => SetFilter(0);
+
         // Thumbnails: whatever is on screen as thumbnails (see ToggleThumbnails); again = back. The arrow offers
         // every file under the folder as thumbnails or as a list, and whether subfolders count.
         _thumbsButton.ButtonClick += (_, _) => ToggleThumbnails();
@@ -116,7 +127,7 @@ internal sealed partial class MainForm
         };
 
         _commands.Items.AddRange([_cmdNew, new ToolStripSeparator(), _cmdCut, _cmdCopy, _cmdPaste, _cmdRename, _cmdShare, _cmdDelete,
-                                  new ToolStripSeparator(), _cmdSort, _cmdView, _sepSearch, _cmdSearchOptions, _cmdCloseSearch,
+                                  new ToolStripSeparator(), _cmdSort, _cmdView, _sepSearch, _cmdSearchOptions, _cmdClearKind, _cmdCloseSearch,
                                   new ToolStripSeparator(), _thumbsButton, _cmdEveryday, new ToolStripSeparator(), _cmdMore, _cmdPreview]);
 
         // Navigation buttons left of the address bar.
@@ -203,6 +214,11 @@ internal sealed partial class MainForm
                        : ExplorerTheme.Icon16(svg, glyph, icon);
             old?.Dispose();
         }
+        var oldClear = _cmdClearKind.Image;
+        _cmdClearKind.Image = ExplorerTheme.Glyph(ExplorerTheme.GClose, icon, ExplorerTheme.Icon, 0.75f);
+        oldClear?.Dispose();
+        _searchOptionsLook = (-1, 0); // the loop gave it the plain icon
+        SyncSearchOptionsButton();
         _commands.ImageScalingSize = _nav.ImageScalingSize = new Size(icon, icon);
         // Measured from Explorer at 125%: buttons 43 high in a 46 row, first button 6 from the edge, 8 between buttons.
         _commands.Padding = new Padding(S(2), S(1), S(6), S(2));
@@ -423,6 +439,34 @@ internal sealed partial class MainForm
         items.Add(new ToolStripMenuItem("Search syntax", null, (_, _) => SearchSyntaxForm.ShowSyntax(this)) { ShortcutKeyDisplayString = "F1" });
     }
 
+    /// <summary>
+    /// Search options shows the tab's kind of file while one is chosen ("Video", with its icon), and its × (the split
+    /// button's other half, shown by UpdateCommandStates) goes back to every kind; with none it is Explorer's
+    /// "Search options". Called whenever the kind or the tab changes (SyncMenus).
+    /// </summary>
+    void SyncSearchOptionsButton()
+    {
+        if (_cmdSearchOptions.Owner is null) return; // the menus are built before the bar
+        var kind = Filters.All[_filterIndex];
+        bool any = _filterIndex > 0;
+        _cmdSearchOptions.ToolTipText = any ? $"Showing only {kind.Shown}. Where and how to search" : "Where and how to search";
+        _cmdSearchOptions.AccessibleName = any ? $"Search options: {kind.Name}" : null;
+        _cmdClearKind.ToolTipText = any ? $"Show every kind of file, not only {kind.Shown}" : "";
+        if (_searchOptionsLook != (_filterIndex, DeviceDpi))
+        {
+            _searchOptionsLook = (_filterIndex, DeviceDpi);
+            int px = LogicalToDeviceUnits(16);
+            var old = _cmdSearchOptions.Image;
+            _cmdSearchOptions.Image = any ? ExplorerTheme.Glyph(kind.Glyph, px, ExplorerTheme.Icon)
+                                          : ExplorerTheme.Icon16(ExplorerIcons.SearchOptions, ExplorerTheme.GFilter, px);
+            old?.Dispose();
+        }
+        string text = any ? kind.Name : "Search options";
+        if (_cmdSearchOptions.Text == text) return;
+        _cmdSearchOptions.Text = text;
+        _commands.LayoutExplorerItems(_uiFont); // its width follows its text
+    }
+
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool IsClipboardFormatAvailable(uint format);
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] static extern uint RegisterClipboardFormat(string name);
     static uint s_cfIdList;
@@ -440,8 +484,16 @@ internal sealed partial class MainForm
         if (s_cfIdList == 0) s_cfIdList = RegisterClipboardFormat("Shell IDList Array");
         _cmdPaste.Enabled = folderOpen && (IsClipboardFormatAvailable(15 /* CF_HDROP */) || IsClipboardFormatAvailable(s_cfIdList));
         bool searching = _search.TextLength > 0;
-        if (_cmdSearchOptions.Visible != searching)
-            _sepSearch.Visible = _cmdSearchOptions.Visible = _cmdCloseSearch.Visible = searching;
+        // Search options also shows while a kind of file narrows a list that isn't a search ("every file in"), so what
+        // the list leaves out can be seen and undone. Available, not Visible (see below).
+        bool options = searching || _filterIndex > 0 && !explorer;
+        if (_cmdSearchOptions.Available != options) _sepSearch.Available = _cmdSearchOptions.Available = options;
+        if (_cmdCloseSearch.Available != searching) _cmdCloseSearch.Available = searching;
+        if (_cmdClearKind.Available != (options && _filterIndex > 0))
+        {
+            _cmdClearKind.Available = options && _filterIndex > 0;
+            _commands.LayoutExplorerItems(_uiFont); // the halves touch while both show
+        }
         bool thumbs = !explorer && ThumbnailMode;
         _thumbsButton.Enabled = !explorer || _explorer.CurrentPath != null; // This PC, Network...: no folder of files
         _thumbsButton.Tag = thumbs; // drawn pressed while thumbnails are showing
