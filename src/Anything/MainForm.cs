@@ -88,6 +88,14 @@ internal sealed partial class MainForm : Form
                 _initialBounds = s.WindowBounds;
                 _initialMaximized = s.Maximized;
             }
+            else
+            {
+                // The very first window opens where and as large as File Explorer's would (ExplorerPlacement); its own
+                // size is remembered from then on.
+                var first = ExplorerPlacement.ForFirstWindow(Screen.FromPoint(Cursor.Position));
+                _initialBounds = first.Bounds;
+                _initialMaximized = first.Maximized;
+            }
             TopMost = s.AlwaysOnTop;
         }
 
