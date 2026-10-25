@@ -12,6 +12,6 @@
     <Copyright>Copyright © 2026 Rocky Sharaf. Licensed under the GNU GPL v3.</Copyright>
     <RepositoryUrl>https://github.com/RockySharaf/rock-preview</RepositoryUrl>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
-    <Version>1.7.10</Version>
+    <Version>1.7.11</Version>
   </PropertyGroup>
 </Project>
