@@ -32,11 +32,13 @@ public static class FileRetry
     /// <summary>
     /// Puts a copy of <paramref name="from"/> in place of <paramref name="to"/> through "<paramref name="to"/>.new": copied
     /// once (a program is tens of MB), then moved over <paramref name="to"/>, which is tried again while it is held. Read-only
-    /// (from setup run off a disc or a share) stops neither, and the .new file is never left behind after a failure. Throws
-    /// <see cref="FileHeldException"/> when <paramref name="to"/> is still held after every try; a folder that denies
+    /// (from setup run off a disc or a share) stops neither, and the .new file is never left behind after a failure. With
+    /// <paramref name="moveAsideWhenHeld"/>, a program file still held after every try (it still runs, or Windows is
+    /// writing a crash report for it) is renamed out of the way instead (<see cref="TryMoveAside"/>). Throws
+    /// <see cref="FileHeldException"/> when <paramref name="to"/> is still held after all that; a folder that denies
     /// writing fails at once, with access denied.
     /// </summary>
-    public static void Replace(string from, string to, int attempts = Attempts, Action? sleep = null)
+    public static void Replace(string from, string to, int attempts = Attempts, Action? sleep = null, bool moveAsideWhenHeld = false)
     {
         string tmp = to + ".new";
         bool moving = false;
@@ -55,11 +57,63 @@ public static class FileRetry
         }
         catch (Exception e)
         {
+            if (moving && IsBusy(e) && moveAsideWhenHeld && TryMoveAside(tmp, to)) return;
             ClearReadOnly(tmp);
             try { File.Delete(tmp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             if (moving && IsBusy(e)) throw new FileHeldException(to, e);
             throw;
         }
+    }
+
+    /// <summary>
+    /// A program file Windows still holds can't be replaced or deleted, but it can be renamed (a running program's file
+    /// can): <paramref name="to"/> goes by "<paramref name="to"/>.old" (".old2"... when an earlier one is still held too)
+    /// and <paramref name="tmp"/> takes its name. The renamed file is deleted at once if it is free, otherwise later
+    /// (<see cref="DeleteAside"/>). False, with everything as it was, when even renaming isn't allowed.
+    /// </summary>
+    static bool TryMoveAside(string tmp, string to)
+    {
+        DeleteAside(to); // earlier ones that are free by now
+        string? aside = null;
+        for (int n = 1; aside == null && n < 100; n++)
+        {
+            string candidate = to + ".old" + (n == 1 ? "" : n.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            if (!File.Exists(candidate)) aside = candidate;
+        }
+        if (aside == null || !File.Exists(tmp)) return false;
+        try { File.Move(to, aside); }
+        catch (Exception e) when (IsBusy(e)) { return false; }
+        try { File.Move(tmp, to); }
+        catch (Exception e) when (IsBusy(e))
+        {
+            try { File.Move(aside, to); } catch (IOException) { } catch (UnauthorizedAccessException) { } // the old one back
+            return false;
+        }
+        try { File.Delete(aside); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        return true;
+    }
+
+    /// <summary>
+    /// Deletes what <see cref="Replace"/> renamed out of the way beside <paramref name="to"/> ("<paramref name="to"/>.old",
+    /// ".old2"...) once it is free; one still held stays for next time. Never throws.
+    /// </summary>
+    public static void DeleteAside(string to)
+    {
+        try
+        {
+            string? dir = Path.GetDirectoryName(to);
+            string stem = Path.GetFileName(to) + ".old";
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
+            foreach (string file in Directory.EnumerateFiles(dir, stem + "*"))
+            {
+                string suffix = Path.GetFileName(file)[stem.Length..];
+                if (!suffix.All(char.IsAsciiDigit)) continue; // "RockPreview.exe.older" is someone else's
+                ClearReadOnly(file);
+                try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     /// <summary>Deletes <paramref name="path"/> (read-only too), tried again while it is held; nothing when it isn't there.</summary>

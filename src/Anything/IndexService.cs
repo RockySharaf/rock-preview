@@ -199,7 +199,12 @@ internal static class IndexService
 
     // The stopping service may still hold its file for a moment: access denied, or a sharing violation. Through a .new file,
     // so a copy that fails part way never leaves half a service; read-only (setup run off a disc) doesn't stop it.
-    static void CopyWithRetry(string from, string to) => Anything.Core.FileRetry.Replace(from, to);
+    static void CopyWithRetry(string from, string to)
+    {
+        // The stopped service's program, still held (a crash report being written), is renamed out of the way.
+        Anything.Core.FileRetry.Replace(from, to, moveAsideWhenHeld: true);
+        Anything.Core.FileRetry.DeleteAside(to);
+    }
 
     static bool IsRunning(IntPtr svc)
     {

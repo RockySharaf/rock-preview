@@ -379,6 +379,7 @@ internal static partial class Setup
     /// <summary>An older copy's program (and an unfinished update's .new beside it), then its folder when nothing else is in it.</summary>
     static void DeleteProgram(string folder)
     {
+        FileRetry.DeleteAside(Path.Combine(folder, ExeName));
         foreach (string file in new[] { ExeName, ExeName + ".new" }.Select(n => Path.Combine(folder, n)))
         {
             // The copy that closed for this install may take a moment to let go of its file.
@@ -749,6 +750,7 @@ internal static partial class Setup
         if (!keepProgram)
         {
             bool self = SamePath(Environment.ProcessPath ?? "", exe);
+            FileRetry.DeleteAside(exe); // an update's renamed old program, when it is free
             if (File.Exists(exe) && !self) // the copy closed just now can still hold its file for a moment
             {
                 try { FileRetry.Delete(exe); } catch (IOException) { } catch (UnauthorizedAccessException) { }
@@ -880,7 +882,8 @@ internal static partial class Setup
     /// </summary>
     static void StartDeleteHelper(string exe, string folder)
     {
-        string script = $"/d /c for /l %i in (1,1,30) do @(ping -n 2 127.0.0.1 >nul & del /f /q \"{exe}\" >nul 2>&1 & " +
+        // An update's renamed old program ("RockPreview.exe.old") goes too, or the folder couldn't be removed.
+        string script = $"/d /c for /l %i in (1,1,30) do @(ping -n 2 127.0.0.1 >nul & del /f /q \"{exe}\" \"{exe}.old*\" >nul 2>&1 & " +
                         $"if not exist \"{exe}\" (rmdir \"{folder}\" >nul 2>&1 & exit /b))";
         try
         {
@@ -1008,8 +1011,14 @@ internal static partial class Setup
         finally { CloseHandle(h); }
     }
 
-    // The old copy, just closed, can still hold its file for a moment: access denied, or a sharing violation.
-    static void CopyWithRetry(string from, string to) => FileRetry.Replace(from, to);
+    // The old copy, just closed, can still hold its file for a moment: access denied, or a sharing violation. Held
+    // longer (it crashed as it closed and Windows is writing a report, or it runs in another session), it is renamed
+    // out of the way and deleted once it is let go.
+    static void CopyWithRetry(string from, string to)
+    {
+        FileRetry.Replace(from, to, moveAsideWhenHeld: true);
+        FileRetry.DeleteAside(to);
+    }
 
     /// <summary>Two paths name the same file or folder, compared as full paths (case and a trailing backslash don't matter).</summary>
     internal static bool SamePath(string a, string b)

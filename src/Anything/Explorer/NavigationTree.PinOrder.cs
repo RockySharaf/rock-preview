@@ -153,14 +153,10 @@ internal sealed partial class NavigationTree
         if (to == drag.From) return;
         var paths = drag.Paths;
         int from = drag.From;
-        // Pinning goes through the shell (and its extensions): off the window's thread, on one of its own.
-        var thread = new Thread(() =>
+        QuickAccessPins.MoveInBackground(paths, from, to, () =>
         {
-            bool moved = QuickAccessPins.Move(paths, from, to);
-            try { if (moved && IsHandleCreated) BeginInvoke(QueuePinCheck); } catch (InvalidOperationException) { }
-        }) { IsBackground = false, Name = "Quick access order" }; // closing the app waits for it: no pin is left unpinned
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
+            try { if (IsHandleCreated) BeginInvoke(QueuePinCheck); } catch (InvalidOperationException) { }
+        });
     }
 
     /// <summary>The tree follows Windows' change notices; should it still show the old order a moment later, it is rebuilt.</summary>
@@ -263,6 +259,38 @@ internal static class QuickAccessPins
         }
         catch (Exception e) when (e is COMException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException or InvalidCastException) { return null; }
         return pins;
+    }
+
+    static readonly List<Thread> s_moves = [];
+
+    /// <summary>
+    /// <see cref="Move"/> on a thread of its own (pinning goes through the shell and its extensions, off the window's
+    /// thread); <paramref name="moved"/> runs on it afterwards when the move went through. Closing the app waits for it
+    /// (<see cref="WaitForMoves"/>), so no folder is left unpinned.
+    /// </summary>
+    public static void MoveInBackground(List<string> paths, int from, int to, Action moved)
+    {
+        var thread = new Thread(() =>
+        {
+            try { if (Move(paths, from, to)) moved(); }
+            finally { lock (s_moves) s_moves.Remove(Thread.CurrentThread); }
+        }) { IsBackground = false, Name = "Quick access order" };
+        thread.SetApartmentState(ApartmentState.STA);
+        lock (s_moves) s_moves.Add(thread);
+        thread.Start();
+    }
+
+    /// <summary>Waits, at most <paramref name="limit"/> in all, for pinned folders still being put in order.</summary>
+    public static void WaitForMoves(TimeSpan limit)
+    {
+        Thread[] moves;
+        lock (s_moves) moves = s_moves.ToArray();
+        var until = DateTime.UtcNow + limit;
+        foreach (var thread in moves)
+        {
+            var left = until - DateTime.UtcNow;
+            if (left <= TimeSpan.Zero || !thread.Join(left)) break;
+        }
     }
 
     /// <summary>Moves the pinned folder at <paramref name="from"/> to <paramref name="to"/>; false when nothing (or not all of it) happened.</summary>

@@ -71,16 +71,37 @@ static class Program
             Application.ThreadException += (_, e) => ReportError(e.Exception, fatal: false);
             AppDomain.CurrentDomain.UnhandledException += (_, e) => { if (e.ExceptionObject is Exception ex) ReportError(ex, fatal: true); };
             SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
-            using var app = AnythingApp.Create(cmd);
-            if (app is null) return 1;
-            Application.Run(app);
-            return 0;
+            Anything.Core.FileRetry.DeleteAside(Environment.ProcessPath!); // the program an update renamed out of the way
+            using (var app = AnythingApp.Create(cmd))
+            {
+                if (app is null) return 1;
+                Application.Run(app);
+            }
         }
         finally
         {
             try { mutex.ReleaseMutex(); } catch (ApplicationException) { }
         }
+        EndWithoutUnloading();
+        return 0;
     }
+
+    /// <summary>
+    /// Ends the process once everything is saved and closed (ExitApp), without Windows unloading each DLL first. Windows'
+    /// PDF renderer (Windows.Data.Pdf, which the preview pane uses) keeps a Direct3D device that it destroys only while
+    /// it is being unloaded, and by then Windows has ended the process's other threads: AMD's graphics driver
+    /// (atidxx64.dll) then reads freed memory and the app crashes as it closes, and Windows' crash report holds the
+    /// program file for a minute (an update in that minute couldn't replace it). The app has nothing left to do at that
+    /// point: pinned folders still being put in order are waited for (that thread is the only one exit waits for).
+    /// </summary>
+    static void EndWithoutUnloading()
+    {
+        Explorer.QuickAccessPins.WaitForMoves(TimeSpan.FromSeconds(30));
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
+
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process, uint exitCode);
 
     static int s_reporting;
 
