@@ -136,8 +136,7 @@ internal sealed partial class MainForm
         if (row is null || def is null) return;
 
         int pad = LogicalToDeviceUnits(4);
-        // The leftmost column starts after the rows' margin, its icon 6 into the box (at 125%) as in Explorer.
-        int textLeft = cell.Left == whole.Left ? cell.Left + _list.RowMargin + LogicalToDeviceUnits(5) : cell.Left + pad;
+        int textLeft = ContentLeft(cell, whole);
         if (e.ColumnIndex == 0)
         {
             var isz = ShellInfo.SmallIconSize;
@@ -175,6 +174,57 @@ internal sealed partial class MainForm
             DrawHighlighted(g, text, hl, rect, font, _boldFont, fore);
     }
 
+    /// <summary>Where a cell's icon or text starts: the leftmost column's after the rows' margin, its icon 6 into the box (at 125%) as in Explorer.</summary>
+    int ContentLeft(Rectangle cell, Rectangle whole)
+        => cell.Left == whole.Left ? cell.Left + _list.RowMargin + LogicalToDeviceUnits(5) : cell.Left + LogicalToDeviceUnits(4);
+
+    /// <summary>
+    /// Whether a client point on a row is on its icon or a cell's text, where OnDrawSubItem draws them: a press elsewhere
+    /// on a row that isn't selected draws a selection rectangle, as in Explorer.
+    /// </summary>
+    bool IsOnRowContent(int index, Point p)
+    {
+        if (RowAt(index) is not { } row) return true;
+        var whole = _list.GetItemRect(index, ItemBoundsPortion.Entire);
+        int left = whole.X, pad = LogicalToDeviceUnits(4);
+        foreach (var column in _list.Columns.Cast<ColumnHeader>().OrderBy(c => c.DisplayIndex))
+        {
+            var cell = new Rectangle(left, whole.Y, column.Width, whole.Height);
+            left += column.Width;
+            if (p.X < cell.Left || p.X >= cell.Right) continue;
+            if (column.Tag is not ColumnDef def) return false;
+            int textLeft = ContentLeft(cell, whole);
+            if (column.Index == 0)
+            {
+                int icon = ShellInfo.SmallIconSize.Width;
+                if (p.X >= textLeft && p.X < textLeft + icon) return true;
+                textLeft += icon + pad;
+            }
+            var rect = Rectangle.FromLTRB(textLeft, cell.Top, cell.Right - pad, cell.Bottom);
+            if (rect.Width <= 0 || p.X < rect.Left || p.X >= rect.Right) return false;
+            if (def.Key == "content") return row.Snippet is not null || row.SnippetReason is not null;
+            int width = Math.Min(rect.Width, TextWidth(row, def));
+            return def.Align == HorizontalAlignment.Right ? p.X >= rect.Right - width : p.X < rect.Left + width;
+        }
+        return false;
+    }
+
+    /// <summary>How wide a cell's text is drawn, its matches in bold as OnDrawSubItem draws them.</summary>
+    int TextWidth(Row row, ColumnDef def)
+    {
+        string text = row.Text(def);
+        if (text.Length == 0) return 0;
+        var proposed = new Size(int.MaxValue, int.MaxValue);
+        var hl = _resultQuery.Length == 0 || _boldFont is null ? null
+            : def.Key == "name" ? (row.NameHighlights ??= Highlights(row.Name))
+            : def.Key == "path" ? (row.PathHighlights ??= Highlights(row.Path)) : null;
+        if (hl is null || hl.Count == 0) return TextRenderer.MeasureText(text, _list.Font, proposed, BaseTextFlags).Width;
+        int width = 0;
+        foreach (var (segment, bold) in HighlightSegments(text, hl))
+            width += TextRenderer.MeasureText(segment, bold ? _boldFont! : _list.Font, proposed, BaseTextFlags).Width;
+        return width;
+    }
+
     IReadOnlyList<(int Start, int Length)> Highlights(string text)
     {
         if (text.Length == 0) return [];
@@ -182,7 +232,8 @@ internal sealed partial class MainForm
         catch { return []; }
     }
 
-    static void DrawHighlighted(Graphics g, string text, IReadOnlyList<(int Start, int Length)> ranges, Rectangle rect, Font normal, Font bold, Color fore)
+    /// <summary><paramref name="text"/> in runs, those in <paramref name="ranges"/> bold.</summary>
+    static List<(string Text, bool Bold)> HighlightSegments(string text, IReadOnlyList<(int Start, int Length)> ranges)
     {
         var segments = new List<(string Text, bool Bold)>();
         int pos = 0;
@@ -195,10 +246,14 @@ internal sealed partial class MainForm
             pos = Math.Max(pos, en);
         }
         if (pos < text.Length) segments.Add((text[pos..], false));
+        return segments;
+    }
 
+    static void DrawHighlighted(Graphics g, string text, IReadOnlyList<(int Start, int Length)> ranges, Rectangle rect, Font normal, Font bold, Color fore)
+    {
         int x = rect.Left;
         var proposed = new Size(int.MaxValue, rect.Height);
-        foreach (var (seg, isBold) in segments)
+        foreach (var (seg, isBold) in HighlightSegments(text, ranges))
         {
             var f = isBold ? bold : normal;
             int remaining = rect.Right - x;

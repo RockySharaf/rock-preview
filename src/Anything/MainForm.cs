@@ -339,6 +339,7 @@ internal sealed partial class MainForm : Form
         _list.DrawColumnHeader += OnDrawColumnHeader;
         _list.DrawItem += OnDrawItem;
         _list.DrawSubItem += OnDrawSubItem;
+        _list.IsOnRowContent = IsOnRowContent;
         _list.ColumnClick += (_, e) => SortByColumn(e.Column);
         _list.ColumnReordered += (_, _) => BeginInvoke(SaveColumnState);
         _list.SelectedIndexChanged += (_, _) => QueueStatusUpdate();
