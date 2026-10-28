@@ -223,6 +223,43 @@ sealed class ParentMatcher(string folder) : Matcher
     }
 }
 
+/// <summary>
+/// <see cref="SearchOptions.InsideFolders"/>: files only, those the query finds and those inside a folder it finds, at any
+/// depth; the filter is the files'. A root (a drive) never counts as found, or a search for "c" would bring in all of C:.
+/// </summary>
+sealed class InsideFoldersMatcher(Matcher query, Matcher? filter, int count) : Matcher
+{
+    // Per folder: 1 = it or a folder above it is found, -1 = none is, 0 = not known yet. Threads that work one out at once
+    // write the same answer.
+    readonly sbyte[] _found = new sbyte[count];
+
+    public override int Cost => query.Cost + (filter?.Cost ?? 0) + 3;
+
+    public override bool IsMatch(int id, SearchContext ctx)
+    {
+        var index = ctx.Index;
+        if (index.IsDirectory(id)) return false;
+        if (filter != null && !filter.IsMatch(id, ctx)) return false;
+        return query.IsMatch(id, ctx) || Found(index.Parent(id), ctx);
+    }
+
+    bool Found(int folder, SearchContext ctx)
+    {
+        var index = ctx.Index;
+        List<int>? unknown = null;
+        sbyte answer = -1;
+        for (int cur = folder; cur != FileIndex.NoParent; cur = index.Parent(cur))
+        {
+            sbyte known = _found[cur];
+            if (known != 0) { answer = known; break; }
+            if (index.Parent(cur) != FileIndex.NoParent && query.IsMatch(cur, ctx)) { _found[cur] = answer = 1; break; }
+            (unknown ??= []).Add(cur);
+        }
+        if (unknown != null) foreach (int f in unknown) _found[f] = answer;
+        return answer > 0;
+    }
+}
+
 /// <summary>root: — entries directly inside a root.</summary>
 sealed class RootMatcher : Matcher
 {

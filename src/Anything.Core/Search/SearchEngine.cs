@@ -70,7 +70,10 @@ public sealed class SearchEngine : ISearchEngine
             Matcher matcher;
             try
             {
-                matcher = new QueryCompiler(ctx, largeIndex: index.Count > 200_000).Compile(node);
+                var compiler = new QueryCompiler(ctx, largeIndex: index.Count > 200_000);
+                matcher = options.InsideFolders
+                    ? new InsideFoldersMatcher(compiler.Compile(q), filter is null ? null : compiler.Compile(filter), ctx.Count)
+                    : compiler.Compile(node);
                 ctx.Prepare(cancellationToken);
             }
             catch (QueryException ex)

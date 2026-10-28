@@ -520,6 +520,8 @@ internal sealed partial class MainForm : Form
         _grid.Visible = thumbs && !explorer;
         _list.Visible = !thumbs && !explorer;
         if (hadFocus) (thumbs ? (Control)_grid : _list).Focus();
+        // Search results switching between the list and thumbnails: the files inside the folders found come or go.
+        if (_loaded && !explorer && !_zapActive && _resultOptions.InsideFolders != SearchInsideFolders) RunSearch(SearchReason.Refresh);
     }
 
     void TogglePreview()
@@ -966,7 +968,14 @@ internal sealed partial class MainForm : Form
         MatchDiacritics = _diacritics,
         Regex = _regex,
         Filter = CombineFilters(Filters.All[_filterIndex].Search, BrowseFilter()),
+        InsideFolders = SearchInsideFolders,
     };
+
+    /// <summary>
+    /// Thumbnails of search results are of files: those found and every file inside the folders found, as Thumbnails
+    /// on a folder shows every file in it. Not with the Folder filter, which asks for folders.
+    /// </summary>
+    bool SearchInsideFolders => ThumbnailMode && !_zapActive && !ExplorerShown && Filters.All[_filterIndex].Search != "folder:";
 
     static string? CombineFilters(string? a, string? b)
     {

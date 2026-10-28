@@ -48,6 +48,7 @@ internal sealed class DemoSearchEngine : ISearchEngine
         var sw = Stopwatch.StartNew();
         Regex? regex = null;
         List<Term> terms;
+        int queryTerms;
         try
         {
             if (options.Regex && !string.IsNullOrWhiteSpace(query))
@@ -59,6 +60,7 @@ internal sealed class DemoSearchEngine : ISearchEngine
             {
                 terms = Parse(query ?? "", options);
             }
+            queryTerms = terms.Count;
             // The app builds the filter (macros, folder scopes): Match whole words or Match case must not empty it.
             terms.AddRange(Parse(options.Filter ?? "", QueryParser.FilterOptions));
         }
@@ -74,16 +76,45 @@ internal sealed class DemoSearchEngine : ISearchEngine
         {
             var ids = new List<int>();
             int count = index.Count;
+            // Thumbnails while searching (SearchOptions.InsideFolders): per folder, 1 = it or a folder above it is found.
+            var found = options.InsideFolders ? new sbyte[count] : null;
             for (int id = 0; id < count; id++)
             {
                 if ((id & 0x3FFF) == 0) cancellationToken.ThrowIfCancellationRequested();
                 if (!index.IsAlive(id)) continue;
+                if (found is null) { if (Matches(id, 0, terms.Count, withRegex: true)) ids.Add(id); }
+                else if (!index.IsDirectory(id) && Matches(id, queryTerms, terms.Count, withRegex: false)
+                    && (Matches(id, 0, queryTerms, withRegex: true) || FolderFound(found, index.Parent(id))))
+                    ids.Add(id);
+            }
+            var arr = ids.ToArray();
+            SortIds(index, arr, sort, descending, cancellationToken);
+            return new SearchResults { Ids = arr, Elapsed = sw.Elapsed };
+
+            // A folder found by the query, or one above it; a root (a drive) never counts, as in the real engine.
+            bool FolderFound(sbyte[] found, int folder)
+            {
+                var unknown = new List<int>();
+                sbyte answer = -1;
+                for (int cur = folder; cur != FileIndex.NoParent; cur = index.Parent(cur))
+                {
+                    if (found[cur] != 0) { answer = found[cur]; break; }
+                    if (index.Parent(cur) != FileIndex.NoParent && Matches(cur, 0, queryTerms, withRegex: true)) { found[cur] = answer = 1; break; }
+                    unknown.Add(cur);
+                }
+                foreach (int f in unknown) found[f] = answer;
+                return answer > 0;
+            }
+
+            // The query's terms are [0, queryTerms), the filter's the rest; the regex is the query's.
+            bool Matches(int id, int from, int to, bool withRegex)
+            {
                 string name = index.Name(id);
                 string? full = null;
-                if (regex is not null && !regex.IsMatch(options.MatchPath ? (full ??= index.GetFullPath(id)) : name)) continue;
-                bool ok = true;
-                foreach (var t in terms)
+                if (withRegex && regex is not null && !regex.IsMatch(options.MatchPath ? (full ??= index.GetFullPath(id)) : name)) return false;
+                for (int i = from; i < to; i++)
                 {
+                    var t = terms[i];
                     bool any = false;
                     foreach (var a in t.Alts)
                     {
@@ -98,13 +129,10 @@ internal sealed class DemoSearchEngine : ISearchEngine
                         any = true;
                         break;
                     }
-                    if (any == t.Not) { ok = false; break; }
+                    if (any == t.Not) return false;
                 }
-                if (ok) ids.Add(id);
+                return true;
             }
-            var arr = ids.ToArray();
-            SortIds(index, arr, sort, descending, cancellationToken);
-            return new SearchResults { Ids = arr, Elapsed = sw.Elapsed };
         }
         finally { index.Lock.ExitReadLock(); }
     }

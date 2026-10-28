@@ -499,7 +499,8 @@ internal sealed partial class MainForm
         _thumbsButton.Tag = thumbs; // drawn pressed while thumbnails are showing
         _thumbsButton.ToolTipText = explorer ? "Thumbnails of every file in this folder and its subfolders (Ctrl+Shift+X)"
             : thumbs ? (_zapActive ? "Back to the folder (Ctrl+Shift+X)" : "Back to the list (Ctrl+Shift+X)")
-            : "Show these files as thumbnails (Ctrl+Shift+X)";
+            : Filters.All[_filterIndex].Search == "folder:" ? "Show these folders as thumbnails (Ctrl+Shift+X)"
+            : "Thumbnails of the files found and of every file in the folders found (Ctrl+Shift+X)";
         _thumbsButton.Invalidate();
         // Only with "every file in", where it applies. Available, not Visible: Visible reads false until the bar shows.
         if (_cmdEveryday.Available != _zapActive) _cmdEveryday.Available = _zapActive;
@@ -835,7 +836,8 @@ internal sealed partial class MainForm
 
     /// <summary>
     /// The Thumbnails button (Ctrl+Shift+X). On a folder: every file in it and its subfolders as thumbnails, and
-    /// again = back to the folder. Anywhere else (search results, or those files): thumbnails on and off.
+    /// again = back to the folder. Anywhere else (search results, or those files): thumbnails on and off; search results
+    /// as thumbnails bring in every file inside the folders found (<see cref="SearchInsideFolders"/>).
     /// </summary>
     void ToggleThumbnails()
     {

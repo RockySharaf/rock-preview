@@ -133,6 +133,47 @@ public class SearchEngineTests : SearchTestBase
         AssertFinds("!file: !folder:");
     }
 
+    // ---------------- thumbnails while searching ----------------
+
+    static readonly SearchOptions Inside = new() { InsideFolders = true };
+
+    [Fact]
+    public void Inside_folders_finds_every_file_in_a_folder_found_and_no_folders()
+    {
+        // C:\Docs is found: its files and those in Archive below it come, the folders themselves don't.
+        AssertFinds("docs", Inside, Report, Notes, OldZip, Notes2);
+        AssertFinds("archive", Inside, OldZip, Notes2);
+        // Files found by their own names come too, once each.
+        AssertFinds("song", Inside, Song, SongTwo);
+        AssertFinds("archive | notes", Inside, Notes, OldZip, Notes2);
+        AssertFinds("empty", Inside);
+        // Without it, the same search finds the folder.
+        AssertFinds("archive", @"C:\Docs\Archive");
+    }
+
+    [Fact]
+    public void Inside_folders_applies_the_filter_to_the_files()
+    {
+        AssertFinds("docs", Inside with { Filter = "zip:" }, OldZip);
+        // A folder scope keeps the files inside it, while the query still finds the folder by its name.
+        AssertFinds("archive | app", Inside with { Filter = @"""C:\Docs\""" }, OldZip, Notes2);
+    }
+
+    [Fact]
+    public void Inside_folders_never_brings_in_a_whole_drive()
+    {
+        // C: and D: are found by their names, like App: only App's files come.
+        AssertFinds("len:<=3", Inside, App, Readme);
+    }
+
+    [Fact]
+    public void Inside_folders_with_presorted_order()
+    {
+        Engine.SortCacheThreshold = 1;
+        Assert.Equal([Notes2, OldZip], Find("archive", Inside));
+        Assert.Equal([OldZip, Notes2], Find("archive", Inside, SortKey.Name, descending: true));
+    }
+
     // ---------------- functions ----------------
 
     [Fact]

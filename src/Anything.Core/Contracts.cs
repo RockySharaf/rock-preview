@@ -21,6 +21,11 @@ public sealed record SearchOptions
     /// <see cref="Search.QueryParser.FilterOptions"/>. Modifiers on its text terms (case:, ww:, ...) still apply.
     /// </summary>
     public string? Filter { get; init; }
+    /// <summary>
+    /// Thumbnails while searching: files only, those the query finds and every file inside a folder it finds (and in that
+    /// folder's subfolders), each also matching <see cref="Filter"/>. A drive the query finds doesn't bring in all of it.
+    /// </summary>
+    public bool InsideFolders { get; init; }
 }
 
 public sealed class SearchResults

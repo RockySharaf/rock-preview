@@ -177,7 +177,9 @@ Office and other installed shell preview handlers are hosted in place; embedded 
 ### Thumbnails
 Press **Thumbnails** (or `Ctrl+Shift+X`) to see files as pictures:
 
-- **While searching**, your results switch to thumbnails, wherever on the disk they are.
+- **While searching**, the files you found switch to thumbnails, wherever on the disk they are, and every file inside
+  a folder you found (and its subfolders) comes too, as on a folder. Search `holiday` and a folder called *Holiday
+  2025* shows its photos. With the **Folder** filter you see the folders themselves.
 - **In a folder**, every file in it *and all its subfolders* appears at once, straight from the index — perfect for
   "show me all the images in this project". They come in the order the folder showed them (newest first in
   Downloads, for example); **Sort** changes it. Press Thumbnails again to go back to the folder.
