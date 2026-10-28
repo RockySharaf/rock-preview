@@ -297,7 +297,8 @@ internal sealed partial class MainForm
         bool deep = _app.Settings.ZapIncludeSubfolders;
         var filter = new ExclusionFilter(_app.Settings.Index);
         // Only files the view would show count: with Everyday files on, a folder of code is rightly empty.
-        Func<string, bool>? counts = _app.Settings.EverydayFilesOnly ? n => EverydayFiles.IsEveryday(n) : null;
+        var everyday = _app.Settings.Everyday;
+        Func<string, bool>? counts = _app.Settings.EverydayFilesOnly ? n => everyday.IsEveryday(n) : null;
         tab.DiskChecked = tab.CheckingDisk = true;
         int check = ++tab.DiskCheck;
         UpdateEmptyText();
@@ -319,21 +320,21 @@ internal sealed partial class MainForm
     }
 
     /// <summary>
-    /// Everyday files or Include subfolders changed (one setting for every window): every "every file in" searches again,
-    /// the one showing now, the others when they show.
+    /// Everyday files (on or off, or which files) or Include subfolders changed (one setting for every window): every
+    /// "every file in" and every search shown as thumbnails searches again, the one showing now, the others when they show.
     /// </summary>
     internal void OnZapOptionsChanged()
     {
         if (!_loaded) return;
         foreach (var t in _tabs)
         {
-            if (!t.ZapActive) continue;
-            ResetDiskCheck(t); // nothing found means something else now
+            if (t.ZapActive) ResetDiskCheck(t); // nothing found means something else now
+            else if (!t.ResultOptions.InsideFolders) continue;
             if (t != _tab) t.Stale = t.StaleNewQuery = true;
         }
         SyncMenus();
         UpdateCommandStates();
-        if (_zapActive)
+        if (_zapActive || SearchInsideFolders)
         {
             if (Visible) RunSearch(SearchReason.NewQuery);
             else _tab.Stale = _tab.StaleNewQuery = true;
@@ -366,7 +367,7 @@ internal sealed partial class MainForm
                 text = content ?? "No items match your search." + (everyday ? " Turn off Everyday files to see every file." : "");
             else
             {
-                string files = everyday ? "pictures, videos, music, documents or design files" : "files";
+                string files = everyday ? "everyday files" : "files";
                 string its = _zapRoots.Count > 1 ? "their" : "its";
                 text = _app.Settings.ZapIncludeSubfolders ? $"No {files} in {where} or {its} subfolders." : $"No {files} directly in {where}.";
                 if (everyday) text += " Turn off Everyday files to see every file.";
@@ -377,7 +378,8 @@ internal sealed partial class MainForm
             if (_searchPending) return; // as above
             var folders = CoverageFolders();
             var gaps = FolderGaps(folders);
-            text = content ?? (gaps.Count > 0 ? $"Files in {GapLabel(folders, gaps)} don't show up in searches." : "No items match your search.");
+            text = content ?? (gaps.Count > 0 ? $"Files in {GapLabel(folders, gaps)} don't show up in searches."
+                : "No items match your search." + (SearchInsideFolders && _app.Settings.EverydayFilesOnly ? " Turn off Everyday files to see every file." : ""));
         }
         _list.EmptyText = text;
         _grid.EmptyText = text;

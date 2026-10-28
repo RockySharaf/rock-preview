@@ -967,13 +967,15 @@ internal sealed partial class MainForm : Form
         MatchPath = _matchPath,
         MatchDiacritics = _diacritics,
         Regex = _regex,
-        Filter = CombineFilters(Filters.All[_filterIndex].Search, BrowseFilter()),
+        Filter = CombineFilters(CombineFilters(Filters.All[_filterIndex].Search, BrowseFilter()),
+            SearchInsideFolders && _app.Settings.EverydayFilesOnly ? _app.Settings.Everyday.Filter : null),
         InsideFolders = SearchInsideFolders,
     };
 
     /// <summary>
     /// Thumbnails of search results are of files: those found and every file inside the folders found, as Thumbnails
-    /// on a folder shows every file in it. Not with the Folder filter, which asks for folders.
+    /// on a folder shows every file in it, and Everyday files applies as it does there. Not with the Folder filter, which
+    /// asks for folders.
     /// </summary>
     bool SearchInsideFolders => ThumbnailMode && !_zapActive && !ExplorerShown && Filters.All[_filterIndex].Search != "folder:";
 

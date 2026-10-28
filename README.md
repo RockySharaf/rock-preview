@@ -186,9 +186,11 @@ Press **Thumbnails** (or `Ctrl+Shift+X`) to see files as pictures:
 
 The arrow next to it shows the same files as a list instead (`Ctrl+Shift+Z`), or only the folder's own files.
 
-**Everyday files** (next to Thumbnails while every file shows) keeps it to what people look at: pictures (camera raw
-too), videos, music, documents and PDFs, e-books, design and 3D files, fonts and ZIP/RAR/7z archives. Code, settings,
-logs, program and system files are left out. It's on until you turn it off; turn it off to see every file.
+**Everyday files** (next to Thumbnails while it shows files) keeps it to what people look at: pictures (camera raw
+too), videos, music, PDFs, documents, e-books, design and 3D files, fonts and ZIP/RAR/7z archives. Code, settings,
+logs, program and system files are left out, in a folder and in a search alike. It's on until you turn it off; turn it
+off to see every file. **Thumbnails ⌄ › Choose everyday files** (or **Settings › Thumbnails**) picks which kinds count,
+and adds extensions of your own, like `md` or `json`; **Reset** brings back the usual.
 
 A folder the index doesn't have (left out in **Settings › Folders**, on a drive that's turned off, or not read yet)
 is read straight from the disk instead, and kept up to date while it shows. A bar says why its files don't show up in

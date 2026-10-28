@@ -3,6 +3,7 @@ using SortKey = Anything.Core.SortKey;
 using System.Text;
 using Anything.Core;
 using Anything.Core.Indexing;
+using Anything.Core.Search;
 using Microsoft.Win32;
 
 namespace Anything;
@@ -77,8 +78,31 @@ internal sealed partial class AppSettings
 
     /// <summary>ZAP includes files in subfolders (otherwise only the folder's own files).</summary>
     public bool ZapIncludeSubfolders { get; set; } = true;
-    /// <summary>"Every file in" shows only everyday files (pictures, videos, music, documents, design files...), not code or system files.</summary>
+    /// <summary>Thumbnails ("every file in" and searches) show only everyday files (pictures, videos, music, documents...), not code or system files.</summary>
     public bool EverydayFilesOnly { get; set; } = true;
+    /// <summary>Everyday files' kinds that are off (<see cref="EverydayFiles.Kind.Key"/>): the ones that are on aren't saved, so kinds added later start on.</summary>
+    public List<string> EverydayKindsOff { get; set; } = [];
+    /// <summary>Extensions added to Everyday files by hand (Settings › Thumbnails), without the dot.</summary>
+    public List<string> EverydayAdded { get; set; } = [];
+
+    EverydayFiles? _everyday;
+    string? _everydayKey;
+
+    /// <summary>What Everyday files keeps: <see cref="EverydayKindsOff"/> and <see cref="EverydayAdded"/> as they are now.</summary>
+    public EverydayFiles Everyday
+    {
+        get
+        {
+            string key = string.Join('|', EverydayKindsOff) + "/" + string.Join('|', EverydayAdded);
+            if (_everyday is null || key != _everydayKey)
+            {
+                var off = new HashSet<string>(EverydayKindsOff, StringComparer.OrdinalIgnoreCase);
+                _everyday = new EverydayFiles(EverydayFiles.Kinds.Select(k => k.Key).Where(k => !off.Contains(k)), EverydayAdded);
+                _everydayKey = key;
+            }
+            return _everyday;
+        }
+    }
     /// <summary>Times the Thumbnails button has pulsed to show itself (a folder open for 3 seconds); it stops at 10.</summary>
     public int ThumbnailsHintCount { get; set; }
     /// <summary>Thumbnails has been used, so its button no longer pulses.</summary>
@@ -197,6 +221,8 @@ internal sealed partial class AppSettings
         s.PreviewVisible = Bool("preview_visible", true);
         s.ZapIncludeSubfolders = Bool("zap_include_subfolders", true);
         s.EverydayFilesOnly = Bool("everyday_files_only", true);
+        s.EverydayKindsOff = List("everyday_kinds_off", []);
+        s.EverydayAdded = List("everyday_added", []);
         s.ThumbnailsHintCount = Math.Max(0, Int("thumbnails_hint_count", 0));
         // Settings saved before the hint have no key. Results left as thumbnails say thumbnails were used; nothing else
         // does, so everyone else still gets the hint, upgrading or not.
@@ -302,6 +328,8 @@ internal sealed partial class AppSettings
         B("preview_visible", PreviewVisible);
         B("zap_include_subfolders", ZapIncludeSubfolders);
         B("everyday_files_only", EverydayFilesOnly);
+        W("everyday_kinds_off", string.Join('|', EverydayKindsOff));
+        W("everyday_added", string.Join('|', EverydayAdded));
         W("thumbnails_hint_count", ThumbnailsHintCount);
         B("thumbnails_hint_done", ThumbnailsHintDone);
         B("explorer_nav_pane", ExplorerNavPane);

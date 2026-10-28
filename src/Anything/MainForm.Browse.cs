@@ -27,8 +27,8 @@ internal sealed partial class MainForm
                              _cmdDelete = new(), _cmdCloseSearch = new("Close search"), _cmdPreview = new("Preview");
     readonly ToolStripSplitButton _thumbsButton = new("Thumbnails");
     readonly ToolStripMenuItem _zapThumbItem = new(), _zapListItem = new(), _zapDeepItem = new("Include subfolders"),
-                               _zapEverydayItem = new("Everyday files only");
-    readonly ToolStripButton _cmdEveryday = new("Everyday files"); // shown with "every file in": hides code and system files
+                               _zapEverydayItem = new("Everyday files only"), _zapEverydayChooseItem = new("Choose everyday files...");
+    readonly ToolStripButton _cmdEveryday = new("Everyday files"); // shown with Thumbnails' files: hides code and system files
     readonly ToolStripSeparator _sepSearch = new();
     readonly SplitContainer _body = new();     // navigation pane | files + preview
     readonly Panel _navPanel = new();
@@ -112,8 +112,9 @@ internal sealed partial class MainForm
         _zapListItem.Click += (_, _) => ToggleZap(thumbs: false);
         _zapDeepItem.Click += (_, _) => ToggleZapDepth();
         _zapEverydayItem.Click += (_, _) => ToggleEverydayFiles();
+        _zapEverydayChooseItem.Click += (_, _) => _app.ShowSettings(this, "Thumbnails");
         _zapListItem.ShortcutKeyDisplayString = "Ctrl+Shift+Z";
-        _thumbsButton.DropDownItems.AddRange([_zapThumbItem, _zapListItem, new ToolStripSeparator(), _zapDeepItem, _zapEverydayItem]);
+        _thumbsButton.DropDownItems.AddRange([_zapThumbItem, _zapListItem, new ToolStripSeparator(), _zapDeepItem, _zapEverydayItem, _zapEverydayChooseItem]);
         _thumbsButton.DropDownOpening += (_, _) =>
         {
             string where = _zapActive ? _zapLabel : ZapTargets() is { Count: > 0 } roots ? ZapLabel(roots) : "this folder";
@@ -502,12 +503,14 @@ internal sealed partial class MainForm
             : Filters.All[_filterIndex].Search == "folder:" ? "Show these folders as thumbnails (Ctrl+Shift+X)"
             : "Thumbnails of the files found and of every file in the folders found (Ctrl+Shift+X)";
         _thumbsButton.Invalidate();
-        // Only with "every file in", where it applies. Available, not Visible: Visible reads false until the bar shows.
-        if (_cmdEveryday.Available != _zapActive) _cmdEveryday.Available = _zapActive;
+        // Only where it applies: "every file in", and search results as thumbnails. Available, not Visible: Visible reads
+        // false until the bar shows.
+        bool everydayApplies = _zapActive || SearchInsideFolders;
+        if (_cmdEveryday.Available != everydayApplies) _cmdEveryday.Available = everydayApplies;
         _cmdEveryday.Checked = _app.Settings.EverydayFilesOnly;
         _cmdEveryday.ToolTipText = _app.Settings.EverydayFilesOnly
-            ? "Showing only pictures, videos, music, documents and design files. Click to show every file (code, settings, system files...)"
-            : "Showing every file. Click to show only pictures, videos, music, documents and design files";
+            ? "Showing only everyday files: pictures, videos, music, documents... (Thumbnails › Choose everyday files). Click to show every file (code, settings, system files...)"
+            : "Showing every file. Click to show only everyday files: pictures, videos, music, documents...";
         _cmdPreview.Checked = _app.Settings.PreviewVisible;
     }
 
@@ -945,7 +948,7 @@ internal sealed partial class MainForm
         if (rerun) RunSearch(SearchReason.NewQuery);
     }
 
-    /// <summary>"Everyday files": "every file in" leaves out code, settings, program and system files, or shows them again.</summary>
+    /// <summary>"Everyday files": Thumbnails' files leave out code, settings, program and system files, or show them again.</summary>
     void ToggleEverydayFiles()
     {
         _app.Settings.EverydayFilesOnly = !_app.Settings.EverydayFilesOnly;
@@ -973,7 +976,7 @@ internal sealed partial class MainForm
             return deep ? Quote(WithSlash(r)) : "parent:" + Quote(folder.Length == 2 ? folder + "\\" : folder);
         }).ToList();
         string scope = terms.Count == 1 ? terms[0] : "<" + string.Join(" | ", terms) + ">";
-        return "file: " + scope + (_app.Settings.EverydayFilesOnly ? " " + EverydayFiles.Filter : "");
+        return "file: " + scope + (_app.Settings.EverydayFilesOnly ? " " + _app.Settings.Everyday.Filter : "");
     }
 
     string ZapStatus()

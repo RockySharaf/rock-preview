@@ -1163,7 +1163,7 @@ public sealed class FolderListingTests : IDisposable
         Write(Path.Combine(code, "Program.cs"));
         Write(Path.Combine(code, "src", "app.ts"));
         var ct = CancellationToken.None;
-        Func<string, bool> everyday = n => EverydayFiles.IsEveryday(n);
+        Func<string, bool> everyday = n => EverydayFiles.Default.IsEveryday(n);
 
         Assert.True(FolderListing.HasFile(code, ExclusionFilter.None, deep: true, maxFolders: 100, ct));
         Assert.False(FolderListing.HasFile(code, ExclusionFilter.None, deep: true, maxFolders: 100, ct, everyday));

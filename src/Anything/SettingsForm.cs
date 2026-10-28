@@ -1,6 +1,7 @@
 using System.Drawing.Drawing2D;
 using Anything.Core;
 using Anything.Core.Indexing;
+using Anything.Core.Search;
 using Anything.Interop;
 
 namespace Anything;
@@ -26,6 +27,10 @@ internal sealed partial class SettingsForm : Form
     SettingCard? _fontCard;
     // Search
     readonly ToggleSwitch _matchCase = new(), _wholeWord = new(), _matchPath = new(), _diacritics = new(), _regex = new();
+    // Thumbnails
+    readonly ToggleSwitch _everydayOnly = new();
+    readonly List<(EverydayFiles.Kind Kind, ToggleSwitch Switch)> _everydayKinds = [];
+    readonly TextBox _everydayAdded = new();
     // Indexing
     readonly ToggleSwitch _ntfs = new(), _removable = new(), _network = new();
     readonly ToggleSwitch _dateAccessed = new(), _folderSizes = new(), _recentChanges = new(), _recentFromJournal = new(), _runHistory = new();
@@ -79,6 +84,7 @@ internal sealed partial class SettingsForm : Form
         AddSection("General", '', GeneralPage());
         AddSection("Appearance", '', AppearancePage());
         AddSection("Search", '', SearchPage());
+        AddSection("Thumbnails", ExplorerTheme.GGrid, ThumbnailsPage());
         AddSection("Indexing", '', IndexingPage());
         AddSection("Folders", '', FoldersPage());
         AddSection("Keyboard", '', KeyboardPage());
@@ -285,6 +291,29 @@ internal sealed partial class SettingsForm : Form
         Card("Match accents", "\"resume\" finds resume, not résumé.", _diacritics),
         Card("Regular expressions", "Search with patterns like ^IMG_\\d+\\.jpg$.", _regex),
         ContentSearchDefaultCard());
+
+    PageStack ThumbnailsPage()
+    {
+        _everydayAdded.Width = S(260);
+        _everydayAdded.PlaceholderText = "md; json";
+        _everydayAdded.Leave += (_, _) => EverydayChanged();
+        var cards = new List<Control>
+        {
+            Card("Everyday files only",
+                "Thumbnails show only the kinds of files switched on below: every file in a folder, and what a search finds. " +
+                "Off: every file, code, settings and program files too.", _everydayOnly),
+            Header("Everyday files are"),
+        };
+        foreach (var kind in EverydayFiles.Kinds)
+        {
+            var on = new ToggleSwitch();
+            _everydayKinds.Add((kind, on));
+            cards.Add(Card(kind.Name, kind.Examples, on));
+        }
+        cards.Add(Card("Also these extensions", "Separated by spaces or semicolons. For example md; json", _everydayAdded));
+        cards.Add(Card("Back to the usual", "Every kind above on, nothing added.", CardButton("Reset", ResetEveryday)));
+        return Page("Thumbnails", [.. cards]);
+    }
 
     PageStack IndexingPage()
     {
@@ -719,6 +748,7 @@ internal sealed partial class SettingsForm : Form
         _matchPath.Checked = s.MatchPath;
         _diacritics.Checked = s.MatchDiacritics;
         _regex.Checked = s.Regex;
+        ShowEveryday(s);
         var ix = s.Index;
         _ntfs.Checked = ix.IndexNtfsVolumes;
         _removable.Checked = ix.IndexRemovableDrives;
@@ -767,6 +797,51 @@ internal sealed partial class SettingsForm : Form
         _recentFromJournal.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.RecentChangesFromJournal = _recentFromJournal.Checked; IndexChanged(); };
         _runHistory.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.RunHistoryEnabled = _runHistory.Checked; _app.Settings.Save(); };
         _hotkeyWin.CheckedChanged += (_, _) => { if (_loading) return; _hotkey.SetWin(_hotkeyWin.Checked); ApplyHotkey(); };
+        _everydayOnly.CheckedChanged += (_, _) => EverydayChanged();
+        foreach (var (_, on) in _everydayKinds) on.CheckedChanged += (_, _) => EverydayChanged();
+    }
+
+    void ShowEveryday(AppSettings s)
+    {
+        _everydayOnly.Checked = s.EverydayFilesOnly;
+        foreach (var (kind, on) in _everydayKinds) on.Checked = !s.EverydayKindsOff.Contains(kind.Key, StringComparer.OrdinalIgnoreCase);
+        _everydayAdded.Text = string.Join("; ", s.EverydayAdded);
+        UpdateEverydayEnabled();
+    }
+
+    void UpdateEverydayEnabled()
+    {
+        foreach (var (_, on) in _everydayKinds) on.Enabled = _everydayOnly.Checked;
+        _everydayAdded.Enabled = _everydayOnly.Checked;
+    }
+
+    /// <summary>Everyday files: saved at once, and every Thumbnails view of files searches again, in every window.</summary>
+    void EverydayChanged()
+    {
+        if (_loading) return;
+        var s = _app.Settings;
+        var off = _everydayKinds.Where(k => !k.Switch.Checked).Select(k => k.Kind.Key).ToList();
+        var added = EverydayFiles.ParseExtensions(_everydayAdded.Text).ToList();
+        _everydayAdded.Text = string.Join("; ", added);
+        UpdateEverydayEnabled();
+        if (s.EverydayFilesOnly == _everydayOnly.Checked && off.SequenceEqual(s.EverydayKindsOff) && added.SequenceEqual(s.EverydayAdded)) return;
+        s.EverydayFilesOnly = _everydayOnly.Checked;
+        s.EverydayKindsOff = off;
+        s.EverydayAdded = added;
+        s.Save();
+        foreach (var w in _app.Windows) w.OnZapOptionsChanged();
+    }
+
+    void ResetEveryday()
+    {
+        _loading = true;
+        try
+        {
+            foreach (var (_, on) in _everydayKinds) on.Checked = true;
+            _everydayAdded.Text = "";
+        }
+        finally { _loading = false; }
+        EverydayChanged();
     }
 
     /// <summary>Switches that take effect at once.</summary>
