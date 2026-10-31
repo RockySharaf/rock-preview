@@ -50,6 +50,8 @@ internal sealed class ThumbnailGrid : Control
 
     Point _downAt;
     int _downIndex = -1;
+    Keys _downKeys;         // Ctrl and Shift as the button went down
+    bool _clickOnRelease;   // pressed on a selected thumbnail: the click waits for the release (a drag takes them all)
 
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public Func<int, string?> PathAt { get; set; } = _ => null;
@@ -398,11 +400,16 @@ internal sealed class ThumbnailGrid : Control
         int i = HitTest(e.Location);
         _downIndex = i;
         _downAt = e.Location;
+        _downKeys = ModifierKeys;
+        _clickOnRelease = false;
         if (i < 0) return;
         if (e.Button == MouseButtons.Left)
         {
-            if ((ModifierKeys & Keys.Shift) == 0) _anchor = i;
-            ItemClicked?.Invoke(i, ModifierKeys);
+            // As in File Explorer: a press on a selected thumbnail keeps the selection, so dragging it takes every
+            // selected file; released without a drag it is the click (that one alone, or with Ctrl, that one out).
+            // Anywhere else the press is the click.
+            if (IsSelected(i) && (_downKeys & Keys.Shift) == 0) _clickOnRelease = true;
+            else ClickItem(i, _downKeys);
         }
         else if (e.Button == MouseButtons.Right && !IsSelected(i))
         {
@@ -420,6 +427,7 @@ internal sealed class ThumbnailGrid : Control
         if (Math.Abs(e.X - _downAt.X) > d.Width || Math.Abs(e.Y - _downAt.Y) > d.Height)
         {
             _downIndex = -1;
+            _clickOnRelease = false;
             ItemDrag?.Invoke();
         }
     }
@@ -428,7 +436,17 @@ internal sealed class ThumbnailGrid : Control
     {
         base.OnMouseUp(e);
         if (e.Button == MouseButtons.Right && HitTest(e.Location) >= 0) ItemContextMenu?.Invoke(PointToScreen(e.Location));
+        // The keys held as it was pressed: Ctrl let go a moment before the button is still a Ctrl+click.
+        if (e.Button == MouseButtons.Left && _clickOnRelease && _downIndex >= 0) ClickItem(_downIndex, _downKeys);
+        _clickOnRelease = false;
         _downIndex = -1;
+    }
+
+    void ClickItem(int i, Keys keys)
+    {
+        if ((keys & Keys.Shift) == 0) _anchor = i;
+        ItemClicked?.Invoke(i, keys);
+        Invalidate();
     }
 
     protected override void OnMouseDoubleClick(MouseEventArgs e)

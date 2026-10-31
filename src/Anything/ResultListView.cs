@@ -328,7 +328,8 @@ internal sealed class ResultListView : ListView
     {
         public Point Anchor;               // where it started, in the rows' own coordinates (it scrolls with them)
         public Point Pointer;              // the pointer now, client
-        public int Keys;                   // MK_CONTROL and MK_SHIFT as they are now
+        public int Keys;                   // MK_CONTROL and MK_SHIFT as they are now (they steer the rectangle)
+        public int PressKeys;              // as the button went down: what a click (and the rectangle's start) does
         public int Row = -1;               // the row it was started on (-1: empty space)
         public bool Shown;                 // moved past the drag size: a rectangle, not a click
         public int First = -1, Last = -1;  // the rows it covers now
@@ -361,7 +362,7 @@ internal sealed class ResultListView : ListView
     {
         _rightDownInEmpty = false;
         Focus();
-        _marquee = new Marquee { Anchor = ToRows(p), Pointer = p, Keys = keys, Row = row };
+        _marquee = new Marquee { Anchor = ToRows(p), Pointer = p, Keys = keys, PressKeys = keys, Row = row };
         Capture = true;
     }
 
@@ -379,10 +380,10 @@ internal sealed class ResultListView : ListView
             if (marquee.Row >= 0)
             {
                 // From a row: that row is clicked first, then the rectangle adds to it (it covers it from the start).
-                ClickRow(marquee.Row, marquee.Keys);
+                ClickRow(marquee.Row, marquee.PressKeys);
                 marquee.First = marquee.Last = marquee.Row;
             }
-            else if ((marquee.Keys & (MK_CONTROL | MK_SHIFT)) == 0)
+            else if ((marquee.PressKeys & (MK_CONTROL | MK_SHIFT)) == 0)
             {
                 SetAllSelected(false); // from empty space the selection goes, unless Ctrl or Shift keeps it
                 SetSelectionMark(-1);
@@ -495,7 +496,7 @@ internal sealed class ResultListView : ListView
         }
         marquee.First = marquee.Last = -1;
         marquee.Row = -1;
-        if ((marquee.Keys & (MK_CONTROL | MK_SHIFT)) == 0) SetAllSelected(false);
+        if ((marquee.PressKeys & (MK_CONTROL | MK_SHIFT)) == 0) SetAllSelected(false);
         TrackMarquee(marquee.Pointer);
     }
 
@@ -537,15 +538,17 @@ internal sealed class ResultListView : ListView
 
     /// <summary>
     /// The button released: a press that never became a rectangle is a click, as in Explorer (on a row, that row is
-    /// clicked; in empty space the selection goes, unless Ctrl or Shift is down).
+    /// clicked; in empty space the selection goes, unless Ctrl or Shift was down). It goes by the keys held when it
+    /// was pressed: Ctrl let go a moment before the button, with the pointer moving a pixel in between, made a
+    /// Ctrl+click a plain click that dropped the rest of the selection.
     /// </summary>
     void ReleaseMarquee()
     {
         var marquee = _marquee;
         EndMarquee();
         if (marquee is null || marquee.Shown) return;
-        if (marquee.Row >= 0) ClickRow(marquee.Row, marquee.Keys);
-        else if ((marquee.Keys & (MK_CONTROL | MK_SHIFT)) == 0) { SetAllSelected(false); SetSelectionMark(-1); }
+        if (marquee.Row >= 0) ClickRow(marquee.Row, marquee.PressKeys);
+        else if ((marquee.PressKeys & (MK_CONTROL | MK_SHIFT)) == 0) { SetAllSelected(false); SetSelectionMark(-1); }
     }
 
     void EndMarquee()
