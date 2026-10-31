@@ -1,21 +1,27 @@
 namespace Anything;
 
 /// <summary>The things the getting-started window teaches, ticked off as the user does them.</summary>
-internal enum GettingStarted { Hide, Show, Thumbnails, Subfolders, Sort, Folders }
+internal enum GettingStarted { Hide, Show, Everything, Thumbnails, Subfolders, Sort, Folders }
 
 /// <summary>
 /// Shown once, right after installing (the first time a window opens), and from Help › Get started: the hotkey drawn
-/// as keys, then a short checklist (hide and bring back with the hotkey, Thumbnails, subfolders, sorting, choosing
-/// folders) ticked off as each happens. It sits in the corner of the screen, on top, without taking the focus, so the
-/// hotkey hides and brings back the window the user is looking at.
+/// as keys, then a short checklist (hide and bring back with the hotkey, searching everything from a folder,
+/// Thumbnails, subfolders, sorting, choosing folders) ticked off as each happens. After an update that adds steps, it
+/// shows once more with only those ("New in Rock Preview"), so nobody who updates misses them. It sits in the corner of
+/// the screen, on top, without taking the focus, so the hotkey hides and brings back the window the user is looking at.
 /// </summary>
 internal sealed class GetStartedForm : Form
 {
-    sealed record Step(GettingStarted Kind, string Title, string? Hint);
+    /// <param name="Tour">The <see cref="TourVersion"/> the step came in: an update shows it to those who saw an older tour.</param>
+    sealed record Step(GettingStarted Kind, string Title, string? Hint, int Tour = 0);
+
+    /// <summary>The tour this version teaches. 1: clicking the folder's name in the search box to search everything.</summary>
+    public const int TourVersion = 1;
 
     readonly AnythingApp _app;
     readonly string _hotkey;
     readonly string[] _keys;
+    readonly bool _whatsNew;
     readonly Step[] _steps;
     readonly HashSet<GettingStarted> _done = [];
     readonly Rectangle[] _stepRects;
@@ -34,23 +40,30 @@ internal sealed class GetStartedForm : Form
     static Color KeyEdge => ExplorerTheme.Dark ? Color.FromArgb(0x1E, 0x1E, 0x1E) : Color.FromArgb(0xCC, 0xCC, 0xCC);
     static Color KeyBorder => ExplorerTheme.Dark ? Color.FromArgb(0x50, 0x50, 0x50) : Color.FromArgb(0xD6, 0xD6, 0xD6);
 
-    public GetStartedForm(AnythingApp app, string hotkey)
+    /// <param name="newSince">Only the steps newer than this tour (after an update), or null for the whole tour.</param>
+    public GetStartedForm(AnythingApp app, string hotkey, int? newSince = null)
     {
         _app = app;
         _hotkey = hotkey;
         _keys = hotkey.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        _steps =
+        Step[] all =
         [
             new(GettingStarted.Hide, $"Hide it: press {hotkey}", null),
             new(GettingStarted.Show, $"Bring it back: press {hotkey} again", null),
+            new(GettingStarted.Everything, "In a folder, click its name in the search box", "To search everything; click Everything to go back", Tour: 1),
             new(GettingStarted.Thumbnails, "Open a folder, then click Thumbnails", "Every file in it and its subfolders, as pictures"),
             new(GettingStarted.Subfolders, "Click the arrow next to Thumbnails", "Include subfolders, or show this folder only"),
             new(GettingStarted.Sort, "Click Sort to put them in order", "For example by date, newest first"),
             new(GettingStarted.Folders, "Click the gear, then Folders", "Search more folders, or leave some out"),
         ];
+        _steps = newSince is { } seen ? all.Where(s => s.Tour > seen).ToArray() : all;
+        _whatsNew = newSince is not null && _steps.Length > 0;
+        if (_steps.Length == 0) _steps = all;
         _stepRects = new Rectangle[_steps.Length];
         Text = "Get started";
-        AccessibleName = $"Rock Preview is ready. Press {hotkey} in any app to open it, and again to hide it.";
+        AccessibleName = _whatsNew
+            ? $"New in Rock Preview: {string.Join(". ", _steps.Select(s => s.Hint is null ? s.Title : $"{s.Title}, {s.Hint}"))}."
+            : $"Rock Preview is ready. Press {hotkey} in any app to open it, and again to hide it.";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
@@ -128,8 +141,11 @@ internal sealed class GetStartedForm : Form
         _iconRect = new Rectangle(pad, y + S(2), S(20), S(20));
         _headingRect = new Rectangle(pad + S(30), y, inner - S(30), S(24));
         y += S(24) + S(16);
-        _keysRect = new Rectangle(pad, y, inner, S(46));
-        y += S(46) + S(12);
+        if (!_whatsNew)
+        {
+            _keysRect = new Rectangle(pad, y, inner, S(46));
+            y += S(46) + S(12);
+        }
         _bodyRect = new Rectangle(pad, y, inner, S(36));
         y += S(36) + S(10);
         _tryRect = new Rectangle(pad, y, inner, S(20));
@@ -154,13 +170,15 @@ internal sealed class GetStartedForm : Form
         g.Clear(BackColor);
         const TextFormatFlags line = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
         if (_icon is not null) g.DrawIcon(_icon, _iconRect);
-        TextRenderer.DrawText(g, AllDone ? "You've got it!" : "Rock Preview is ready", _heading, _headingRect, ExplorerTheme.Text, line);
-        DrawKeys(g);
-        string body = AllDone
-            ? $"{_hotkey} works in every app. You can change it in Settings › Keyboard."
+        string heading = AllDone ? "You've got it!" : _whatsNew ? "New in Rock Preview" : "Rock Preview is ready";
+        TextRenderer.DrawText(g, heading, _heading, _headingRect, ExplorerTheme.Text, line);
+        if (!_whatsNew) DrawKeys(g);
+        string body = _whatsNew
+            ? AllDone ? "Help › Get Started shows this again, with the rest of the tour." : "Rock Preview was updated. Here's how to use what's new."
+            : AllDone ? $"{_hotkey} works in every app. You can change it in Settings › Keyboard."
             : $"Press {_hotkey} in any app to open Rock Preview, and press it again to hide it.";
         TextRenderer.DrawText(g, body, _body, _bodyRect, ExplorerTheme.SecondaryText, TextFormatFlags.NoPadding | TextFormatFlags.WordBreak);
-        TextRenderer.DrawText(g, "Try these", _bold, _tryRect, ExplorerTheme.Text, line);
+        TextRenderer.DrawText(g, _steps.Length == 1 ? "Try this" : "Try these", _bold, _tryRect, ExplorerTheme.Text, line);
         for (int i = 0; i < _steps.Length; i++) DrawStep(g, _stepRects[i], _steps[i], _done.Contains(_steps[i].Kind));
     }
 

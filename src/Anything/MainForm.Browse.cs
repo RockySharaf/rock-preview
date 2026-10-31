@@ -261,31 +261,41 @@ internal sealed partial class MainForm
 
     /// <summary>
     /// The search box's scope chip: "Everything" in blue, or where a search looks ("Downloads", "3 folders"), shown
-    /// while typing too. Clicking it switches between the open folder and everything.
+    /// while typing too. Clicking it switches between that folder and everything (<see cref="SearchScope"/>).
     /// </summary>
     void UpdateSearchPlaceholder()
     {
-        bool fromSelection = false;
-        string? where = _zapActive ? _zapLabel : ScopeLabel(out fromSelection);
-        string? folder = _browsing && _explorer.CurrentPath != null ? _explorer.CurrentDisplayName : null;
-        // Folders selected with nothing typed yet: the selection says where (select none to change it).
-        bool selected = fromSelection && _search.TextLength == 0;
-        string tip = _zapActive ? $"Searching the files in {where}"
-            : selected ? $"Searching only in the selected {where}"
-            : where != null ? $"Searching only in {where}. Click to search everything"
-            : folder != null ? $"Searching everything. Click to search only in {folder}"
-            : "Searching everything";
-        _searchField.SetScope(where ?? "Everything", everything: where == null, clickable: !_zapActive && !selected && (where != null || folder != null), tip);
-        if (_search.TextLength == 0) _search.PlaceholderText = where is null ? "Search everything" : $"Search {where}";
+        var scope = ScopeButton();
+        _searchField.SetScope(scope.Text, scope.Everything, clickable: scope.Click != SearchScope.Click.None, scope.Tip);
+        if (_search.TextLength == 0) _search.PlaceholderText = scope.Everything ? "Search everything" : $"Search {scope.Text}";
     }
 
-    /// <summary>The scope chip was clicked: everything, or back to the open folder.</summary>
+    /// <summary>The scope chip as it is now: what it says and what clicking it does.</summary>
+    SearchScope.Button ScopeButton()
+    {
+        var selected = ScopeSelection();
+        string? folder = _browsing && _explorer.CurrentPath is { Length: > 0 } ? _explorer.CurrentDisplayName : null;
+        return SearchScope.Describe(_tab.SearchEverywhere, selected.Count > 0 ? ZapLabel(selected) : null, folder, _zapActive ? _zapLabel : null);
+    }
+
+    /// <summary>
+    /// The scope chip was clicked: from a folder (the open one, the selected ones, or every file in one) to everything,
+    /// and from everything back to the folder. It always switches, so it asks <see cref="ScopeButton"/> afresh rather
+    /// than trusting what the chip last showed.
+    /// </summary>
     void ToggleSearchScope()
     {
-        if (_zapActive) return;
-        bool everywhere = ScopeLabel() == null;
-        if (everywhere && !(_browsing && _explorer.CurrentPath != null)) return;
-        SetScope(selection: false, openFolder: everywhere);
+        var click = ScopeButton().Click;
+        if (click == SearchScope.Click.None) return;
+        if (_zapActive)
+        {
+            // Everything leaves "every file in", keeping what's typed, and its thumbnails if the files showed as them.
+            bool thumbs = _zapThumbs && _search.TextLength > 0 && !(_app.Settings.ThumbnailSize > 0);
+            ExitZap(rerun: false);
+            if (thumbs) SetViewMode(_lastThumbSize);
+        }
+        SetScope(selection: false, openFolder: click == SearchScope.Click.ToFolder);
+        _app.Tried(GettingStarted.Everything);
         if (_search.TextLength == 0 && ExplorerShown) _explorer.FocusView(); else _search.Focus();
     }
 
@@ -294,8 +304,8 @@ internal sealed partial class MainForm
 
     /// <summary>
     /// A search typed while folders are selected in the view looks only inside them ("Search images"); with none
-    /// selected it looks everywhere (or in the open folder, if Search options says so). The selection is taken
-    /// when the first letter is typed, since the view is hidden while results show.
+    /// selected it looks in the open folder. Either way, unless the tab looks everywhere. The selection is taken when
+    /// the first letter is typed, since the view is hidden while results show.
     /// </summary>
     void UpdateSearchScope()
     {
@@ -307,9 +317,15 @@ internal sealed partial class MainForm
         else if (_explorer.Visible && !_zapActive && _search.Focused)
         {
             _selScope = SelectedFolders();
-            _useSelScope = _selScope.Count > 0;
+            _useSelScope = _selScope.Count > 0 && !_tab.SearchEverywhere;
         }
     }
+
+    /// <summary>
+    /// The selected folders a search looks inside, or would with nothing typed yet (the selection in the view), whether
+    /// or not the tab looks everywhere instead: the chip goes back to them from "Everything".
+    /// </summary>
+    List<string> ScopeSelection() => _search.TextLength == 0 ? (ExplorerShown ? SelectedFolders() : []) : _useSelScope ? _selScope : [];
 
     /// <summary>
     /// The folders selected in the Explorer view when only folders are, at most <see cref="MaxScopeFolders"/>; none when
@@ -325,26 +341,17 @@ internal sealed partial class MainForm
 
     const int MaxScopeFolders = 64;
 
-    /// <summary>Where a search looks, for the search box and status bar ("images", "3 folders"); null = everywhere.</summary>
-    string? ScopeLabel() => ScopeLabel(out _);
-
-    string? ScopeLabel(out bool selection)
-    {
-        var folders = _search.TextLength == 0 ? (ExplorerShown ? SelectedFolders() : []) : _useSelScope ? _selScope : [];
-        selection = folders.Count > 0;
-        if (selection) return ZapLabel(folders);
-        if (SearchFolder != null) return _explorer.CurrentDisplayName;
-        return null;
-    }
+    /// <summary>Where a search looks, for the status bar ("images", "3 folders"); null = everywhere.</summary>
+    string? ScopeLabel() => ScopeButton() is { Everything: false } scope ? scope.Text : null;
 
     /// <summary>
     /// Search options and the scope chip: inside the selected folders, inside the open folder, or everywhere (for this
-    /// tab, until it opens another folder).
+    /// tab, until it opens another folder; the selection doesn't count then either).
     /// </summary>
     void SetScope(bool selection, bool openFolder)
     {
         _useSelScope = selection && _selScope.Count > 0;
-        _tab.SearchEverywhere = !openFolder;
+        _tab.SearchEverywhere = !openFolder && !_useSelScope;
         UpdateSearchPlaceholder();
         RunSearch(SearchReason.NewQuery);
         QueueStatusUpdate();
@@ -417,7 +424,7 @@ internal sealed partial class MainForm
         var items = _cmdSearchOptions.DropDownItems;
         items.Clear();
         if (_selScope.Count > 0)
-            items.Add(new ToolStripMenuItem($"Search in {ZapLabel(_selScope).Replace("&", "&&")}", null, (_, _) => SetScope(selection: true, openFolder: !_tab.SearchEverywhere)) { Checked = _useSelScope });
+            items.Add(new ToolStripMenuItem($"Search in {ZapLabel(_selScope).Replace("&", "&&")}", null, (_, _) => SetScope(selection: true, openFolder: true)) { Checked = _useSelScope });
         bool canScope = _browsing && _explorer.CurrentPath != null;
         string here = _explorer.CurrentDisplayName ?? "this folder";
         items.Add(new ToolStripMenuItem($"Search in {here.Replace("&", "&&")}", null, (_, _) => SetScope(selection: false, openFolder: true)) { Checked = !_useSelScope && SearchFolder != null, Enabled = canScope });

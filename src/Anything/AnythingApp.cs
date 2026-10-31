@@ -253,7 +253,6 @@ internal sealed partial class AnythingApp : ApplicationContext
         if (cmd.Search is not null) w.SetSearch(cmd.Search);
         ShowWindow(w);
         if (cmd.Path is not null) w.BrowseTo(cmd.Path);
-        ShowWelcomeOnce();
     }
 
     /// <summary>The window used last among those on screen (a window closed into the background doesn't count).</summary>
@@ -285,6 +284,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         Native.SetForegroundWindow(w.Handle);
         w.FocusSearch(selectAll: true);
         _lastActive = w;
+        ShowWelcomeOnce();
     }
 
     /// <summary>The last window, in front with its search box focused; <paramref name="everything"/> (Alt+X) = ready to search everything.</summary>
@@ -493,22 +493,38 @@ internal sealed partial class AnythingApp : ApplicationContext
 
     /// <summary>
     /// Once per user, the first time a window opens (normally right after setup): the getting-started window in the
-    /// corner of the screen.
+    /// corner of the screen. After an update whose tour has new steps, the first window to open shows those, however it
+    /// opens (the hotkey, a folder, the tray), so updating never skips them.
     /// </summary>
     void ShowWelcomeOnce()
     {
-        if (IsDemo || Settings.WelcomeShown || _welcome is not null || ActiveHotkey is null) return;
-        Settings.WelcomeShown = true;
-        Settings.Save();
-        Post(ShowGetStarted);
+        if (IsDemo || _welcome is not null) return;
+        if (!Settings.WelcomeShown)
+        {
+            if (ActiveHotkey is null) return;
+            Settings.WelcomeShown = true;
+            Settings.TourSeen = GetStartedForm.TourVersion;
+            Settings.Save();
+            Post(ShowGetStarted);
+        }
+        else if (Settings.TourSeen < GetStartedForm.TourVersion)
+        {
+            int seen = Settings.TourSeen;
+            Settings.TourSeen = GetStartedForm.TourVersion;
+            Settings.Save();
+            Post(() => ShowTour(newSince: seen));
+        }
     }
 
     /// <summary>The getting-started window (Help › Get Started, Settings › About).</summary>
-    public void ShowGetStarted()
+    public void ShowGetStarted() => ShowTour(newSince: null);
+
+    /// <summary>The whole tour, or (after an update) only the steps newer than <paramref name="newSince"/>.</summary>
+    void ShowTour(int? newSince)
     {
         if (_exiting) return;
         if (_welcome is { IsDisposed: false }) return;
-        _welcome = new GetStartedForm(this, ActiveHotkey ?? (Settings.Hotkey.Length > 0 ? Settings.Hotkey : "the hotkey"));
+        _welcome = new GetStartedForm(this, ActiveHotkey ?? (Settings.Hotkey.Length > 0 ? Settings.Hotkey : "the hotkey"), newSince);
         _welcome.FormClosed += (_, _) => _welcome = null;
         _welcome.ShowNear(_lastActive);
     }

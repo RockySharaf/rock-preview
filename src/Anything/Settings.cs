@@ -134,6 +134,11 @@ internal sealed partial class AppSettings
     public const string DefaultHotkey = "Alt+X";
     /// <summary>The window that shows the hotkey and asks to try it was shown (once per user, after installing).</summary>
     public bool WelcomeShown { get; set; }
+    /// <summary>
+    /// The getting-started tour (<see cref="GetStartedForm.TourVersion"/>) last shown: after an update with a newer one,
+    /// its new steps show once. 0 = the first tour, from before it had a version.
+    /// </summary>
+    public int TourSeen { get; set; }
     /// <summary>Count the files opened from the results (Run Count, Date Run), kept in "Run History.csv" like Everything's.</summary>
     public bool RunHistoryEnabled { get; set; } = true;
 
@@ -242,6 +247,7 @@ internal sealed partial class AppSettings
         string hotkey = Str("hotkey", "").Trim();
         s.Hotkey = hotkey.Equals("none", StringComparison.OrdinalIgnoreCase) ? "" : hotkey.Length == 0 ? DefaultHotkey : hotkey;
         s.WelcomeShown = Bool("welcome_shown", false);
+        s.TourSeen = Math.Max(0, Int("tour_seen", 0));
         s.RunHistoryEnabled = Bool("run_history_enabled", true);
         s.CheckForUpdates = Bool("check_for_updates", true);
         s.LastUpdateCheck = DateTime.TryParse(Str("last_update_check", ""), CultureInfo.InvariantCulture,
@@ -347,6 +353,7 @@ internal sealed partial class AppSettings
         B("open_folders_in_tabs", OpenFoldersInTabs);
         W("hotkey", Hotkey.Length == 0 ? "none" : Hotkey);
         B("welcome_shown", WelcomeShown);
+        W("tour_seen", TourSeen);
         B("run_history_enabled", RunHistoryEnabled);
         B("check_for_updates", CheckForUpdates);
         if (LastUpdateCheck != default) W("last_update_check", LastUpdateCheck.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));

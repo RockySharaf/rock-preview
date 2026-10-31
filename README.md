@@ -59,8 +59,10 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
 - Also search any folder, including `\\server\share`, even inside a drive or folder you leave out.
   **Settings › Indexing** shows every drive with how many items it holds.
 - Results update as you type. The start of the search box says where they come from: **Everything** in blue, or the
-  folder you opened ("Downloads"). Opening a folder searches inside it; `Alt+X` always searches everything; click the
-  box's **Everything** / folder label to switch. Select folders first to search only inside them ("images").
+  folder you opened ("Downloads"). Opening a folder searches inside it; `Alt+X` always searches everything. Click the
+  folder's name at the start of the box to search everything instead, and **Everything** to go back; it always
+  switches, also while folders are selected (it then shows their name) or every file in a folder shows. Select
+  folders first to search only inside them ("images"). Everything stays chosen until you open another folder.
 - **Search options**, on the command bar while you search, sets where to look, the kind of file (Audio, Compressed,
   Document, Executable, Folder, Picture, Video) and how words match (case, whole word, path, diacritics, regex). While a
   kind is chosen the button shows it ("Video", with its icon) and splits in two, like Windows' split buttons: the
@@ -230,8 +232,9 @@ Rock Preview doesn't patch File Explorer to change that.
    shortcut, *Start with Windows* (so `Alt+X` opens Rock Preview at any time), *Use it instead of Windows File
    Explorer* and new-version notices are all on by default; untick any you don't want. When setup finishes, a small
    window in the corner gives a short tour, ticking off each step as you try it: `Alt+X` to hide Rock Preview
-   and bring it back, Thumbnails, subfolders, Sort, and choosing which folders to search. **Help › Get Started** shows
-   it again.
+   and bring it back, clicking a folder's name in the search box to search everything, Thumbnails, subfolders, Sort,
+   and choosing which folders to search. **Help › Get Started** shows it again. After an update that adds a step, the
+   same window shows the new steps once ("New in Rock Preview"), so updating doesn't skip them.
    Setup also asks whether to **search inside files**: names only (the default), also inside documents, or also
    pictures' details, each with its size and first-pass time worked out from your folders. Change it, or add drives
    and network folders, any time in **Settings › Indexing**; the app offers it once if you install without choosing.

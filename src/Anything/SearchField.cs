@@ -17,7 +17,7 @@ internal sealed class SearchField : Control
     /// <summary>The clear (×) button was clicked.</summary>
     public event Action? ClearClicked;
 
-    /// <summary>The scope chip was clicked (only while it can switch).</summary>
+    /// <summary>The scope chip was clicked.</summary>
     public event Action? ScopeClicked;
 
     public SearchField(TextBox box)
@@ -36,7 +36,8 @@ internal sealed class SearchField : Control
         box.LostFocus += (_, _) => ApplyColors();
         box.MouseEnter += (_, _) => SetHover(true);
         box.MouseLeave += (_, _) => SetHover(ClientRectangle.Contains(PointToClient(MousePosition)));
-        _chip.Click += (_, _) => { if (_chip.Clickable) ScopeClicked?.Invoke(); };
+        // The window decides afresh what a click does: what the chip last showed may be a moment old.
+        _chip.Click += (_, _) => ScopeClicked?.Invoke();
         Controls.Add(_chip);
         ApplyColors();
     }
@@ -186,6 +187,8 @@ internal sealed class ScopeChip : Control
     {
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         SetStyle(ControlStyles.Selectable, false);
+        // Every click switches: a second one soon after the first would otherwise be a double-click, and no Click.
+        SetStyle(ControlStyles.StandardDoubleClick, false);
         TabStop = false;
         AccessibleRole = AccessibleRole.PushButton;
     }

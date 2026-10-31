@@ -97,8 +97,8 @@ internal sealed partial class MainForm
         public List<string> SelScope = [];
         public bool UseSelScope;
         /// <summary>
-        /// Searches look everywhere though a folder is open (Alt+X, or the scope chip), until another folder is opened;
-        /// otherwise they look inside the open folder.
+        /// Searches look everywhere though a folder is open or folders are selected (Alt+X, the scope chip, Search
+        /// options), until another folder is opened; otherwise they look inside the selected folders or the open one.
         /// </summary>
         public bool SearchEverywhere;
         /// <summary>The tab has opened a folder already: the next one opened scopes searches to it.</summary>

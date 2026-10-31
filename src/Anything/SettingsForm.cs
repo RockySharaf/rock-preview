@@ -654,7 +654,7 @@ internal sealed partial class SettingsForm : Form
         return Page("About",
             Card("Rock Preview", $"Version {current}. Free software under the GNU GPL v3."),
             Card("Updates", "See if a newer version is out.", CardButton("Check for updates", () => _app.CheckForUpdatesInteractive(this))),
-            Card("Get started", "The short tour: Alt+X, Thumbnails, subfolders, sorting and choosing folders.", CardButton("Show", () => { Close(); _app.ShowGetStarted(); })),
+            Card("Get started", "The short tour: Alt+X, searching everything from a folder, Thumbnails, subfolders, sorting and choosing folders.", CardButton("Show", () => { Close(); _app.ShowGetStarted(); })),
             Card("Source code and releases", "github.com/RockySharaf/rock-preview", CardButton("Open", () => AnythingApp.OpenWebPage("https://github.com/" + Anything.Core.UpdateCheck.Repository))),
             UninstallCard());
     }
