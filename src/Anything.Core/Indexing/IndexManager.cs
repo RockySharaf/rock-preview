@@ -77,6 +77,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
     public IndexState State => _state;
     public bool IsElevated { get; }
     public bool UsesService => _usesService;
+    public bool ScansInsteadOfReading => _fallbackMode;
     public event Action? StateChanged;
     public event Action? DrivesChanged;
     public IReadOnlyList<DriveEntry> PlannedDrives => _plannedDrives;

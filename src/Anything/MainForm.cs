@@ -863,7 +863,10 @@ internal sealed partial class MainForm : Form
     void UpdateInfoBar()
     {
         bool outdated = _app.OutdatedService is not null;
-        bool off = !_app.IndexManager.IsElevated && !_app.IndexManager.UsesService && _app.Settings.Index.IndexNtfsVolumes;
+        // Only a fixed NTFS drive actually scanned instead: with every local NTFS drive left out (or only network, FAT and
+        // exFAT drives) there is nothing for the service to read, and turning it on again changed nothing: the bar came
+        // straight back (found on a shop PC whose C: was left out).
+        bool off = _app.IndexManager.ScansInsteadOfReading;
         bool show = !_infoDismissed && !_app.IsDemo && (outdated || off); // the demo index isn't real indexing
         if (show)
         {

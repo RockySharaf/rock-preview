@@ -159,6 +159,12 @@ public interface IIndexManager : IDisposable
     bool IsElevated { get; }
     /// <summary>NTFS volumes are read through the Rock Preview service (instant indexing without administrator).</summary>
     bool UsesService { get; }
+    /// <summary>
+    /// A fixed NTFS drive is scanned folder by folder because neither the service nor administrator rights could read it:
+    /// what the "turn on instant indexing" bar is about. False when no drive needs the service (all left out, or only
+    /// network, FAT and exFAT drives), though <see cref="UsesService"/> is false then too.
+    /// </summary>
+    bool ScansInsteadOfReading => false;
 
     /// <summary>Loads the database (if present) then starts background (re)indexing and change monitoring. Returns immediately.</summary>
     void Start(IndexSettings settings);

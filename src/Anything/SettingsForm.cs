@@ -367,6 +367,7 @@ internal sealed partial class SettingsForm : Form
         string status = index.UsesService && outdated ? "On, through an older version of the Rock Preview Service. Update it to this one for its fixes; Windows asks for permission once."
             : index.UsesService ? "On: the Rock Preview Service reads your drives, so every change shows up at once."
             : index.IsElevated ? "On, because Rock Preview runs as administrator."
+            : service && !index.ScansInsteadOfReading ? "Ready: the Rock Preview Service is installed. None of the drives searched now is one it reads (a local NTFS drive); network, FAT32 and exFAT drives are scanned."
             : service && outdated ? "The Rock Preview Service isn't answering. Updating it usually brings it back; Windows asks for permission once."
             : service ? "The Rock Preview Service isn't answering. Restarting the PC usually brings it back."
             : "Off: folders are scanned instead, which is slower. Windows asks for permission once to turn it on.";

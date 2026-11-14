@@ -25,11 +25,11 @@ internal static class IndexService
     const string VersionValue = "Version";
 
     /// <summary>
-    /// The service's own code, recorded with it: bumped when the service itself changes. 2: frees memory after a scan.
-    /// 3: the new name in Windows' Services list. 4: reads USB drives formatted NTFS too, lets go of a drive when asked
-    /// (so it can be safely removed at once) and never waits on a busy change journal. 5: sends each file's date accessed
-    /// too (protocol 2; older apps still get protocol 1). Every release also replaces an older service program
-    /// (<see cref="NeedsUpdate"/>), so its name and description follow the app's.
+    /// The service's own code, recorded with it: bumped when the service itself changes, and only then is it replaced
+    /// (<see cref="NeedsUpdate"/>), which takes administrator. 2: frees memory after a scan. 3: the new name in Windows'
+    /// Services list. 4: reads USB drives formatted NTFS too, lets go of a drive when asked (so it can be safely removed
+    /// at once) and never waits on a busy change journal. 5: sends each file's date accessed too (protocol 2; older apps
+    /// still get protocol 1).
     /// </summary>
     public const int ServiceVersion = 5;
 
@@ -77,12 +77,11 @@ internal static class IndexService
     }
 
     /// <summary>
-    /// Installed, and older than this copy of Rock Preview: its service code (<see cref="ServiceVersion"/>), or its program.
-    /// Every release replaces the service's program too (Windows asks for permission once), so the service is always the
-    /// version the app is: its fixes, and its name and description in Windows' Services list.
+    /// Installed, with older service code than this copy of Rock Preview's (<see cref="ServiceVersion"/>). Only then is it
+    /// replaced, which takes administrator: replacing it on every release (its program's version) had Windows ask for
+    /// permission at every update, though the service itself hadn't changed.
     /// </summary>
-    public static bool NeedsUpdate() => InstalledVersion() is > 0 and var v
-        && (v < ServiceVersion || InstalledProgramVersion() is { } program && program < AnythingApp.CurrentVersion);
+    public static bool NeedsUpdate() => InstalledVersion() is > 0 and var v && v < ServiceVersion;
 
     // ---- install / uninstall (administrator) ---------------------------------------------------
 
