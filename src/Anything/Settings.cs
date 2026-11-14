@@ -62,6 +62,8 @@ internal sealed partial class AppSettings
     public bool ExpandTreeToFolder { get; set; }
     /// <summary>A USB drive plugged in: Rock Preview asks to open it, in place of Windows' AutoPlay.</summary>
     public bool UsbPrompt { get; set; } = true;
+    /// <summary>Quick access is folded away under its header in the navigation pane.</summary>
+    public bool NavPinnedCollapsed { get; set; }
     /// <summary>The defaults now, to tell what Settings changed.</summary>
     internal SearchDefaults Defaults => new(Sort, SortDescending, FoldersFirst, MatchCase, MatchWholeWord, MatchPath, MatchDiacritics, Regex);
     public bool MatchPath { get; set; }
@@ -223,6 +225,7 @@ internal sealed partial class AppSettings
         s.FoldersFirst = Bool("folders_first", true);
         s.ExpandTreeToFolder = Bool("expand_tree_to_folder", false);
         s.UsbPrompt = Bool("usb_prompt", true);
+        s.NavPinnedCollapsed = Bool("nav_pinned_collapsed", false);
 
         s.MatchCase = Bool("match_case", false);
         s.MatchWholeWord = Bool("default_match_whole_word", true);
@@ -341,6 +344,7 @@ internal sealed partial class AppSettings
         B("folders_first", FoldersFirst);
         B("expand_tree_to_folder", ExpandTreeToFolder);
         B("usb_prompt", UsbPrompt);
+        B("nav_pinned_collapsed", NavPinnedCollapsed);
         B("match_case", MatchCase);
         B("default_match_whole_word", MatchWholeWord);
         B("match_path", MatchPath);

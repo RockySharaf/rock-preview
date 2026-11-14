@@ -14,6 +14,8 @@ namespace Anything.Explorer;
 /// </summary>
 internal sealed partial class NavigationTree : Control
 {
+    /// <summary>Which of File Explorer's roots a tree shows: all of them, or one of the two parts the pane splits into.</summary>
+    public enum Parts { All, Pinned, Places }
     // Explorer's own pane (window styles read from a live Explorer: 0x5621922D / extended 0x3C15): chevrons always
     // shown (no fade), full-row "Explorer" theme selection, no lines, even row heights, no horizontal scrolling, rich
     // tooltips instead of infotips.
@@ -74,6 +76,29 @@ internal sealed partial class NavigationTree : Control
     /// <summary>Why the shell tree could not be created (null when it works).</summary>
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string? Error { get; private set; }
+
+    /// <summary>
+    /// File Explorer's "Expand to open folder": the tree unfolds down to each folder opened. Off, a folder is highlighted
+    /// only where it already shows (a pinned folder, an open branch), and nothing unfolds or scrolls.
+    /// </summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool ExpandToFolder { get; set; } = true;
+
+    /// <summary>
+    /// The roots shown: all, the pinned part (Home, Gallery, OneDrive and the pinned folders, which stays at the top of
+    /// the pane) or the places (This PC, Network, Linux, which scrolls under it). Set before the tree is created.
+    /// </summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Parts Part { get; init; }
+
+    /// <summary>The tree highlighted a folder it was asked to (another tree in the pane can take its highlight off).</summary>
+    public event Action? Highlighted;
+
+    /// <summary>How tall the rows showing now are, together (a folder opened or closed, the pinned folders loaded).</summary>
+    public event Action? ContentHeightChanged;
+
+    int _contentHeight = -1;
+    bool _measureQueued;
 
     /// <summary>Parsing name of the highlighted folder (null when nothing is selected).</summary>
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -251,18 +276,24 @@ internal sealed partial class NavigationTree : Control
             // level by a hidden, expanded Quick access root | This PC, Network, Linux. On Windows 10 (no Home) Quick
             // access itself is the first root.
             int first = _roots.Count;
-            AddRoot(flags, NSTCROOTSTYLE.VISIBLE, HomeGuid);
-            bool hasHome = _roots.Count > first;
-            if (!hasHome) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, QuickAccessGuid);
-            AddRoot(flags, NSTCROOTSTYLE.VISIBLE, GalleryGuid);
-            AddRoot(flags, NSTCROOTSTYLE.VISIBLE, "shell:OneDrive");
-            _group0 = _roots.Skip(first).Select(r => ShellNative.NameOf(r, SIGDN.NormalDisplay) ?? "").ToArray();
-            if (hasHome) AddRoot(flags, NSTCROOTSTYLE.HIDDEN | NSTCROOTSTYLE.EXPANDED, QuickAccessGuid);
+            if (Part != Parts.Places)
+            {
+                AddRoot(flags, NSTCROOTSTYLE.VISIBLE, HomeGuid);
+                bool hasHome = _roots.Count > first;
+                if (!hasHome) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, QuickAccessGuid);
+                AddRoot(flags, NSTCROOTSTYLE.VISIBLE, GalleryGuid);
+                AddRoot(flags, NSTCROOTSTYLE.VISIBLE, "shell:OneDrive");
+                _group0 = _roots.Skip(first).Select(r => ShellNative.NameOf(r, SIGDN.NormalDisplay) ?? "").ToArray();
+                if (hasHome) AddRoot(flags, NSTCROOTSTYLE.HIDDEN | NSTCROOTSTYLE.EXPANDED, QuickAccessGuid);
+            }
             int afterPinned = _roots.Count;
-            AddRoot(flags, NSTCROOTSTYLE.EXPANDED, ThisPcGuid);
-            AddRoot(flags, NSTCROOTSTYLE.VISIBLE, NetworkGuid);
-            if (HasWslDistros()) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, LinuxGuid, @"\\wsl.localhost");
-            _group2 = _roots.Skip(afterPinned).Select(r => ShellNative.NameOf(r, SIGDN.NormalDisplay) ?? "").ToArray();
+            if (Part != Parts.Pinned)
+            {
+                AddRoot(flags, NSTCROOTSTYLE.EXPANDED, ThisPcGuid);
+                AddRoot(flags, NSTCROOTSTYLE.VISIBLE, NetworkGuid);
+                if (HasWslDistros()) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, LinuxGuid, @"\\wsl.localhost");
+                _group2 = _roots.Skip(afterPinned).Select(r => ShellNative.NameOf(r, SIGDN.NormalDisplay) ?? "").ToArray();
+            }
         }
         finally { _suppress--; }
         _current = TreeSelectionName();
@@ -372,6 +403,15 @@ internal sealed partial class NavigationTree : Control
         _suppress++;
         try
         {
+            if (!ExpandToFolder)
+            {
+                if (Showing(tree, item) && TrySelect(tree, item, scroll: false)) { CancelPending(); return true; }
+                // Not showing: nothing is highlighted rather than the last folder. A few more tries while the pinned
+                // folders load at start-up, and then it stays so.
+                ClearSelection(tree);
+                if (_pendingAttempts >= 5) { CancelPending(); return true; }
+                return false;
+            }
             if (TrySelect(tree, item)) { CancelPending(); return true; }
             if (_pendingChain == null || _pendingChain.Count == 0) { CancelPending(); return true; } // not under any root
             foreach (var ancestor in _pendingChain)
@@ -387,7 +427,86 @@ internal sealed partial class NavigationTree : Control
         finally { _suppress--; }
     }
 
-    bool TrySelect(INameSpaceTreeControl tree, IShellItem item)
+    /// <summary>Whether the item is a row on show now (every folder above it open), not merely known to the tree.</summary>
+    static bool Showing(INameSpaceTreeControl tree, IShellItem item)
+    {
+        try { return tree.GetItemRect(item, out _) == NavTreeNative.S_OK; }
+        catch (COMException) { return false; }
+    }
+
+    /// <summary>Takes the highlight off (another tree in the pane has the folder), and stops looking for one.</summary>
+    public void ClearHighlight()
+    {
+        CancelPending();
+        if (_tree == null || _current == null) return;
+        _suppress++;
+        try { ClearSelection(_tree); }
+        finally { _suppress--; }
+    }
+
+    /// <summary>
+    /// The rows showing now, top to bottom, with the tree's padding: the height that shows them all without scrolling.
+    /// </summary>
+    public int ContentHeight => _contentHeight < 0 ? Measure() : _contentHeight;
+
+    int Measure()
+    {
+        if (_hwndFocus == IntPtr.Zero) return 0;
+        const int TVM_GETITEMRECT = 0x1104, TVGN_ROOT = 0, TVGN_NEXTVISIBLE = 6;
+        int total = 0;
+        IntPtr rect = Marshal.AllocHGlobal(16);
+        try
+        {
+            for (IntPtr item = SendMessage(_hwndFocus, TVM_GETNEXTITEM, (IntPtr)TVGN_ROOT, IntPtr.Zero); item != IntPtr.Zero;
+                 item = SendMessage(_hwndFocus, TVM_GETNEXTITEM, (IntPtr)TVGN_NEXTVISIBLE, item))
+            {
+                Marshal.WriteIntPtr(rect, item);
+                if (SendMessage(_hwndFocus, TVM_GETITEMRECT, IntPtr.Zero, rect) == IntPtr.Zero) continue;
+                total += Marshal.ReadInt32(rect, 12) - Marshal.ReadInt32(rect, 4);
+            }
+        }
+        finally { Marshal.FreeHGlobal(rect); }
+        return total + LogicalToDeviceUnits(8);
+    }
+
+    /// <summary>Rows came or went (inserted, a folder opened or closed): measured once things settle.</summary>
+    void QueueMeasure()
+    {
+        if (_measureQueued || !IsHandleCreated || ContentHeightChanged == null) return;
+        _measureQueued = true;
+        BeginInvoke(() =>
+        {
+            _measureQueued = false;
+            int h = Measure();
+            if (h == _contentHeight) return;
+            _contentHeight = h;
+            ContentHeightChanged?.Invoke();
+        });
+    }
+
+    /// <summary>Takes the highlight off whatever has it.</summary>
+    void ClearSelection(INameSpaceTreeControl tree)
+    {
+        try
+        {
+            if (tree.GetSelectedItems(out var items) != NavTreeNative.S_OK || items == null) return;
+            try
+            {
+                if (items.GetCount(out uint n) != NavTreeNative.S_OK) return;
+                for (uint i = 0; i < n; i++)
+                {
+                    if (items.GetItemAt(i, out var selected) != NavTreeNative.S_OK || selected == null) continue;
+                    try { tree.SetItemState(selected, NSTCITEMSTATE.SELECTED, 0); }
+                    finally { Marshal.ReleaseComObject(selected); }
+                }
+            }
+            finally { Marshal.ReleaseComObject(items); }
+        }
+        catch (COMException) { }
+        _current = null;
+    }
+
+    bool TrySelect(INameSpaceTreeControl tree, IShellItem item, bool scroll = true)
     {
         // Only succeed when the item really is in the tree (SetItemState on an unknown item fails).
         if (tree.GetItemState(item, NSTCITEMSTATE.SELECTED, out _) != NavTreeNative.S_OK) return false;
@@ -399,7 +518,8 @@ internal sealed partial class NavigationTree : Control
             _scrolledOnce = true;
             SendMessage(_hwndFocus, 0x115 /* WM_VSCROLL */, (IntPtr)6 /* SB_TOP */, IntPtr.Zero);
         }
-        tree.EnsureItemVisible(item);
+        if (scroll) tree.EnsureItemVisible(item);
+        Highlighted?.Invoke();
         // OnSelectionChanged arrives later (posted), so _suppress can't cover it: remember what the tree now
         // reports as selected and ignore the notification that matches it.
         _current = TreeSelectionName() ?? ParsingName(item) ?? _current;
@@ -814,6 +934,7 @@ internal sealed partial class NavigationTree : Control
         _groupFirst.Clear();
         _groupFirst.UnionWith(names);
         if (changed) InvalidateRect(_hwndFocus, IntPtr.Zero, true);
+        QueueMeasure();
     }
 
     (string Name, bool Flat) ReadRow(IntPtr item, IntPtr text)
@@ -902,7 +1023,10 @@ internal sealed partial class NavigationTree : Control
                 m.Result = IntPtr.Zero;
                 return;
             }
+            bool expanded = m.Msg == WM_NOTIFY && m.LParam != IntPtr.Zero && Marshal.ReadIntPtr(m.LParam) == host._hwndFocus
+                && Marshal.ReadInt32(m.LParam, 16) == -455 /* TVN_ITEMEXPANDEDW */;
             base.WndProc(ref m);
+            if (expanded) host.QueueMeasure();
         }
     }
 

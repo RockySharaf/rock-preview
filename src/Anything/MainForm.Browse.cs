@@ -154,7 +154,7 @@ internal sealed partial class MainForm
                 e.Handled = e.SuppressKeyPress = true;
                 string target = _address.Text;
                 _breadcrumb.EndEdit();
-                if (OpenFolder(target)) FocusList();
+                if (OpenAddress(target)) FocusList();
             }
             else if (e.KeyCode == Keys.Escape)
             {
@@ -720,6 +720,50 @@ internal sealed partial class MainForm
             _suppress = true;
             _search.Clear();
             _suppress = false;
+        }
+    }
+
+    /// <summary>
+    /// What was typed in the address bar, as File Explorer takes it: a place opens (a path, "shell:" name, or a folder
+    /// inside the open one); a web address opens in the browser; anything else runs as a command in the open folder
+    /// ("cmd", "powershell", "wt", "notepad notes.txt"). False when it was none of them.
+    /// </summary>
+    bool OpenAddress(string text)
+    {
+        string typed = text.Trim();
+        if (typed.Length == 0) { GoHome(); return true; }
+        string? folder = _browsing ? _explorer.CurrentPath : null;
+        if (AddressCommand.IsWebAddress(typed)) return StartAddress(new AddressCommand.Run(typed, "", folder), typed, quiet: false);
+        string expanded = Environment.ExpandEnvironmentVariables(typed.Trim('"'));
+        // A folder or file in the open folder, by its name ("Reference", "notes.txt"), before one of the same name on
+        // the desktop (the shell takes a bare name as the desktop's).
+        if (folder != null && !Path.IsPathRooted(expanded) && expanded.IndexOfAny(Path.GetInvalidPathChars()) < 0 && !expanded.Contains(':'))
+        {
+            string inside = Path.Combine(folder, expanded);
+            if (Directory.Exists(inside)) return OpenFolder(inside);
+            if (File.Exists(inside)) return StartAddress(new AddressCommand.Run(inside, "", folder), typed, quiet: false);
+        }
+        if (ShellNative.CanParse(expanded) || ShellNative.CanParse(expanded + (expanded.Length == 2 && expanded[1] == ':' ? "\\" : "")))
+            return OpenFolder(typed);
+        return AddressCommand.Parse(typed, folder) is { } run && StartAddress(run, typed, quiet: false);
+    }
+
+    /// <summary>Starts what the address bar was given, as the Run box would (the shell finds "cmd" or "code").</summary>
+    bool StartAddress(AddressCommand.Run run, string typed, bool quiet)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(run.File) { UseShellExecute = true, Arguments = run.Arguments };
+            if (run.WorkingFolder != null) psi.WorkingDirectory = run.WorkingFolder;
+            System.Diagnostics.Process.Start(psi)?.Dispose();
+            SyncAddress();
+            return true;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or FileNotFoundException)
+        {
+            if (!quiet) _statusRight.Text = $"Can't find \"{typed}\": it isn't a folder here or a program Windows knows.";
+            SyncAddress();
+            return false;
         }
     }
 

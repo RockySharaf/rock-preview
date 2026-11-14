@@ -784,6 +784,7 @@ internal sealed partial class MainForm : Form
     {
         var s = _app.Settings;
         foreach (var t in _tabs) t.Explorer.OpenFoldersInPlace = s.UseInsteadOfExplorer; // Windows' "open folder" would start Rock Preview again
+        _tree.ExpandToFolder = _pinTree.ExpandToFolder = s.ExpandTreeToFolder;
         _filter.Visible = s.FiltersVisible;
         _status.Visible = s.StatusBarVisible;
         if (_loaded) ApplyNavPaneVisibility();

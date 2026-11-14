@@ -270,6 +270,20 @@ internal static class ShellNative
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
     public static extern int SHCreateItemFromParsingName(string pszPath, IntPtr pbc, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItem ppv);
 
+    /// <summary>Whether the shell knows <paramref name="location"/> as a place (a path, "shell:Downloads", "::{...}").</summary>
+    public static bool CanParse(string location)
+    {
+        if (string.IsNullOrWhiteSpace(location)) return false;
+        var iid = IID_IShellItem;
+        try
+        {
+            if (SHCreateItemFromParsingName(location, IntPtr.Zero, ref iid, out var item) != S_OK || item == null) return false;
+            Marshal.ReleaseComObject(item);
+            return true;
+        }
+        catch (Exception e) when (e is COMException or InvalidCastException) { return false; }
+    }
+
     [DllImport("shell32.dll", PreserveSig = true)]
     public static extern int SHCreateItemFromIDList(IntPtr pidl, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItem ppv);
 
