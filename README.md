@@ -133,7 +133,9 @@ documents; the first pass takes about 2 minutes in the background"):
   inside files; **Match Case** and **Match Diacritics** apply inside files too, while with **Match Path** or **Regex** on
   search words match names only (the status bar says NAMES ONLY). `content:` searches only inside files. The
   **Matching text** column (hide it from the column header's
-  menu) shows the matching line, with the page, slide, sheet or line it is on; the tooltip shows all of it.
+  menu) shows the matching line, with the page, slide, sheet or line it is on; the tooltip shows all of it. Scrolled
+  past the line to the files matched only inside, it moves right after Name, then the location and size; back above
+  the line, the columns are as you set them.
 - The preview opens at the match: text files scroll to the line with the words highlighted, Word and PowerPoint files
   show their text highlighted (**Show original** brings back their own preview), workbooks open the sheet, PDFs open
   the page, and pictures say which field matched.
@@ -148,8 +150,12 @@ documents; the first pass takes about 2 minutes in the background"):
   Y GB", locked BitLocker drives with their lock. Other folders open in Details; **View** switches either.
 - The real shell **New** menu, the Windows **Share** sheet, Properties, Select all / none / invert.
 - The navigation pane keeps **Quick access** (Home, Gallery, your pinned folders) at the top while This PC and the
-  drives scroll below it; its header folds it away. Opening a folder doesn't unfold the tree down to it (File
-  Explorer's *Expand to open folder*, in **Settings › Defaults**).
+  drives scroll below it; its header folds it away, and the line under it drags to make it taller or shorter (each
+  part scrolls on its own). It shows only the folders you pinned, not the ones Windows adds as frequent. Right-click
+  Home, Gallery, OneDrive, Network or Linux to take it out; **Settings › Defaults** brings it back. Opening a folder
+  doesn't unfold the tree down to it (File Explorer's *Expand to open folder*, in **Settings › Defaults**).
+- Right-click the taskbar button for the 15 folders and files you opened lately, the newest at the bottom.
+- Close the last tab and the next time Rock Preview opens (`Alt+X`, the tray) it starts at This PC, its drives showing.
 - The address bar runs what isn't a place in the open folder, as File Explorer's does: `cmd`, `powershell`, `wt`,
   `notepad notes.txt`; a web address opens in the browser.
 - Right-click a file: **Open**, then **Open file location** (in search results), then **Open with**.
@@ -301,6 +307,11 @@ opens again a few seconds later, with your settings, index, bookmarks and choice
 Explorer's place, instant indexing, search inside files) as they were. If it can't, it says why and the version you had
 opens again. The portable copy links to the release page instead. **Help › Check for Updates** checks right away. Turn the
 daily check off in Setup or **Settings › General**.
+
+With **Update automatically** on (**Settings › General**, on unless you turn it off), a new version installs by itself
+while Rock Preview is closed to the background, and comes back there; nothing to click. Where Windows would have to ask
+for permission (installed for everyone, or run as administrator) the bar offers **Update now** instead. Turning on instant
+indexing asks Windows for permission once: updates don't ask again unless the service itself changes.
 
 ## Keyboard shortcuts
 
