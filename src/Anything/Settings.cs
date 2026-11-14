@@ -64,6 +64,12 @@ internal sealed partial class AppSettings
     public bool UsbPrompt { get; set; } = true;
     /// <summary>Quick access is folded away under its header in the navigation pane.</summary>
     public bool NavPinnedCollapsed { get; set; }
+    /// <summary>Quick access's height in the pane (96-DPI pixels) as the user dragged it; 0 = as tall as its folders, up to half.</summary>
+    public int NavPinnedHeight { get; set; }
+    /// <summary>Quick access shows only pinned folders, not the frequent ones Windows adds.</summary>
+    public bool NavPinnedOnly { get; set; } = true;
+    /// <summary>Roots taken out of the navigation pane (home, gallery, onedrive, network, linux).</summary>
+    public List<string> NavHiddenRoots { get; set; } = [];
     /// <summary>The defaults now, to tell what Settings changed.</summary>
     internal SearchDefaults Defaults => new(Sort, SortDescending, FoldersFirst, MatchCase, MatchWholeWord, MatchPath, MatchDiacritics, Regex);
     public bool MatchPath { get; set; }
@@ -230,6 +236,9 @@ internal sealed partial class AppSettings
         s.ExpandTreeToFolder = Bool("expand_tree_to_folder", false);
         s.UsbPrompt = Bool("usb_prompt", true);
         s.NavPinnedCollapsed = Bool("nav_pinned_collapsed", false);
+        s.NavPinnedHeight = Math.Clamp(Int("nav_pinned_height", 0), 0, 4000);
+        s.NavPinnedOnly = Bool("nav_pinned_only", true);
+        s.NavHiddenRoots = List("nav_hidden_roots", []);
 
         s.MatchCase = Bool("match_case", false);
         s.MatchWholeWord = Bool("default_match_whole_word", true);
@@ -352,6 +361,9 @@ internal sealed partial class AppSettings
         B("expand_tree_to_folder", ExpandTreeToFolder);
         B("usb_prompt", UsbPrompt);
         B("nav_pinned_collapsed", NavPinnedCollapsed);
+        W("nav_pinned_height", NavPinnedHeight);
+        B("nav_pinned_only", NavPinnedOnly);
+        W("nav_hidden_roots", string.Join('|', NavHiddenRoots));
         B("match_case", MatchCase);
         B("default_match_whole_word", MatchWholeWord);
         B("match_path", MatchPath);

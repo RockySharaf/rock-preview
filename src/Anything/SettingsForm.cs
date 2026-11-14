@@ -30,7 +30,8 @@ internal sealed partial class SettingsForm : Form
     readonly ComboBox _defaultSort = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ToggleSwitch _foldersFirst = new();
     readonly ToggleSwitch _matchCase = new(), _wholeWord = new(), _matchPath = new(), _diacritics = new(), _regex = new();
-    readonly ToggleSwitch _expandTree = new(), _hiddenFiles = new(), _usbPrompt = new();
+    readonly ToggleSwitch _expandTree = new(), _hiddenFiles = new(), _usbPrompt = new(), _frequentFolders = new();
+    readonly List<(string Key, ToggleSwitch Switch)> _navRoots = [];
     // Thumbnails
     readonly ToggleSwitch _everydayOnly = new();
     readonly List<(EverydayFiles.Kind Kind, ToggleSwitch Switch)> _everydayKinds = [];
@@ -299,7 +300,8 @@ internal sealed partial class SettingsForm : Form
         _defaultSort.Width = S(240);
         _defaultSort.AccessibleName = "Sort results by";
         foreach (var c in SortChoices) _defaultSort.Items.Add(c);
-        return Page("Defaults",
+        Control[] cards =
+        [
             Header("Search results"),
             Card("Sort by", "How results are ordered when a search starts.", _defaultSort),
             Card("Folders first", "Folders found come before files, each in the order above.", _foldersFirst),
@@ -313,9 +315,26 @@ internal sealed partial class SettingsForm : Form
             Card("Expand the folder tree to the open folder",
                 "Off, the tree on the left stays as you leave it: opening Desktop doesn't unfold This PC down to it.", _expandTree),
             Card("Show hidden files and folders", "The same setting as File Explorer's View › Show › Hidden items.", _hiddenFiles),
+            Header("Navigation pane"),
+            Card("Folders Windows adds to Quick access",
+                "Off, Quick access shows only the folders you pinned. Right-click a pinned folder to unpin it.", _frequentFolders),
+            .. NavRootCards(),
             Header("USB drives"),
             Card("Ask to open a USB drive when it's plugged in",
-                "Rock Preview asks, with one click to open it, instead of Windows' own AutoPlay.", _usbPrompt));
+                "Rock Preview asks, with one click to open it, instead of Windows' own AutoPlay.", _usbPrompt),
+        ];
+        return Page("Defaults", cards);
+    }
+
+    /// <summary>A switch for each place the pane can show (also taken out with a right-click on it there).</summary>
+    IEnumerable<Control> NavRootCards()
+    {
+        foreach (var (key, name) in Anything.Explorer.NavigationTree.RemovableRoots)
+        {
+            var sw = new ToggleSwitch();
+            _navRoots.Add((key, sw));
+            yield return Card($"Show {name}", key == "linux" ? "Shown when WSL has Linux installed." : $"{name} in the navigation pane. Right-click it there to take it out.", sw);
+        }
     }
 
     /// <summary>The orders Settings › Defaults offers.</summary>
@@ -799,6 +818,8 @@ internal sealed partial class SettingsForm : Form
         _expandTree.Checked = s.ExpandTreeToFolder;
         _hiddenFiles.Checked = ExplorerOptions.ShowHidden;
         _usbPrompt.Checked = s.UsbPrompt;
+        _frequentFolders.Checked = !s.NavPinnedOnly;
+        foreach (var (rootKey, sw) in _navRoots) sw.Checked = !s.NavHiddenRoots.Contains(rootKey, StringComparer.OrdinalIgnoreCase);
         _matchCase.Checked = s.MatchCase;
         _wholeWord.Checked = s.MatchWholeWord;
         _matchPath.Checked = s.MatchPath;
@@ -831,6 +852,7 @@ internal sealed partial class SettingsForm : Form
                                    _foldersFirst, _matchCase, _wholeWord, _matchPath, _diacritics, _regex, _expandTree, _usbPrompt })
             sw.CheckedChanged += (_, _) => GeneralChanged();
         _defaultSort.SelectedIndexChanged += (_, _) => GeneralChanged();
+        foreach (var sw in _navRoots.Select(r => r.Switch).Append(_frequentFolders)) sw.CheckedChanged += (_, _) => NavPaneChanged();
         _hiddenFiles.CheckedChanged += (_, _) =>
         {
             if (_loading) return;
@@ -933,6 +955,17 @@ internal sealed partial class SettingsForm : Form
         s.UsbPrompt = _usbPrompt.Checked;
         _app.ApplySettings(indexChanged: false);
         if (s.Defaults != before) foreach (var w in _app.Windows) w.OnDefaultsChanged(before, s.Defaults);
+    }
+
+    /// <summary>The navigation pane's places or Quick access's frequent folders: saved, and every window's pane shows it.</summary>
+    void NavPaneChanged()
+    {
+        if (_loading) return;
+        var s = _app.Settings;
+        s.NavPinnedOnly = !_frequentFolders.Checked;
+        s.NavHiddenRoots = _navRoots.Where(r => !r.Switch.Checked).Select(r => r.Key).ToList();
+        s.Save();
+        foreach (var w in _app.Windows) w.RefreshNavRoots();
     }
 
     /// <summary>

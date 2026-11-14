@@ -356,7 +356,12 @@ internal sealed partial class MainForm
     {
         int i = _tabs.IndexOf(t);
         if (i < 0) return;
-        if (_tabs.Count == 1) { Close(); return; }
+        if (_tabs.Count == 1)
+        {
+            ClosedToBackground = true; // nothing left open: shown again, it starts at This PC
+            Close();
+            return;
+        }
         if (t == _tab) SelectTab(_tabs[i + 1 < _tabs.Count ? i + 1 : i - 1]);
         _tabs.RemoveAt(i);
         DisposeListing(t);
@@ -366,7 +371,7 @@ internal sealed partial class MainForm
         BeginInvoke(t.Explorer.Dispose); // not from inside one of the view's own callbacks
     }
 
-    /// <summary>Closed into the background (not just hidden by the hotkey): shown again, it starts afresh (<see cref="StartAfresh"/>).</summary>
+    /// <summary>Its last tab was closed (not the window's ×, nor the hotkey): shown again, it starts afresh (<see cref="StartAfresh"/>).</summary>
     [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public bool ClosedToBackground { get; set; }
 

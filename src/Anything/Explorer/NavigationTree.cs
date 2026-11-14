@@ -208,6 +208,8 @@ internal sealed partial class NavigationTree : Control
     {
         foreach (var r in _roots) { try { Marshal.ReleaseComObject(r); } catch { } }
         _roots.Clear();
+        _rootKeys.Clear();
+        ReleaseFilter();
     }
 
     void FindTreeWindows()
@@ -275,23 +277,24 @@ internal sealed partial class NavigationTree : Control
             // Windows 11 Explorer: Home, Gallery (and OneDrive) | the pinned and frequent folders, shown at the top
             // level by a hidden, expanded Quick access root | This PC, Network, Linux. On Windows 10 (no Home) Quick
             // access itself is the first root.
+            // Roots the user took out (Remove from navigation pane) are left out; Quick access shows its pinned folders only.
             int first = _roots.Count;
             if (Part != Parts.Places)
             {
-                AddRoot(flags, NSTCROOTSTYLE.VISIBLE, HomeGuid);
-                bool hasHome = _roots.Count > first;
-                if (!hasHome) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, QuickAccessGuid);
-                AddRoot(flags, NSTCROOTSTYLE.VISIBLE, GalleryGuid);
-                AddRoot(flags, NSTCROOTSTYLE.VISIBLE, "shell:OneDrive");
+                bool hasHome = HasRoot(HomeGuid);
+                if (hasHome && !Hidden("home")) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, "home", IntPtr.Zero, HomeGuid);
+                if (!hasHome) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, null, QuickAccessFilter(flags), QuickAccessGuid);
+                if (!Hidden("gallery")) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, "gallery", IntPtr.Zero, GalleryGuid);
+                if (!Hidden("onedrive")) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, "onedrive", IntPtr.Zero, "shell:OneDrive");
                 _group0 = _roots.Skip(first).Select(r => ShellNative.NameOf(r, SIGDN.NormalDisplay) ?? "").ToArray();
-                if (hasHome) AddRoot(flags, NSTCROOTSTYLE.HIDDEN | NSTCROOTSTYLE.EXPANDED, QuickAccessGuid);
+                if (hasHome) AddRoot(flags, NSTCROOTSTYLE.HIDDEN | NSTCROOTSTYLE.EXPANDED, null, QuickAccessFilter(flags), QuickAccessGuid);
             }
             int afterPinned = _roots.Count;
             if (Part != Parts.Pinned)
             {
-                AddRoot(flags, NSTCROOTSTYLE.EXPANDED, ThisPcGuid);
-                AddRoot(flags, NSTCROOTSTYLE.VISIBLE, NetworkGuid);
-                if (HasWslDistros()) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, LinuxGuid, @"\\wsl.localhost");
+                AddRoot(flags, NSTCROOTSTYLE.EXPANDED, null, IntPtr.Zero, ThisPcGuid);
+                if (!Hidden("network")) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, "network", IntPtr.Zero, NetworkGuid);
+                if (!Hidden("linux") && HasWslDistros()) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, "linux", IntPtr.Zero, LinuxGuid, @"\\wsl.localhost");
                 _group2 = _roots.Skip(afterPinned).Select(r => ShellNative.NameOf(r, SIGDN.NormalDisplay) ?? "").ToArray();
             }
         }
@@ -300,15 +303,29 @@ internal sealed partial class NavigationTree : Control
         QueueGroupLayout();
     }
 
-    void AddRoot(SHCONTF flags, NSTCROOTSTYLE style, params string[] candidates)
+    void AddRoot(SHCONTF flags, NSTCROOTSTYLE style, string? key, IntPtr filter, params string[] candidates)
     {
         foreach (var name in candidates)
         {
             var item = CreateItem(name);
             if (item == null) continue;
-            if (IsUsableRoot(item) && _tree!.AppendRoot(item, flags, style, IntPtr.Zero) == NavTreeNative.S_OK) { _roots.Add(item); return; }
+            if (IsUsableRoot(item) && _tree!.AppendRoot(item, flags, style, filter) == NavTreeNative.S_OK)
+            {
+                _roots.Add(item);
+                if (key != null) _rootKeys.Add((item, key));
+                return;
+            }
             Marshal.ReleaseComObject(item);
         }
+    }
+
+    /// <summary>Whether this Windows has the root (Home is Windows 11's; Windows 10 shows Quick access instead).</summary>
+    bool HasRoot(string name)
+    {
+        var item = CreateItem(name);
+        if (item == null) return false;
+        try { return IsUsableRoot(item); }
+        finally { Marshal.ReleaseComObject(item); }
     }
 
     /// <summary>
@@ -1154,8 +1171,10 @@ internal sealed partial class NavigationTree : Control
 
         public int OnAfterContextMenu(IntPtr psi, IntPtr pcmIn, ref Guid riid, out IntPtr ppv)
         {
+            // A root that can be taken out gets "Remove from navigation pane"; any other item keeps pcmIn unchanged.
             ppv = IntPtr.Zero;
-            return NavTreeNative.E_NOTIMPL;   // keep pcmIn unchanged
+            try { ppv = host.WrapRootMenu(psi, pcmIn, ref riid); } catch (Exception) { }
+            return ppv != IntPtr.Zero ? NavTreeNative.S_OK : NavTreeNative.E_NOTIMPL;
         }
 
         public int OnBeforeStateImageChange(IntPtr psi) => NavTreeNative.S_OK;

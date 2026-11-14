@@ -5,7 +5,8 @@ namespace Anything;
 /// <summary>
 /// The navigation pane: Windows' own folder tree, kept in sync with the view, in two parts. Quick access (Home,
 /// Gallery, OneDrive and the pinned folders) stays at the top, like a frozen pane, under a header that folds it away;
-/// This PC, Network and Linux scroll below it.
+/// This PC, Network and Linux scroll below it. The line between them drags to make Quick access taller or shorter
+/// (each part scrolls on its own), and a right-click takes Home, Gallery and the like out of it.
 /// </summary>
 internal sealed partial class MainForm
 {
@@ -23,6 +24,14 @@ internal sealed partial class MainForm
         {
             var tree = t;
             tree.ExpandToFolder = _app.Settings.ExpandTreeToFolder;
+            tree.HiddenRoots = new HashSet<string>(_app.Settings.NavHiddenRoots, StringComparer.OrdinalIgnoreCase);
+            tree.PinnedOnly = _app.Settings.NavPinnedOnly;
+            tree.RootRemoveRequested += key =>
+            {
+                if (!_app.Settings.NavHiddenRoots.Contains(key, StringComparer.OrdinalIgnoreCase)) _app.Settings.NavHiddenRoots.Add(key);
+                _app.Settings.Save();
+                foreach (var w in _app.Windows) w.RefreshNavRoots();
+            };
             tree.FolderSelected += location =>
             {
                 _navClick = (tree, Environment.TickCount64);
@@ -46,7 +55,40 @@ internal sealed partial class MainForm
             _app.Settings.NavPinnedCollapsed = !_app.Settings.NavPinnedCollapsed;
             foreach (var w in _app.Windows) w.LayoutNavParts();
         };
+        // The line between the parts: dragged, Quick access is as tall as it was left (in every window); double-clicked,
+        // as tall as its folders again.
+        _pinDivider.Dragged += height =>
+        {
+            int room = _navPanel.ClientSize.Height - _pinHeader.Height - _pinDivider.Height;
+            _pinTree.Height = Math.Clamp(height, LogicalToDeviceUnits(40), Math.Max(LogicalToDeviceUnits(40), room - LogicalToDeviceUnits(80)));
+        };
+        _pinDivider.DragEnded += () =>
+        {
+            _app.Settings.NavPinnedHeight = Math.Max(1, _pinTree.Height * 96 / Math.Max(96, DeviceDpi));
+            _app.Settings.Save();
+            foreach (var w in _app.Windows) if (w != this) w.LayoutNavParts();
+        };
+        _pinDivider.DoubleClick += (_, _) =>
+        {
+            _app.Settings.NavPinnedHeight = 0;
+            _app.Settings.Save();
+            foreach (var w in _app.Windows) w.LayoutNavParts();
+        };
+        _pinDivider.PartAbove = _pinTree;
         LayoutNavParts();
+    }
+
+    /// <summary>The roots taken out or brought back, or Quick access's frequent folders turned on or off: the pane again.</summary>
+    internal void RefreshNavRoots()
+    {
+        foreach (var t in new[] { _pinTree, _tree })
+        {
+            t.HiddenRoots = new HashSet<string>(_app.Settings.NavHiddenRoots, StringComparer.OrdinalIgnoreCase);
+            t.PinnedOnly = _app.Settings.NavPinnedOnly;
+            t.RefreshRoots();
+        }
+        LayoutNavParts();
+        SyncNavTree();
     }
 
     /// <summary>Quick access as tall as its rows (up to half the pane), or folded under its header.</summary>
@@ -58,9 +100,20 @@ internal sealed partial class MainForm
         _pinDivider.Visible = open;
         if (!open) return;
         int room = _navPanel.ClientSize.Height - _pinHeader.Height - _pinDivider.Height;
-        int want = _pinTree.ContentHeight;
-        int height = Math.Max(0, Math.Min(want, (int)(room * PinnedShare)));
-        if (want > 0 && _pinTree.Height != height) _pinTree.Height = height;
+        int height;
+        if (_app.Settings.NavPinnedHeight > 0)
+        {
+            // As tall as it was dragged, leaving the places some room.
+            int min = LogicalToDeviceUnits(40);
+            height = Math.Clamp(_app.Settings.NavPinnedHeight * DeviceDpi / 96, min, Math.Max(min, room - LogicalToDeviceUnits(80)));
+        }
+        else
+        {
+            int want = _pinTree.ContentHeight;
+            if (want <= 0) return;
+            height = Math.Max(0, Math.Min(want, (int)(room * PinnedShare)));
+        }
+        if (_pinTree.Height != height) _pinTree.Height = height;
     }
 
     /// <summary>
@@ -134,14 +187,57 @@ internal sealed partial class MainForm
         }
     }
 
-    /// <summary>The line between Quick access and the places, as File Explorer's pane draws between its groups.</summary>
+    /// <summary>
+    /// The line between Quick access and the places, as File Explorer's pane draws between its groups, and a handle:
+    /// dragged up or down it makes Quick access shorter or taller.
+    /// </summary>
     sealed class NavDividerLine : Control
     {
+        int _grabY = -1, _grabHeight;
+
+        /// <summary>The part above, whose height a drag changes.</summary>
+        [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+        public Control? PartAbove { get; set; }
+
+        /// <summary>Dragging: the height the part above would have.</summary>
+        public event Action<int>? Dragged;
+
+        /// <summary>The drag ended.</summary>
+        public event Action? DragEnded;
+
         public NavDividerLine()
         {
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
             SetStyle(ControlStyles.Selectable, false);
+            SetStyle(ControlStyles.StandardDoubleClick, true);
+            Cursor = Cursors.SizeNS;
+            AccessibleName = "Drag to make Quick access taller or shorter; double-click for as tall as its folders";
             Height = 9;
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left || PartAbove == null) return;
+            _grabY = Cursor.Position.Y;
+            _grabHeight = PartAbove.Height;
+            Capture = true;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (_grabY >= 0 && e.Button == MouseButtons.Left) Dragged?.Invoke(_grabHeight + Cursor.Position.Y - _grabY);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (_grabY < 0) return;
+            bool moved = Math.Abs(Cursor.Position.Y - _grabY) > 1;
+            _grabY = -1;
+            Capture = false;
+            if (moved) DragEnded?.Invoke();
         }
 
         protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Height = LogicalToDeviceUnits(9); }

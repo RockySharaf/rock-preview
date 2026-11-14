@@ -261,8 +261,8 @@ internal sealed partial class AnythingApp : ApplicationContext
     }
 
     /// <summary>
-    /// A window that was closed (its × or its last tab's, into the background) comes back as a new one opens: one tab at
-    /// This PC, its drives showing. One only hidden by the hotkey comes back as it was.
+    /// A window whose last tab was closed (nothing left open in it) comes back as a new one opens: one tab at This PC, its
+    /// drives showing. Closed with its own ×, or hidden by the hotkey, it comes back as it was.
     /// </summary>
     static void FreshIfClosed(MainForm w)
     {
@@ -330,7 +330,6 @@ internal sealed partial class AnythingApp : ApplicationContext
         if (Settings.RunInBackground)
         {
             w.Hide();
-            w.ClosedToBackground = true;
             Post(UpdateAutomaticallyIfIdle); // a new version waiting goes in now, while nothing is open
             foreach (var other in _windows.Where(x => x != w && !x.Visible).ToArray())
             {
