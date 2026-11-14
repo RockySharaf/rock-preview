@@ -15,20 +15,21 @@ internal static class Columns
     [
         new("name", "Name", SortKey.Name, 300, true, 0, HorizontalAlignment.Left),
         new("path", "Path", SortKey.Path, 300, true, 1, HorizontalAlignment.Left),
-        new("size", "Size", SortKey.Size, 80, true, 2, HorizontalAlignment.Right),
-        new("extension", "Extension", SortKey.Extension, 80, false, 4, HorizontalAlignment.Left),
-        new("type", "Type", SortKey.Type, 140, false, 5, HorizontalAlignment.Left),
-        new("date_modified", "Date Modified", SortKey.DateModified, 140, true, 3, HorizontalAlignment.Left),
-        new("date_created", "Date Created", SortKey.DateCreated, 140, false, 6, HorizontalAlignment.Left),
-        new("attributes", "Attributes", SortKey.Attributes, 80, false, 7, HorizontalAlignment.Left),
-        new("date_accessed", "Date Accessed", SortKey.DateAccessed, 140, false, 8, HorizontalAlignment.Left),
-        new("date_recently_changed", "Date Recently Changed", SortKey.DateRecentlyChanged, 140, false, 9, HorizontalAlignment.Left),
-        new("run_count", "Run Count", SortKey.RunCount, 80, false, 10, HorizontalAlignment.Right),
-        new("date_run", "Date Run", SortKey.DateRun, 140, false, 11, HorizontalAlignment.Left),
+        new("size", "Size", SortKey.Size, 80, true, 3, HorizontalAlignment.Right),
+        new("extension", "Extension", SortKey.Extension, 80, false, 5, HorizontalAlignment.Left),
+        new("type", "Type", SortKey.Type, 140, false, 6, HorizontalAlignment.Left),
+        new("date_modified", "Date Modified", SortKey.DateModified, 140, true, 2, HorizontalAlignment.Left),
+        new("date_created", "Date Created", SortKey.DateCreated, 140, false, 7, HorizontalAlignment.Left),
+        new("attributes", "Attributes", SortKey.Attributes, 80, false, 8, HorizontalAlignment.Left),
+        new("date_accessed", "Date Accessed", SortKey.DateAccessed, 140, false, 9, HorizontalAlignment.Left),
+        new("date_recently_changed", "Date Recently Changed", SortKey.DateRecentlyChanged, 140, false, 10, HorizontalAlignment.Left),
+        new("run_count", "Run Count", SortKey.RunCount, 80, false, 11, HorizontalAlignment.Right),
+        new("date_run", "Date Run", SortKey.DateRun, 140, false, 12, HorizontalAlignment.Left),
         // The line each result matched inside the file. Shown while search inside files is on and the window's Search ›
-        // Match inside files is (the header menu's tick means "allowed"); position 0 puts it right of Name. Not sortable:
-        // results matched by name come first, then those matched only inside files.
-        new("content", "Matching text", SortKey.Name, 360, true, 0, HorizontalAlignment.Left, Sortable: false,
+        // Match inside files is (the header menu's tick means "allowed"); at first after Name, Path, Date Modified and
+        // Size, and right after Name while the results matched only inside files are scrolled to. Not sortable: results
+        // matched by name come first, then those matched only inside files.
+        new("content", "Matching text", SortKey.Name, 360, true, 4, HorizontalAlignment.Left, Sortable: false,
             MenuTitle: "Matching text (when words match inside files)"),
     ];
 

@@ -229,6 +229,7 @@ internal sealed partial class MainForm
         tc.Hint = hint is { Length: > 0 } ? hint : results.ContentPending ? ContentPresentation.LookingInside : null;
         _app.Snippets?.ClearQueue(this); // this window's rows from before; other windows' stay queued
         ApplyContentColumn();
+        BeginInvoke(UpdateContentColumnOrder); // new results start at the top: as the user set the columns, mostly
     }
 
     /// <summary>
@@ -457,6 +458,48 @@ internal sealed partial class MainForm
     /// <summary>Tabs, line and page breaks drawn as spaces (one for one, so the bold ranges still fit).</summary>
     static string OneLine(string text) => text.IndexOfAny(['\t', '\n', '\r', '\f']) < 0 ? text
         : text.Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ').Replace('\f', ' ');
+
+    // ---- the columns past the line ---------------------------------------------------------------------------
+
+    bool _contentOrder;          // the columns are in the order for results matched inside files
+    List<string>? _normalOrder;  // the columns' order (their keys) before it
+
+    /// <summary>
+    /// Scrolled past the line to the results matched only inside files (the row at the top is one of them): Matching
+    /// text moves right after Name, then the file's location (Path) and its Size, the rest after them in their order.
+    /// Back above the line, the columns are as the user set them again. Nothing of it is saved.
+    /// </summary>
+    void UpdateContentColumnOrder()
+    {
+        if (!_loaded || IsDisposed) return;
+        var tc = ContentTab();
+        bool want = !ThumbnailMode && !ExplorerShown && ContentColumnInList && tc.NameMatches >= 0 && tc.NameMatches < _ids.Length
+                    && _list.TopRowIndex >= tc.NameMatches;
+        if (want == _contentOrder) return;
+        var headers = _list.Columns.Cast<ColumnHeader>().Where(h => h.Tag is ColumnDef).ToList();
+        if (want)
+        {
+            _normalOrder = headers.OrderBy(h => h.DisplayIndex).Select(h => ((ColumnDef)h.Tag!).Key).ToList();
+            string[] lead = ["name", "content", "path", "size"];
+            SetColumnOrder(headers, [.. lead.Where(_normalOrder.Contains), .. _normalOrder.Where(k => !lead.Contains(k))]);
+        }
+        else if (_normalOrder != null) SetColumnOrder(headers, _normalOrder);
+        _contentOrder = want;
+    }
+
+    void SetColumnOrder(List<ColumnHeader> headers, List<string> keys)
+    {
+        _list.BeginUpdate();
+        try
+        {
+            foreach (var h in headers.OrderBy(h => keys.IndexOf(((ColumnDef)h.Tag!).Key) is var i and >= 0 ? i : int.MaxValue).ToList()
+                         .Select((h, i) => (h, i)))
+                h.h.DisplayIndex = h.i;
+        }
+        finally { _list.EndUpdate(); }
+        _list.IndentHeader(); // the leftmost column's title starts after the rows' margin
+        _list.Invalidate();
+    }
 
     /// <summary>Row <paramref name="index"/> is the first of the results matched only inside files: a line above it.</summary>
     bool StartsContentMatches(int index)

@@ -348,6 +348,14 @@ internal sealed class ResultListView : ListView
 
     int Pitch => _rowHeight > 0 ? _rowHeight : VirtualListSize > 0 ? Math.Max(1, GetItemRect(TopRow).Height) : 1;
     int TopRow => (int)Native.SendMessage(Handle, LVM_GETTOPINDEX, IntPtr.Zero, IntPtr.Zero);
+
+    /// <summary>The first row on show (0 before the list has a window).</summary>
+    public int TopRowIndex => IsHandleCreated ? TopRow : 0;
+
+    /// <summary>The list was scrolled: another row is at its top (told once it has painted).</summary>
+    public event Action? TopRowChanged;
+
+    int _lastTopRow = -1;
     int RowsTop => HeaderHandle is var header && header != IntPtr.Zero && GetWindowRect(header, out var hr) ? hr.Bottom - hr.Top : 0;
     int RowTop(int index) => RowsTop + (index - TopRow) * Pitch;
     int IndexAtY(int y) => (int)Math.Floor((double)(y - RowsTop) / Pitch) + TopRow;
@@ -683,6 +691,11 @@ internal sealed class ResultListView : ListView
             if (m.WParam == HeaderHandle && HeaderHandle != IntPtr.Zero) HeaderContextMenu?.Invoke(pt);
             else ItemContextMenu?.Invoke(pt);
             return;
+        }
+        if (m.Msg == 0x000F /* WM_PAINT */ && TopRowChanged != null && IsHandleCreated && TopRow is var top && top != _lastTopRow)
+        {
+            _lastTopRow = top;
+            BeginInvoke(() => TopRowChanged?.Invoke()); // after this paint: what it does may change the columns
         }
         if (m.Msg == 0x000F /* WM_PAINT */ && _emptyText.Length > 0 && VirtualListSize == 0 && GetUpdateRect(Handle, out var dirty, false))
         {

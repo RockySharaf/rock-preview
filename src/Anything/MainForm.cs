@@ -354,6 +354,7 @@ internal sealed partial class MainForm : Form
         ShellDragDrop.AcceptDrops(_list, screen => DropFolderAt(_list, screen));
         _list.HeaderContextMenu += ShowHeaderMenu;
         _list.ItemContextMenu += ShowItemMenu;
+        _list.TopRowChanged += UpdateContentColumnOrder; // past the line to matches inside files, and back
         _list.SelectedIndexChanged += (_, _) => { QueuePreview(); if (ThumbnailMode) _grid.Invalidate(); };
         _list.VirtualItemsSelectionRangeChanged += (_, _) => { QueuePreview(); if (ThumbnailMode) _grid.Invalidate(); };
 
@@ -919,6 +920,7 @@ internal sealed partial class MainForm : Form
             for (int i = 0; i < ordered.Count; i++) ordered[i].DisplayIndex = i;
         }
         finally { _list.EndUpdate(); }
+        _contentOrder = false; // built in the user's order
         _rows.Clear();
         UpdateSortIndicator();
         _list.IndentHeader();
@@ -933,7 +935,8 @@ internal sealed partial class MainForm : Form
             var cs = _cols[def.Key];
             cs.Visible = true;
             cs.Width = Math.Max(20, ch.Width * 96 / Math.Max(1, _colDpi));
-            cs.Position = ch.DisplayIndex;
+            // Past the line the order is a passing one: the user's is the one kept.
+            cs.Position = _contentOrder && _normalOrder?.IndexOf(def.Key) is >= 0 and var p ? p : ch.DisplayIndex;
         }
     }
 
