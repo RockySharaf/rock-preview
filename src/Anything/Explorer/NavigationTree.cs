@@ -520,6 +520,8 @@ internal sealed partial class NavigationTree : Control
             finally { Marshal.ReleaseComObject(items); }
         }
         catch (COMException) { }
+        // The tree view keeps its own current row through that: none, so a click on that row is a new selection.
+        if (_hwndFocus != IntPtr.Zero) SendMessage(_hwndFocus, 0x110B /* TVM_SELECTITEM */, (IntPtr)9 /* TVGN_CARET */, IntPtr.Zero);
         _current = null;
     }
 
@@ -766,18 +768,23 @@ internal sealed partial class NavigationTree : Control
     void OnTreeItemClick(string? name, NSTCEHITTEST hit, NSTCECLICKTYPE click)
     {
         if ((click & NSTCECLICKTYPE.BUTTON) != NSTCECLICKTYPE.LBUTTON || !IsHandleCreated) return;
-        int changes = _selectionChanges;
         BeginInvoke(() =>
         {
             if (IsDisposed) return;
             SyncActiveControl();
             // Clicking the folder that is already highlighted navigates there again (as in Explorer), e.g. after the
-            // view went somewhere the tree could not follow. A click that changed the selection was already raised.
+            // view went somewhere the tree could not follow. A click that changed the selection was already raised (or
+            // is about to be: pending, or raised just now). A tree with nothing highlighted selects its first row itself
+            // as the click gives it the focus (This PC, Home): that selection isn't a pick, so the click on that very row
+            // opens it here.
             if (name == null || (click & NSTCECLICKTYPE.DBLCLICK) != 0) return;
             if ((hit & NSTCEHITTEST.ONITEM) == 0 || (hit & NSTCEHITTEST.ONITEMBUTTON) != 0) return;
-            if (changes != _selectionChanges || _raisePending != null) return;
+            if (_raisePending != null) return;
             if (Environment.TickCount64 - _lastRaiseTicks < 500) return;
-            if (!string.Equals(name, _current, StringComparison.OrdinalIgnoreCase)) return;
+            // The row clicked opens, whatever this tree thought was highlighted (the other part of the pane may have
+            // taken the highlight off, while the tree kept the row as its own). Its selection notice, should it come
+            // after, then matches and is ignored.
+            _current = name;
             _lastRaiseTicks = Environment.TickCount64;
             FolderSelected?.Invoke(name);
         });
