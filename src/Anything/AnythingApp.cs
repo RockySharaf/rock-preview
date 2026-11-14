@@ -254,9 +254,21 @@ internal sealed partial class AnythingApp : ApplicationContext
         MainForm w = cmd.NewWindow && _windows.Count > 0 && !initial
             ? CreateWindow(_lastActive)
             : _lastActive ?? _windows.LastOrDefault() ?? CreateWindow(null);
+        if (cmd.Path is null) FreshIfClosed(w);
         if (cmd.Search is not null) w.SetSearch(cmd.Search);
         ShowWindow(w);
         if (cmd.Path is not null) w.BrowseTo(cmd.Path);
+    }
+
+    /// <summary>
+    /// A window that was closed (its × or its last tab's, into the background) comes back as a new one opens: one tab at
+    /// This PC, its drives showing. One only hidden by the hotkey comes back as it was.
+    /// </summary>
+    static void FreshIfClosed(MainForm w)
+    {
+        if (!w.ClosedToBackground) return;
+        w.ClosedToBackground = false;
+        w.StartAfresh();
     }
 
     /// <summary>The window used last among those on screen (a window closed into the background doesn't count).</summary>
@@ -295,6 +307,7 @@ internal sealed partial class AnythingApp : ApplicationContext
     public void ShowSearchWindow(bool everything = false)
     {
         var w = _lastActive ?? _windows.LastOrDefault() ?? CreateWindow(null);
+        FreshIfClosed(w);
         if (everything) w.SearchEverything();
         ShowWindow(w);
     }
@@ -317,6 +330,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         if (Settings.RunInBackground)
         {
             w.Hide();
+            w.ClosedToBackground = true;
             Post(UpdateAutomaticallyIfIdle); // a new version waiting goes in now, while nothing is open
             foreach (var other in _windows.Where(x => x != w && !x.Visible).ToArray())
             {

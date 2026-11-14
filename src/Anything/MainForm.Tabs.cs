@@ -366,6 +366,25 @@ internal sealed partial class MainForm
         BeginInvoke(t.Explorer.Dispose); // not from inside one of the view's own callbacks
     }
 
+    /// <summary>Closed into the background (not just hidden by the hotkey): shown again, it starts afresh (<see cref="StartAfresh"/>).</summary>
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool ClosedToBackground { get; set; }
+
+    /// <summary>As a new window opens: one tab, at This PC with its drives, no search.</summary>
+    public void StartAfresh()
+    {
+        if (!_loaded) return;
+        CloseTabs(_tabs.Where(t => t != _tab));
+        if (_zapActive) ExitZap(rerun: false);
+        if (_search.TextLength > 0)
+        {
+            _suppress = true;
+            _search.Clear();
+            _suppress = false;
+        }
+        OpenFolder(ThisPcLocation);
+    }
+
     void CloseTabs(IEnumerable<FolderTab> tabs)
     {
         foreach (var t in tabs.ToList()) CloseTab(t);
