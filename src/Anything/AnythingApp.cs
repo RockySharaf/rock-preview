@@ -106,6 +106,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         RegisterHotkey();
         StartContent();
         HandleCommandLine(cmd, initial: true);
+        NoteVersionRun();
         StartUpdateChecks();
         StartNightlyUpdates();
         CheckServiceVersion();
@@ -879,11 +880,11 @@ internal sealed partial class AnythingApp : ApplicationContext
         foreach (var w in _windows) w.UpdateUpdateBar();
         UpdateStateChanged?.Invoke();
         UpdateAutomaticallyIfIdle();
+        // No notification: Settings › About's Updates card is where a new version shows (and the bar, for a copy that
+        // can't install it by itself).
         if (version is null || Settings.NotifiedVersion == version.ToString(3)) return;
         Settings.NotifiedVersion = version.ToString(3);
         Settings.Save();
-        // It installs by itself: no notification to act on (the bar says when).
-        if (!UpdatesItself) Notify($"Rock Preview {version.ToString(3)} is available", $"You have {CurrentVersion.ToString(3)}.");
     }
 
     /// <summary>
@@ -940,6 +941,38 @@ internal sealed partial class AnythingApp : ApplicationContext
         if (NewVersion is { } v) OpenWebPage(UpdateCheck.ReleasePage(v));
     }
 
+    bool _checkOnOpen;
+
+    /// <summary>Help › Check for Updates: Settings › About, checking there (its Updates card shows what happens).</summary>
+    public void ShowUpdates(IWin32Window? owner)
+    {
+        _checkOnOpen = true;
+        ShowSettings(owner, "About");
+        _checkOnOpen = false;
+    }
+
+    /// <summary>Settings › About was opened to check for updates (once).</summary>
+    public bool TakeCheckOnOpen()
+    {
+        bool check = _checkOnOpen;
+        _checkOnOpen = false;
+        return check;
+    }
+
+    /// <summary>The version this one replaced, when it was just updated (until Rock Preview starts again), else null.</summary>
+    public Version? JustUpdatedFrom { get; private set; }
+
+    /// <summary>Remembers the version that ran: a newer one starting says, in Settings › About, that it was updated.</summary>
+    void NoteVersionRun()
+    {
+        if (IsDemo) return;
+        string now = CurrentVersion.ToString(3);
+        if (UpdateCheck.ParseTag(Settings.LastRunVersion) is { } before && UpdateCheck.IsNewer(CurrentVersion, before)) JustUpdatedFrom = before;
+        if (Settings.LastRunVersion == now) return;
+        Settings.LastRunVersion = now;
+        Settings.Save();
+    }
+
     /// <summary>
     /// Help › Check for Updates, Settings › About: asks GitHub now, and a newer version starts installing right away (the
     /// bar, and Settings › About, show how far), no question asked. <paramref name="report"/>, when given, is told what
@@ -969,6 +1002,13 @@ internal sealed partial class AnythingApp : ApplicationContext
         {
             report?.Invoke($"Updating to Rock Preview {latest!.ToString(3)}...");
             UpdateNow();
+            return;
+        }
+        if (report != null)
+        {
+            report(UpdateCheck.IsNewer(latest, current)
+                ? $"Rock Preview {latest!.ToString(3)} is out. This copy isn't the installed one, so it can't update itself: Download gets it."
+                : $"Rock Preview is up to date: you have the latest version, {current.ToString(3)}.");
             return;
         }
         if (UpdateCheck.IsNewer(latest, current))

@@ -186,7 +186,7 @@ internal sealed partial class MainForm
             Item("&Search Syntax", () => SearchSyntaxForm.ShowSyntax(this), Keys.F1),
             new ToolStripSeparator(),
             Item("&Get Started", _app.ShowGetStarted),
-            Item("Check for &Updates...", () => _app.CheckForUpdatesInteractive(this)),
+            Item("Check for &Updates...", () => _app.ShowUpdates(this)),
             Item("&About Rock Preview...", ShowAbout),
         ]);
 

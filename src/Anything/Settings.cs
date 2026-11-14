@@ -176,6 +176,8 @@ internal sealed partial class AppSettings
     public TimeSpan AutoUpdateAt { get; set; } = new(23, 0, 0);
     /// <summary>The nightly update last done (the time it was due, UTC); one missed is done the next time Rock Preview runs.</summary>
     public DateTime LastScheduledUpdate { get; set; }
+    /// <summary>The version that ran last ("1.7.23"): a newer one starting was just updated.</summary>
+    public string LastRunVersion { get; set; } = "";
     /// <summary>When the last check got an answer (UTC).</summary>
     public DateTime LastUpdateCheck { get; set; }
     /// <summary>The latest version that check found, kept so the notice shows at the next start even offline.</summary>
@@ -300,6 +302,7 @@ internal sealed partial class AppSettings
         s.LastUpdateCheck = DateTime.TryParse(Str("last_update_check", ""), CultureInfo.InvariantCulture,
             DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var checkedAt) ? checkedAt : default;
         s.LatestVersion = Str("latest_version", "").Trim();
+        s.LastRunVersion = Str("last_run_version", "").Trim();
         s.NotifiedVersion = Str("notified_version", "").Trim();
         s.LeftOutDrivesKept = List("left_out_drive_notice_dismissed", s.LeftOutDrivesKept);
         s.StartWithWindows = ReadStartWithWindows();
@@ -417,6 +420,7 @@ internal sealed partial class AppSettings
         if (LastScheduledUpdate != default) W("last_scheduled_update", LastScheduledUpdate.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
         if (LastUpdateCheck != default) W("last_update_check", LastUpdateCheck.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
         W("latest_version", Clean(LatestVersion));
+        W("last_run_version", Clean(LastRunVersion));
         W("notified_version", Clean(NotifiedVersion));
         W("left_out_drive_notice_dismissed", string.Join('|', LeftOutDrivesKept));
         B("index_ntfs_volumes", Index.IndexNtfsVolumes);

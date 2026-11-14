@@ -743,34 +743,55 @@ internal sealed partial class SettingsForm : Form
 
     SettingCard? _updatesCard;
     Button? _checkButton;
+    readonly ProgressStrip _updateStrip = new();
+    string? _updateReport; // what the last check said, while nothing else has happened since
 
     /// <summary>
-    /// Check for updates: a newer version starts installing right here, no question asked, and the card says how far
-    /// (downloading, then Rock Preview closes and opens again as the new version); up to date, it says so.
+    /// Updates, all in one place: Check for updates installs a newer version at once, and a strip under the card's words
+    /// runs left to right while it does (Rock Preview then closes and opens again as the new version, and the card says
+    /// it was updated). No message boxes, notifications or links: this card is where updating shows. A copy that can't
+    /// update itself (not the installed one) gets a Download button to the new version instead.
     /// </summary>
     SettingCard UpdatesCard()
     {
-        _checkButton = CardButton("Check for updates", () => _app.CheckForUpdatesInteractive(this, text => _updatesCard?.SetDescription(text)));
-        _updatesCard = Card("Updates", UpdatesText(), _checkButton);
+        _checkButton = CardButton("Check for updates", () =>
+        {
+            if (_app.NewVersion is not null && !_app.CanUpdateInApp && _app.UpdateProgress is null) { _app.OpenReleasePage(); return; }
+            _updateReport = null;
+            _app.CheckForUpdatesInteractive(this, text => { _updateReport = text; ShowUpdateState(); });
+        });
+        _updatesCard = Card("Updates", "", _checkButton, _updateStrip);
         _app.UpdateStateChanged += ShowUpdateState;
         FormClosed += (_, _) => _app.UpdateStateChanged -= ShowUpdateState;
+        ShowUpdateState();
+        // Help › Check for Updates opens this page to check here.
+        if (_app.TakeCheckOnOpen()) Shown += (_, _) => _checkButton.PerformClick();
         return _updatesCard;
     }
 
     string UpdatesText() => _app.UpdateProgress is { } p && _app.NewVersion is { } v
-            ? $"Updating to Rock Preview {v.ToString(3)}: downloading, {(int)(p * 100)}%. Then Rock Preview closes and opens again as the new version."
+            ? (p < 1 ? $"Updating to Rock Preview {v.ToString(3)}... {(int)(p * 100)}%" : $"Installing Rock Preview {v.ToString(3)}: Rock Preview opens again in a moment.")
         : _app.UpdateError is { } error ? "Updating didn't work: " + error
-        : _app.NewVersion is { } n ? (_app.UpdatesItself
-            ? $"Rock Preview {n.ToString(3)} is out. It installs by itself tonight at {DateTime.Today.Add(_app.Settings.AutoUpdateAt):h:mm tt}, or now with Check for updates."
-            : $"Rock Preview {n.ToString(3)} is out: Check for updates installs it now.")
-        : _app.UpdatesItself ? $"New versions install by themselves every night at {DateTime.Today.Add(_app.Settings.AutoUpdateAt):h:mm tt}."
+        : _updateReport is { } report ? report
+        : _app.NewVersion is { } n ? (_app.CanUpdateInApp
+            ? $"Rock Preview {n.ToString(3)} is out: Check for updates installs it now."
+            : $"Rock Preview {n.ToString(3)} is out. This copy isn't the installed one, so it can't update itself: Download gets it.")
+        : _app.JustUpdatedFrom is { } from ? $"Updated to Rock Preview {AnythingApp.CurrentVersion.ToString(3)} (from {from.ToString(3)})."
+        : _app.UpdatesItself ? $"Up to date. New versions install by themselves every night at {DateTime.Today.Add(_app.Settings.AutoUpdateAt):h:mm tt}."
         : "See if a newer version is out.";
 
     void ShowUpdateState()
     {
         if (IsDisposed || _updatesCard == null) return;
         _updatesCard.SetDescription(UpdatesText());
-        if (_checkButton != null) _checkButton.Enabled = _app.UpdateProgress is null;
+        _updateStrip.Value = _app.UpdateProgress;
+        if (_checkButton != null)
+        {
+            _checkButton.Enabled = _app.UpdateProgress is null;
+            _checkButton.Text = _app.NewVersion is not null && !_app.CanUpdateInApp ? "Download"
+                : _app.UpdateError is not null ? "Try again" : "Check for updates";
+        }
+        _updatesCard.PerformLayout();
     }
 
     /// <summary>
@@ -1556,6 +1577,49 @@ internal sealed class PageStack : Panel
 
     public override Size GetPreferredSize(Size proposed) =>
         new(proposed.Width, Arrange(proposed.Width is > 0 and < 100_000 ? proposed.Width : Width, apply: false));
+}
+
+/// <summary>
+/// A thin strip that fills from left to right in the accent colour: how far an update has got. No height while idle.
+/// </summary>
+internal sealed class ProgressStrip : Control
+{
+    double? _value;
+
+    public ProgressStrip()
+    {
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        SetStyle(ControlStyles.Selectable, false);
+        AccessibleRole = AccessibleRole.ProgressBar;
+    }
+
+    /// <summary>0 to 1 while an update runs; null when none does (then it takes no room).</summary>
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public double? Value
+    {
+        get => _value;
+        set
+        {
+            if (_value == value) return;
+            _value = value;
+            AccessibleDescription = value is { } v ? $"{(int)(v * 100)}%" : null;
+            Invalidate();
+        }
+    }
+
+    public override Size GetPreferredSize(Size proposedSize) => new(proposedSize.Width, _value is null ? 0 : LogicalToDeviceUnits(4));
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(Parent?.BackColor ?? BackColor);
+        if (_value is not { } v || Width <= 0 || Height <= 0) return;
+        float radius = Height / 2f;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        ExplorerTheme.FillRounded(g, new Rectangle(0, 0, Width - 1, Height - 1), radius, ExplorerTheme.Divider);
+        int filled = (int)Math.Round((Width - 1) * Math.Clamp(v, 0, 1));
+        if (filled > 0) ExplorerTheme.FillRounded(g, new Rectangle(0, 0, Math.Max(Height, filled), Height - 1), radius, ExplorerTheme.Accent);
+    }
 }
 
 /// <summary>
