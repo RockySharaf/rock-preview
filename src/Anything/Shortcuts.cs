@@ -5,7 +5,7 @@ using System.Text;
 namespace Anything;
 
 /// <summary>.lnk files through the shell's own ShellLink object, and Rock Preview's taskbar identity.</summary>
-internal static class Shortcuts
+internal static partial class Shortcuts
 {
     /// <summary>
     /// Rock Preview's AppUserModelID. The process and its shortcuts carry it, so the taskbar groups every Rock Preview

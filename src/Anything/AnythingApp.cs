@@ -110,6 +110,43 @@ internal sealed partial class AnythingApp : ApplicationContext
         CheckServiceVersion();
         RefreshDrives();
         _autoPlay.Set(Settings.UsbPrompt && !IsDemo);
+        QueueJumpList();
+    }
+
+    // ---- the taskbar button's jump list ---------------------------------------------------------
+
+    System.Windows.Forms.Timer? _jumpListTimer;
+    bool _jumpListBusy;
+
+    /// <summary>
+    /// A folder was opened (or Rock Preview started): a few seconds later the taskbar button's jump list shows the
+    /// folders and files opened lately, newest at the bottom.
+    /// </summary>
+    public void QueueJumpList()
+    {
+        if (IsDemo || _exiting) return;
+        if (_jumpListTimer == null)
+        {
+            _jumpListTimer = new System.Windows.Forms.Timer { Interval = 3000 };
+            _jumpListTimer.Tick += (_, _) => { _jumpListTimer.Stop(); _ = UpdateJumpListAsync(); };
+        }
+        _jumpListTimer.Stop();
+        _jumpListTimer.Start();
+    }
+
+    async Task UpdateJumpListAsync()
+    {
+        if (_jumpListBusy || _exiting || Environment.ProcessPath is not { } exe) return;
+        _jumpListBusy = true;
+        try
+        {
+            string recentFolder = Environment.GetFolderPath(Environment.SpecialFolder.Recent);
+            var recent = await Task.Run(() => RecentFiles.Read(recentFolder, lnk => Shortcuts.Read(lnk)?.Path,
+                p => File.Exists(p) || Directory.Exists(p), Shortcuts.JumpListItems));
+            if (!_exiting) Shortcuts.UpdateJumpList(recent, exe);
+        }
+        catch (Exception) { }
+        finally { _jumpListBusy = false; }
     }
 
     /// <summary>
@@ -361,6 +398,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         _welcome?.Close();
         _usbPrompt?.Close();
         _autoPlay.Dispose();
+        _jumpListTimer?.Dispose();
         _messageWindow.UnregisterHotkey();
         _messageWindow.DestroyHandle();
         StopContent();

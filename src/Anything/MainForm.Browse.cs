@@ -713,6 +713,12 @@ internal sealed partial class MainForm
             _suppress = false;
         }
         _app.Settings.LastLocation = _explorer.CurrentParsingName ?? "";
+        // As File Explorer does: a folder opened goes into Windows' recent items (Home, the taskbar's jump list).
+        if (_explorer.CurrentPath is { Length: > 0 } opened && !_app.IsDemo)
+        {
+            AddToRecent(opened);
+            _app.QueueJumpList();
+        }
         SyncAddress();
         SyncNavTree();
         UpdateLeftView();
@@ -777,6 +783,14 @@ internal sealed partial class MainForm
             SyncAddress();
             return false;
         }
+    }
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    static extern void SHAddToRecentDocs(uint flags, string path);
+
+    static void AddToRecent(string path)
+    {
+        try { SHAddToRecentDocs(3 /* SHARD_PATHW */, path); } catch (Exception) { }
     }
 
     /// <summary>A folder the user chose to open (address bar, breadcrumb, results, menus): shown as the folder.</summary>
