@@ -23,6 +23,9 @@ internal sealed partial class AnythingApp : ApplicationContext
     FileIndex? _subscribedIndex;
     SettingsForm? _settings;
     GetStartedForm? _welcome;
+    UsbPromptForm? _usbPrompt;
+    readonly AutoPlayBlocker _autoPlay = new();
+    IReadOnlyList<DriveEntry>? _drivesSeen; // the last listing, to tell a USB drive just plugged in
     System.Windows.Forms.Timer? _updateTimer;
     Task<Version?>? _updateCheck;
     Version? _updateNoticeHidden;
@@ -106,6 +109,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         StartUpdateChecks();
         CheckServiceVersion();
         RefreshDrives();
+        _autoPlay.Set(Settings.UsbPrompt && !IsDemo);
     }
 
     /// <summary>
@@ -341,6 +345,8 @@ internal sealed partial class AnythingApp : ApplicationContext
         _updateTimer?.Dispose();
         CloseNotifier();
         _welcome?.Close();
+        _usbPrompt?.Close();
+        _autoPlay.Dispose();
         _messageWindow.UnregisterHotkey();
         _messageWindow.DestroyHandle();
         StopContent();
@@ -887,6 +893,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         }
         UpdateTray();
         RegisterHotkey();
+        _autoPlay.Set(Settings.UsbPrompt && !IsDemo);
         _coverage.Clear();
         FindLeftOutDrives();
         foreach (var w in _windows) w.ApplyUiSettings();
@@ -916,6 +923,43 @@ internal sealed partial class AnythingApp : ApplicationContext
         SubscribeIndex();
     }
 
+    // ---- USB drives plugged in ------------------------------------------------------------------
+
+    /// <summary>
+    /// A USB drive (or a card) just plugged in: Rock Preview offers to open it, one click (Settings › Defaults), in
+    /// place of Windows' AutoPlay. The offer goes when its drive does.
+    /// </summary>
+    void OfferPluggedDrives(IReadOnlyList<DriveEntry> drives)
+    {
+        var plugged = DriveArrival.Plugged(_drivesSeen, drives);
+        _drivesSeen = drives;
+        if (_usbPrompt is { IsDisposed: false } shown && !drives.Any(d => d.IsReady && string.Equals(d.Root, shown.Drive, StringComparison.OrdinalIgnoreCase)))
+            shown.Close();
+        if (plugged.Count == 0 || !Settings.UsbPrompt || IsDemo) return;
+        var drive = plugged[^1];
+        _usbPrompt?.Close();
+        var prompt = new UsbPromptForm(drive.Root, DriveArrival.Name(drive));
+        prompt.OpenClicked += () => OpenDrive(drive.Root);
+        prompt.FormClosed += (_, _) => { if (_usbPrompt == prompt) _usbPrompt = null; };
+        _usbPrompt = prompt;
+        prompt.ShowNear(RecentWindow());
+    }
+
+    /// <summary>Opens a drive the way a folder opened from Windows opens: a new tab in the window used last, or a window.</summary>
+    void OpenDrive(string root)
+    {
+        if (_exiting) return;
+        if (Settings.OpenFoldersInTabs && RecentWindow() is { } recent)
+        {
+            recent.NewTab(root);
+            ShowWindow(recent);
+            return;
+        }
+        var w = CreateWindow(_windows.Count > 0 ? _lastActive : null);
+        w.OpenAsExplorer(root);
+        ShowWindow(w);
+    }
+
     // ---- drives left out ----------------------------------------------------------------------
 
     /// <summary>Lists the drives in the background (a network drive can take a moment to answer), then updates the windows' bar.</summary>
@@ -929,6 +973,7 @@ internal sealed partial class AnythingApp : ApplicationContext
             {
                 if (seq != _drivesSeq || _exiting) return; // a newer listing is on its way
                 KnownDrives = t.Result;
+                OfferPluggedDrives(t.Result);
                 _coverage.Clear();
                 FindLeftOutDrives();
                 foreach (var w in _windows)
