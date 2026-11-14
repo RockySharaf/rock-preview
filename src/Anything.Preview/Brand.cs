@@ -8,29 +8,55 @@ using System.Windows.Forms;
 namespace Anything.Preview;
 
 /// <summary>
-/// Rock Preview's mark (the R in a folder, with its pixels), drawn in any colour: the title bar's badge and the empty
-/// preview pane's watermark. The embedded image is the mark's shape only (black, with its transparency).
+/// Rock Preview's mark (the R in a folder, with its pixels): in File Explorer's yellows for the title bar's badge, or
+/// in any one colour for the empty preview pane's faint watermark. Two embedded images: the mark in its colours, and its
+/// shape only (black, with its transparency) for tinting.
 /// </summary>
 public static class Brand
 {
-    static Bitmap? _mark;
+    static Bitmap? _mark, _colorMark;
     static readonly Dictionary<(int Argb, int Height), Bitmap> Tints = [];
+    static readonly Dictionary<int, Bitmap> Colors = [];
 
     /// <summary>The mark's width over its height.</summary>
     public static float Aspect => Mark is { } m ? (float)m.Width / m.Height : 1.5f;
 
-    static Bitmap? Mark
+    static Bitmap? Mark => _mark ??= Load("RockPreviewMark.png");
+
+    static Bitmap? ColorMark => _colorMark ??= Load("RockPreviewMarkColor.png");
+
+    static Bitmap? Load(string name)
     {
-        get
+        try
         {
-            if (_mark != null) return _mark;
-            try
+            using var s = typeof(Brand).Assembly.GetManifestResourceStream(name);
+            if (s != null) return new Bitmap(s);
+        }
+        catch (Exception e) when (e is ArgumentException or IOException) { }
+        return null;
+    }
+
+    /// <summary>
+    /// The mark <paramref name="height"/> pixels high in its own colours (the R in File Explorer's front yellow, the
+    /// folder behind it and the pixels in its amber); null if it couldn't load. Kept for reuse.
+    /// </summary>
+    public static Bitmap? Colored(int height)
+    {
+        if (ColorMark is not { } mark || height < 1) return null;
+        lock (Colors)
+        {
+            if (Colors.TryGetValue(height, out var have)) return have;
+            int width = Math.Max(1, (int)Math.Round(height * (float)mark.Width / mark.Height));
+            var bmp = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(bmp))
             {
-                using var s = typeof(Brand).Assembly.GetManifestResourceStream("RockPreviewMark.png");
-                if (s != null) _mark = new Bitmap(s);
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                g.DrawImage(mark, new Rectangle(0, 0, width, height), 0, 0, mark.Width, mark.Height, GraphicsUnit.Pixel);
             }
-            catch (Exception e) when (e is ArgumentException or IOException) { }
-            return _mark;
+            if (Colors.Count > 8) Colors.Clear();
+            Colors[height] = bmp;
+            return bmp;
         }
     }
 

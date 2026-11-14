@@ -114,7 +114,7 @@ internal sealed class BrandBadge : Control
         e.Graphics.Clear(BackColor);
         // The row's tabs sit on its bottom line; the badge is centred in the space above it.
         int rowH = Height - 1, x = LogicalToDeviceUnits(12);
-        if (Anything.Preview.Brand.Tinted(ExplorerTheme.Blue, MarkHeight) is { } mark)
+        if (Anything.Preview.Brand.Colored(MarkHeight) is { } mark)
         {
             e.Graphics.DrawImage(mark, x, (rowH - mark.Height) / 2);
             x += mark.Width + LogicalToDeviceUnits(7);
