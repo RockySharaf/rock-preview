@@ -92,14 +92,14 @@ internal sealed partial class MainForm
     /// <summary>Clicked this often to search everything, the user knows it: it no longer lights up.</summary>
     const int ScopeHintUntilUses = 3;
 
-    readonly System.Windows.Forms.Timer _scopeHintDelay = new() { Interval = 900 };
+    readonly System.Windows.Forms.Timer _scopeHintDelay = new() { Interval = 3000 }; // nothing found for 3 seconds: the user is waiting
     readonly System.Windows.Forms.Timer _scopeHintPulse = new() { Interval = 30 };
     long _scopeHintStarted;
     bool _scopeHintAnimate, _scopeHintBuilt;
 
     /// <summary>
-    /// A search inside a folder found nothing: the user may not know it looked only there. Once the typing has paused,
-    /// the folder's button at the start of the search box pulses in the accent colour (a still highlight when Windows'
+    /// A search inside a folder found nothing: the user may not know it looked only there. Once nothing has been found for
+    /// 3 seconds, the folder's button at the start of the search box pulses in the accent colour (a still highlight when Windows'
     /// animations are off), saying "click me to search everything". Not once it has been used for that 3 times.
     /// </summary>
     void UpdateScopeHint()
