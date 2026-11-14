@@ -142,6 +142,9 @@ internal sealed class TabStrip : Control
         return new Rectangle(x, cy - S(12), S(28), S(24));
     }
 
+    /// <summary>The tab under a point on the screen, or -1.</summary>
+    public int TabAtScreen(Point screen) => TabAt(PointToClient(screen));
+
     int TabAt(Point p)
     {
         for (int i = 0; i < _tabs.Count; i++) if (TabRect(i).Contains(p)) return i;

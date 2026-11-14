@@ -1,6 +1,7 @@
 using Anything.Core;
 using Anything.Core.Indexing;
 using Anything.Explorer;
+using Anything.Interop;
 
 namespace Anything;
 
@@ -112,7 +113,7 @@ internal sealed partial class MainForm
         public int FocusedId = -1, TopIndex;
         public List<int>? SelectedIds;
 
-        bool ShowsFolder => Browsing && SearchText.Length == 0 && !ZapActive;
+        public bool ShowsFolder => Browsing && SearchText.Length == 0 && !ZapActive;
 
         public string Title => ZapActive ? $"Every file in {ZapLabel}"
             : SearchText.Length > 0 ? SearchText
@@ -133,6 +134,36 @@ internal sealed partial class MainForm
         _tabStrip.TabMoved += MoveTab;
         _tabStrip.TabMenuRequested += ShowTabMenu;
         _tabStrip.TabDraggedOut += (i, pointer, hold) => TearOff(_tabs[i], pointer, hold);
+        AcceptDropsOnTabs();
+    }
+
+    /// <summary>
+    /// Files dragged onto a tab, as in File Explorer: held over it a moment, the tab opens, to drop them somewhere in its
+    /// folder; dropped on the tab itself, they go into its folder (copied, unless a key says move).
+    /// </summary>
+    void AcceptDropsOnTabs()
+    {
+        var hover = new System.Windows.Forms.Timer { Interval = 600 };
+        int hovered = -1;
+        hover.Tick += (_, _) =>
+        {
+            hover.Stop();
+            // Still over it (the drag may have left the strip, which says nothing here).
+            if ((uint)hovered < (uint)_tabs.Count && _tabStrip.TabAtScreen(Cursor.Position) == hovered && _tabs[hovered] != _tab)
+                SelectTab(_tabs[hovered]);
+        };
+        Disposed += (_, _) => hover.Dispose();
+        ShellDragDrop.AcceptDrops(_tabStrip, screen =>
+        {
+            int i = _tabStrip.TabAtScreen(screen);
+            if (i != hovered)
+            {
+                hovered = i;
+                hover.Stop();
+                if (i >= 0) hover.Start();
+            }
+            return i >= 0 && _tabs[i].ShowsFolder ? _tabs[i].Explorer.CurrentPath : null;
+        });
     }
 
     /// <summary>Takes a tab into the window (a new one, or one from another window): its Explorer view goes with the other views, hidden until it shows.</summary>

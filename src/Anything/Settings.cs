@@ -130,6 +130,8 @@ internal sealed partial class AppSettings
     public bool PreviewVisible { get; set; } = true;
     /// <summary>Preview pane width in 96-DPI pixels.</summary>
     public int PreviewWidth { get; set; } = 460;
+    /// <summary>The preview pane's share of the room beside the navigation pane, kept as the window is resized; 0 until set.</summary>
+    public float PreviewShare { get; set; }
     /// <summary>0 = details list; otherwise the thumbnail edge in pixels for the thumbnail grid.</summary>
     public int ThumbnailSize { get; set; }
 
@@ -255,6 +257,8 @@ internal sealed partial class AppSettings
         if (s.NavPaneWidth == 250) s.NavPaneWidth = 176; // the old default; Explorer's pane is 176 (220px at 125%)
         s.LastLocation = Str("last_location", "");
         s.PreviewWidth = Math.Clamp(Int("preview_width", 460), 150, 4000);
+        float share = Float("preview_share", 0);
+        s.PreviewShare = share is > 0.05f and < 0.95f ? share : 0;
         int thumb = Int("thumbnail_size", 0);
         s.ThumbnailSize = thumb <= 0 ? 0 : Math.Clamp(thumb, 48, 512);
 
@@ -364,6 +368,7 @@ internal sealed partial class AppSettings
         W("nav_pane_width", NavPaneWidth);
         W("last_location", Clean(LastLocation));
         W("preview_width", PreviewWidth);
+        if (PreviewShare > 0) W("preview_share", PreviewShare);
         W("thumbnail_size", ThumbnailSize);
         B("status_bar_visible", StatusBarVisible);
         W("font", FontName);

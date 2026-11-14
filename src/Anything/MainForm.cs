@@ -360,7 +360,9 @@ internal sealed partial class MainForm : Form
         BuildGrid();
         _preview.Dock = DockStyle.Fill;
         _split.Dock = DockStyle.Fill;
-        _split.FixedPanel = FixedPanel.Panel2;
+        // Neither side is fixed: resizing the window keeps the preview's share of the room, so the files never vanish
+        // under it (SetPreviewWidth keeps both a usable width).
+        _split.FixedPanel = FixedPanel.None;
         _body.Panel2.Controls.Add(_split);
         _split.Panel1.Controls.Add(_list);
         _split.Panel1.Controls.Add(_grid);
@@ -371,9 +373,12 @@ internal sealed partial class MainForm : Form
         _split.Paint += (_, e) => PaintSplitter(_split, e.Graphics);
         _split.SplitterMoved += (_, _) =>
         {
-            if (_loaded && !_split.Panel2Collapsed)
-                _app.Settings.PreviewWidth = Math.Max(150, (_split.Width - _split.SplitterDistance) * 96 / Math.Max(96, DeviceDpi));
+            if (!_loaded || _split.Panel2Collapsed || _settingPreviewWidth || _split.Width <= 0) return;
+            int preview = _split.Width - _split.SplitterDistance;
+            _app.Settings.PreviewWidth = Math.Max(150, preview * 96 / Math.Max(96, DeviceDpi));
+            _app.Settings.PreviewShare = Math.Clamp((float)preview / _split.Width, 0.1f, 0.9f);
         };
+        _split.SizeChanged += (_, _) => { if (_loaded) SetPreviewWidth(); };
         _previewTimer.Tick += (_, _) =>
         {
             _previewTimer.Stop();
@@ -544,12 +549,25 @@ internal sealed partial class MainForm : Form
         else ClearPreview();
     }
 
+    bool _settingPreviewWidth;
+
+    /// <summary>
+    /// The preview pane at its share of the room (its saved width, the first time), the files keeping at least a third,
+    /// as the window grows or shrinks.
+    /// </summary>
     void SetPreviewWidth()
     {
-        if (_split.Panel2Collapsed || _split.Width <= 0) return;
-        int want = _app.Settings.PreviewWidth * DeviceDpi / 96;
-        int distance = Math.Clamp(_split.Width - want - _split.SplitterWidth, 120, Math.Max(120, _split.Width - 150));
+        if (_split.Panel2Collapsed || _split.Width <= 0 || _settingPreviewWidth) return;
+        var s = _app.Settings;
+        int width = _split.Width;
+        if (s.PreviewShare <= 0) s.PreviewShare = Math.Clamp((float)(s.PreviewWidth * DeviceDpi / 96) / Math.Max(1, width), 0.15f, 0.6f);
+        int want = (int)Math.Round(width * s.PreviewShare);
+        int minFiles = Math.Min(width / 3, LogicalToDeviceUnits(240)), minPreview = Math.Min(width / 4, LogicalToDeviceUnits(150));
+        int distance = Math.Clamp(width - want - _split.SplitterWidth, minFiles, Math.Max(minFiles, width - minPreview - _split.SplitterWidth));
+        if (_split.SplitterDistance == distance) return;
+        _settingPreviewWidth = true;
         try { _split.SplitterDistance = distance; } catch (InvalidOperationException) { }
+        finally { _settingPreviewWidth = false; }
     }
 
     void QueuePreview()
