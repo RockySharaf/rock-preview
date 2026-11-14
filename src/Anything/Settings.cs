@@ -123,6 +123,8 @@ internal sealed partial class AppSettings
     }
     /// <summary>Times the Thumbnails button has pulsed to show itself (a folder open for 3 seconds); it stops at 10.</summary>
     public int ThumbnailsHintCount { get; set; }
+    /// <summary>How often the search box's folder button was clicked to search everything: from 3, it no longer lights up.</summary>
+    public int ScopeChipUses { get; set; }
     /// <summary>Thumbnails has been used, so its button no longer pulses.</summary>
     public bool ThumbnailsHintDone { get; set; }
     /// <summary>Explorer's navigation pane (Quick access, This PC, drives) in the browse view.</summary>
@@ -267,6 +269,7 @@ internal sealed partial class AppSettings
         s.EverydayKindsOff = List("everyday_kinds_off", []);
         s.EverydayAdded = List("everyday_added", []);
         s.ThumbnailsHintCount = Math.Max(0, Int("thumbnails_hint_count", 0));
+        s.ScopeChipUses = Math.Max(0, Int("scope_chip_uses", 0));
         // Settings saved before the hint have no key. Results left as thumbnails say thumbnails were used; nothing else
         // does, so everyone else still gets the hint, upgrading or not.
         s.ThumbnailsHintDone = Bool("thumbnails_hint_done", Int("thumbnail_size", 0) > 0);
@@ -388,6 +391,7 @@ internal sealed partial class AppSettings
         W("everyday_kinds_off", string.Join('|', EverydayKindsOff));
         W("everyday_added", string.Join('|', EverydayAdded));
         W("thumbnails_hint_count", ThumbnailsHintCount);
+        W("scope_chip_uses", ScopeChipUses);
         B("thumbnails_hint_done", ThumbnailsHintDone);
         B("explorer_nav_pane", ExplorerNavPane);
         W("nav_pane_width", NavPaneWidth);

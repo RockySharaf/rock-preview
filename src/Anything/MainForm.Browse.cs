@@ -297,6 +297,7 @@ internal sealed partial class MainForm
     {
         var click = ScopeButton().Click;
         if (click == SearchScope.Click.None) return;
+        if (click == SearchScope.Click.ToEverything) ScopeChipUsed();
         if (_zapActive)
         {
             // Everything leaves "every file in", keeping what's typed, and its thumbnails if the files showed as them.

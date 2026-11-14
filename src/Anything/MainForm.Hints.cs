@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Anything.Core;
 
 namespace Anything;
 
@@ -82,5 +83,77 @@ internal sealed partial class MainForm
     {
         _hintDelay.Dispose();
         _hintPulse.Dispose();
+        _scopeHintDelay.Dispose();
+        _scopeHintPulse.Dispose();
+    }
+
+    // ---- the search box's folder button ---------------------------------------------------------
+
+    /// <summary>Clicked this often to search everything, the user knows it: it no longer lights up.</summary>
+    const int ScopeHintUntilUses = 3;
+
+    readonly System.Windows.Forms.Timer _scopeHintDelay = new() { Interval = 900 };
+    readonly System.Windows.Forms.Timer _scopeHintPulse = new() { Interval = 30 };
+    long _scopeHintStarted;
+    bool _scopeHintAnimate, _scopeHintBuilt;
+
+    /// <summary>
+    /// A search inside a folder found nothing: the user may not know it looked only there. Once the typing has paused,
+    /// the folder's button at the start of the search box pulses in the accent colour (a still highlight when Windows'
+    /// animations are off), saying "click me to search everything". Not once it has been used for that 3 times.
+    /// </summary>
+    void UpdateScopeHint()
+    {
+        if (!_scopeHintBuilt)
+        {
+            _scopeHintBuilt = true;
+            _scopeHintDelay.Tick += (_, _) => { _scopeHintDelay.Stop(); StartScopeHint(); };
+            _scopeHintPulse.Tick += (_, _) => PulseScopeHint();
+        }
+        if (!ScopeHintWanted()) { StopScopeHint(); return; }
+        if (_scopeHintPulse.Enabled) return; // already showing for these results
+        _scopeHintDelay.Stop();
+        _scopeHintDelay.Start();
+    }
+
+    /// <summary>Nothing found by a search that looked only in a folder, and the button not yet used enough to be known.</summary>
+    bool ScopeHintWanted() => _loaded && !IsDisposed && _search.TextLength > 0 && !_searchPending && _ids.Length == 0
+                              && _app.Settings.ScopeChipUses < ScopeHintUntilUses && ScopeButton().Click == SearchScope.Click.ToEverything;
+
+    void StartScopeHint()
+    {
+        if (!ScopeHintWanted() || ActiveForm != this) return;
+        _scopeHintAnimate = AnimationsOn();
+        _scopeHintStarted = Environment.TickCount64;
+        _scopeHintPulse.Start();
+        PulseScopeHint();
+    }
+
+    void PulseScopeHint()
+    {
+        long t = Environment.TickCount64 - _scopeHintStarted;
+        if (IsDisposed || !ScopeHintWanted()) { StopScopeHint(); return; }
+        // Three pulses, then it stays lightly lit while nothing is found (a still highlight without animations).
+        float amount = !_scopeHintAnimate ? 1f
+            : t < HintPulses * HintPulseMs ? (float)(0.5 - 0.5 * Math.Cos(2 * Math.PI * (t % HintPulseMs) / HintPulseMs))
+            : 0.35f;
+        _searchField.SetScopeGlow(amount);
+    }
+
+    void StopScopeHint()
+    {
+        _scopeHintDelay.Stop();
+        _scopeHintPulse.Stop();
+        _searchField.SetScopeGlow(0);
+    }
+
+    /// <summary>The button was clicked to search everything: one more use; from the third, it never lights up again.</summary>
+    void ScopeChipUsed()
+    {
+        StopScopeHint();
+        var s = _app.Settings;
+        if (s.ScopeChipUses >= ScopeHintUntilUses) return;
+        s.ScopeChipUses++;
+        s.Save();
     }
 }

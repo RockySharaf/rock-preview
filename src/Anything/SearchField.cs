@@ -42,6 +42,15 @@ internal sealed class SearchField : Control
         ApplyColors();
     }
 
+    /// <summary>How much the scope chip is lit up to be noticed (0 to 1): a search in a folder that found nothing.</summary>
+    public void SetScopeGlow(float amount)
+    {
+        amount = Math.Clamp(amount, 0f, 1f);
+        if (_chip.Glow == amount) return;
+        _chip.Glow = amount;
+        _chip.Invalidate();
+    }
+
     /// <summary>Where a search looks: <paramref name="text"/> ("Everything" in blue, or a folder's name) and what clicking it does.</summary>
     public void SetScope(string text, bool everything, bool clickable, string tip)
     {
@@ -199,6 +208,10 @@ internal sealed class ScopeChip : Control
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool Clickable { get; set; }
 
+    /// <summary>Lit up in the accent colour, 0 to 1 (as the Thumbnails button is to be noticed).</summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public float Glow { get; set; }
+
     int Pad => LogicalToDeviceUnits(8);
     int GlyphSize => LogicalToDeviceUnits(12);
 
@@ -216,6 +229,16 @@ internal sealed class ScopeChip : Control
             : Color.FromArgb((ExplorerTheme.Dark ? 0x18 : 0x0F) + lift, ExplorerTheme.Text);
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         ExplorerTheme.FillRounded(g, new Rectangle(0, 0, Width - 1, Height - 1), LogicalToDeviceUnits(4), fill);
+        if (Glow > 0)
+        {
+            // The accent, over the chip and round its edge.
+            var accent = ExplorerTheme.Accent;
+            ExplorerTheme.FillRounded(g, new Rectangle(0, 0, Width - 1, Height - 1), LogicalToDeviceUnits(4), Color.FromArgb((int)(Glow * 70), accent));
+            float w = Math.Max(1f, LogicalToDeviceUnits(2) * 0.75f);
+            using var path = ExplorerTheme.RoundedRect(new RectangleF(w / 2, w / 2, Width - w - 1.5f, Height - w - 1.5f), LogicalToDeviceUnits(4));
+            using var pen = new Pen(Color.FromArgb((int)(Glow * 255), accent), w);
+            g.DrawPath(pen, path);
+        }
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.Default;
         int x = Pad;
         if (!Everything)

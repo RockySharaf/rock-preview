@@ -364,7 +364,7 @@ internal sealed partial class MainForm
             // The Everyday files filter applies to a search too, and is the likelier reason it finds nothing (after words
             // inside files: a choice that is off matches nothing whatever the filter).
             else if (_search.TextLength > 0 || _filterIndex > 0)
-                text = content ?? "No items match your search." + (everyday ? " Turn off Everyday files to see every file." : "");
+                text = content ?? "No items match your search." + (everyday ? " Turn off Everyday files to see every file." : "") + OnlyInFolderText();
             else
             {
                 string files = everyday ? "everyday files" : "files";
@@ -379,9 +379,20 @@ internal sealed partial class MainForm
             var folders = CoverageFolders();
             var gaps = FolderGaps(folders);
             text = content ?? (gaps.Count > 0 ? $"Files in {GapLabel(folders, gaps)} don't show up in searches."
-                : "No items match your search." + (SearchInsideFolders && _app.Settings.EverydayFilesOnly ? " Turn off Everyday files to see every file." : ""));
+                : "No items match your search." + (SearchInsideFolders && _app.Settings.EverydayFilesOnly ? " Turn off Everyday files to see every file." : "")
+                  + OnlyInFolderText());
         }
         _list.EmptyText = text;
         _grid.EmptyText = text;
+        UpdateScopeHint();
+    }
+
+    /// <summary>A search that looked only in a folder says so, and how to look everywhere (the button that lights up).</summary>
+    string OnlyInFolderText()
+    {
+        var scope = ScopeButton();
+        return scope.Click == SearchScope.Click.ToEverything && !scope.Everything
+            ? $" It looked only in {scope.Text}: click {scope.Text} at the start of the search box to search everything."
+            : "";
     }
 }
