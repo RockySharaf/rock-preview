@@ -94,6 +94,8 @@ internal sealed partial class MainForm
         public bool Descending;
         public bool Browsing, ZapActive, ZapThumbs;
         public List<string> ZapRoots = [];
+        /// <summary>Home's recent files shown as "every file in" (Thumbnails at Home), or null.</summary>
+        public List<string>? ZapRecent;
         public string ZapLabel = "";
         public List<string> SelScope = [];
         public bool UseSelScope;

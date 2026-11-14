@@ -207,6 +207,21 @@ public class SearchEngineTests : SearchTestBase
         Assert.Equal(all, Find("", sort: SortKey.Name));
     }
 
+    [Fact]
+    public void Exact_files_by_folder_and_whole_name()
+    {
+        // What Home's recent files as thumbnails asks for: each file by its folder and its whole name, no look-alikes.
+        string Exact(string path) => RecentFiles.ExactFile(path);
+        AssertFinds(Exact(Notes), Notes);
+        AssertFinds($"<{Exact(Notes)} | {Exact(SongTwo)}>", Notes, SongTwo);
+        AssertFinds(@"<parent:""C:\Docs"" regex:""^notes$"">");
+        AssertFinds(Exact(Song), Song); // not "Song Two.MP3"
+        AssertFinds(Exact(@"C:\Docs\Archive\old.zip"), OldZip);
+        // With whole words on (the default now), and on a file whose name has regex characters in it.
+        AssertFinds(Exact(Notes), new SearchOptions { MatchWholeWord = true }, Notes);
+        AssertFinds(Exact(Its), Its);
+    }
+
     // ---------------- functions ----------------
 
     [Fact]

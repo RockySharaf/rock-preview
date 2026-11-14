@@ -28,7 +28,8 @@ internal sealed partial class MainForm
     readonly ToolStripSplitButton _thumbsButton = new("Thumbnails");
     readonly ToolStripMenuItem _zapThumbItem = new(), _zapListItem = new(), _zapDeepItem = new("Include subfolders"),
                                _zapEverydayItem = new("Everyday files only"), _zapEverydayChooseItem = new("Choose everyday files...");
-    readonly ToolStripButton _cmdEveryday = new("Everyday files"); // shown with Thumbnails' files: hides code and system files
+    readonly ToolStripSplitButton _cmdEveryday = new("Everyday files"); // shown with Thumbnails' files: hides code and system files; its arrow picks the kinds
+    bool _keepEverydayMenu; // a kind was ticked: the menu stays open for the next
     readonly ToolStripSeparator _sepSearch = new();
     readonly SplitContainer _body = new();     // navigation pane | files + preview
     readonly Panel _navPanel = new();
@@ -78,7 +79,7 @@ internal sealed partial class MainForm
         Cmd(_cmdSearchOptions, ExplorerIcons.SearchOptions, ExplorerTheme.GFilter, "Search options", "Where and how to search", null);
         Cmd(_cmdCloseSearch, ExplorerIcons.CloseSearch, ExplorerTheme.GClose, "Close search", "Close search (Esc)", CloseSearch);
         Cmd(_thumbsButton, ExplorerIcons.IconsSmall, ExplorerTheme.GGrid, "Thumbnails", "", null);
-        Cmd(_cmdEveryday, ExplorerIcons.AddressGallery, ExplorerTheme.GPhoto, "Everyday files", "", ToggleEverydayFiles);
+        Cmd(_cmdEveryday, ExplorerIcons.AddressGallery, ExplorerTheme.GPhoto, "Everyday files", "", null);
         Cmd(_cmdMore, null, ExplorerTheme.GSettings, null, "Settings (Ctrl+,). More commands under the arrow", null);
         Cmd(_cmdPreview, ExplorerIcons.DetailsPane, ExplorerTheme.GPane, "Preview", "Show or hide the preview pane (Alt+P)", TogglePreview);
         _cmdPreview.Alignment = ToolStripItemAlignment.Right;
@@ -108,6 +109,15 @@ internal sealed partial class MainForm
         // Thumbnails: whatever is on screen as thumbnails (see ToggleThumbnails); again = back. The arrow offers
         // every file under the folder as thumbnails or as a list, and whether subfolders count.
         _thumbsButton.ButtonClick += (_, _) => ToggleThumbnails();
+        // Everyday files: the button turns it on and off; its arrow picks which kinds of file count.
+        _cmdEveryday.ButtonClick += (_, _) => ToggleEverydayFiles();
+        _cmdEveryday.DropDownItems.Add(new ToolStripMenuItem("(kinds)"));
+        _cmdEveryday.DropDownOpening += (_, _) => BuildEverydayMenu();
+        _cmdEveryday.DropDown.Closing += (_, e) =>
+        {
+            if (_keepEverydayMenu && e.CloseReason == ToolStripDropDownCloseReason.ItemClicked) e.Cancel = true;
+            _keepEverydayMenu = false;
+        };
         _zapThumbItem.Click += (_, _) => ToggleZap(thumbs: true);
         _zapListItem.Click += (_, _) => ToggleZap(thumbs: false);
         _zapDeepItem.Click += (_, _) => ToggleZapDepth();
@@ -503,9 +513,10 @@ internal sealed partial class MainForm
             _commands.LayoutExplorerItems(_uiFont); // the halves touch while both show
         }
         bool thumbs = !explorer && ThumbnailMode;
-        _thumbsButton.Enabled = !explorer || _explorer.CurrentPath != null; // This PC, Network...: no folder of files
+        _thumbsButton.Enabled = !explorer || _explorer.CurrentPath != null || AtHome; // This PC, Network...: no folder of files; Home: its recent files
         _thumbsButton.Tag = thumbs; // drawn pressed while thumbnails are showing
-        _thumbsButton.ToolTipText = explorer ? "Thumbnails of every file in this folder and its subfolders (Ctrl+Shift+X)"
+        _thumbsButton.ToolTipText = explorer && AtHome ? "Thumbnails of the files you opened lately (Ctrl+Shift+X)"
+            : explorer ? "Thumbnails of every file in this folder and its subfolders (Ctrl+Shift+X)"
             : thumbs ? (_zapActive ? "Back to the folder (Ctrl+Shift+X)" : "Back to the list (Ctrl+Shift+X)")
             : Filters.All[_filterIndex].Search == "folder:" ? "Show these folders as thumbnails (Ctrl+Shift+X)"
             : "Thumbnails of the files found and of every file in the folders found (Ctrl+Shift+X)";
@@ -514,9 +525,10 @@ internal sealed partial class MainForm
         // false until the bar shows.
         bool everydayApplies = _zapActive || SearchInsideFolders;
         if (_cmdEveryday.Available != everydayApplies) _cmdEveryday.Available = everydayApplies;
-        _cmdEveryday.Checked = _app.Settings.EverydayFilesOnly;
+        _cmdEveryday.Tag = _app.Settings.EverydayFilesOnly; // drawn pressed while on
+        _cmdEveryday.Invalidate();
         _cmdEveryday.ToolTipText = _app.Settings.EverydayFilesOnly
-            ? "Showing only everyday files: pictures, videos, music, documents... (Thumbnails › Choose everyday files). Click to show every file (code, settings, system files...)"
+            ? "Showing only everyday files: pictures, videos, music, documents... Click to show every file (code, settings, system files...); the arrow picks the kinds"
             : "Showing every file. Click to show only everyday files: pictures, videos, music, documents...";
         _cmdPreview.Checked = _app.Settings.PreviewVisible;
     }
@@ -954,15 +966,18 @@ internal sealed partial class MainForm
             return;
         }
 
-        var roots = ZapTargets();
-        if (roots.Count == 0)
+        // Home: the files opened lately, as Home lists them under Recent.
+        List<string>? recent = ExplorerShown && AtHome ? ReadRecentFiles() : null;
+        var roots = recent != null ? [] : ZapTargets();
+        if (roots.Count == 0 && recent == null)
         {
             MessageBox.Show(this, "Open a folder, or select folders in the results, to see every file in it at once.",
                 "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
         _zapRoots = roots;
-        _zapLabel = ZapLabel(roots);
+        _tab.ZapRecent = recent;
+        _zapLabel = recent != null ? "Recent files" : ZapLabel(roots);
         // The files come in the order the folder showed them (newest first in Downloads, say), not the last search's.
         _sortBeforeZap = (_sort, _desc);
         _sortFromFolder = ExplorerShown ? _explorer.CurrentSort() : null;
@@ -974,7 +989,7 @@ internal sealed partial class MainForm
         }
         _zapActive = true;
         _zapThumbs = thumbs;
-        ChooseZapSource(roots); // the index, or the disk when the index doesn't have the folders
+        if (recent == null) ChooseZapSource(roots); // the index, or the disk when the index doesn't have the folders
         if (thumbs) _app.Tried(GettingStarted.Thumbnails);
         _suppress = true;
         _search.Clear(); // the search box now filters inside the zapped files
@@ -991,6 +1006,7 @@ internal sealed partial class MainForm
         _zapActive = false;
         _zapThumbs = false;
         _zapRoots = [];
+        _tab.ZapRecent = null;
         DisposeListing(_tab);
         _tab.ZapSearchRoots = [];
         _tab.FolderBarDismissedFor = null;
@@ -1014,6 +1030,57 @@ internal sealed partial class MainForm
         if (rerun) RunSearch(SearchReason.NewQuery);
     }
 
+    /// <summary>
+    /// Everyday files' arrow: on or off, and which kinds count (ticking one keeps the menu open for the next), with
+    /// extensions of one's own in Settings › Thumbnails.
+    /// </summary>
+    void BuildEverydayMenu()
+    {
+        var s = _app.Settings;
+        var items = _cmdEveryday.DropDownItems;
+        items.Clear();
+        items.Add(new ToolStripMenuItem("Everyday files only", null, (_, _) => ToggleEverydayFiles()) { Checked = s.EverydayFilesOnly });
+        items.Add(new ToolStripSeparator());
+        items.Add(new ToolStripMenuItem("Everyday files are") { Enabled = false });
+        var on = new HashSet<string>(s.Everyday.KindsOn, StringComparer.OrdinalIgnoreCase);
+        foreach (var kind in EverydayFiles.Kinds)
+        {
+            var k = kind;
+            var item = new ToolStripMenuItem($"{k.Name.Replace("&", "&&")}  ({k.Examples})") { Checked = on.Contains(k.Key) };
+            item.Click += (_, _) =>
+            {
+                _keepEverydayMenu = true;
+                item.Checked = !item.Checked;
+                SetEverydayKind(k.Key, item.Checked);
+            };
+            items.Add(item);
+        }
+        if (s.EverydayAdded.Count > 0)
+            items.Add(new ToolStripMenuItem("Also " + string.Join(", ", s.EverydayAdded.Take(8)) + (s.EverydayAdded.Count > 8 ? "..." : "")) { Enabled = false });
+        items.Add(new ToolStripSeparator());
+        items.Add(new ToolStripMenuItem("Add extensions...", null, (_, _) => _app.ShowSettings(this, "Thumbnails")));
+        items.Add(new ToolStripMenuItem("Back to the usual", null, (_, _) =>
+        {
+            s.EverydayKindsOff = [];
+            s.EverydayAdded = [];
+            s.EverydayFilesOnly = true;
+            s.Save();
+            foreach (var w in _app.Windows) w.OnZapOptionsChanged();
+        }));
+    }
+
+    /// <summary>A kind of everyday file ticked on or off: it counts from now on, in every window (and Everyday files is on).</summary>
+    void SetEverydayKind(string key, bool on)
+    {
+        var s = _app.Settings;
+        var off = s.EverydayKindsOff.Where(k => !k.Equals(key, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (!on) off.Add(key);
+        s.EverydayKindsOff = off;
+        s.EverydayFilesOnly = true;
+        s.Save();
+        foreach (var w in _app.Windows) w.OnZapOptionsChanged();
+    }
+
     /// <summary>"Everyday files": Thumbnails' files leave out code, settings, program and system files, or show them again.</summary>
     void ToggleEverydayFiles()
     {
@@ -1031,8 +1098,19 @@ internal sealed partial class MainForm
     }
 
     /// <summary>Every file under the roots (files only), or only those directly inside them.</summary>
+    /// <summary>The Explorer view shows Home.</summary>
+    bool AtHome => _browsing && _explorer.CurrentPath == null
+                   && (_explorer.CurrentParsingName?.Contains("f874310e-b6b7-47dc-bc84-b9e6b38f5903", StringComparison.OrdinalIgnoreCase) ?? false);
+
+    /// <summary>The files opened lately (Windows' Recent folder), newest first.</summary>
+    static List<string> ReadRecentFiles() => RecentFiles.Read(Environment.GetFolderPath(Environment.SpecialFolder.Recent),
+        lnk => Shortcuts.Read(lnk)?.Path, File.Exists);
+
     string ZapFilter()
     {
+        // Home's recent files: each by its folder and name.
+        if (_tab.ZapRecent is { } recent)
+            return "file: " + RecentFiles.Filter(recent) + (_app.Settings.EverydayFilesOnly ? " " + _app.Settings.Everyday.Filter : "");
         bool deep = _app.Settings.ZapIncludeSubfolders;
         // The names the index (or the tab's listing) has the folders under: a SUBST drive's folder is under its target.
         var roots = _tab.ZapSearchRoots.Count > 0 ? _tab.ZapSearchRoots : _zapRoots;
@@ -1047,6 +1125,8 @@ internal sealed partial class MainForm
 
     string ZapStatus()
     {
+        if (_tab.ZapRecent != null)
+            return $"Recent files: {_ids.Length:N0}" + (_app.Settings.EverydayFilesOnly ? " (everyday files only)" : "");
         string where = _app.Settings.ZapIncludeSubfolders ? "including subfolders" : "this folder only";
         if (_app.Settings.EverydayFilesOnly) where += ", everyday files only";
         if (_listing != null) where += ", read from the disk";
