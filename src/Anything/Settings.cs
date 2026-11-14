@@ -48,12 +48,22 @@ internal sealed partial class AppSettings
 
     // Results
     public Dictionary<string, ColumnSetting> Columns { get; } = new(StringComparer.OrdinalIgnoreCase);
-    public SortKey Sort { get; set; } = SortKey.Name;
-    public bool SortDescending { get; set; }
 
-    // Search
+    // Defaults (Settings › Defaults): what every new window and tab starts with; changed there, every tab follows.
+    /// <summary>The order results start in: newest first, unless changed.</summary>
+    public SortKey Sort { get; set; } = SortKey.DateModified;
+    public bool SortDescending { get; set; } = true;
+    /// <summary>Folders found come before files.</summary>
+    public bool FoldersFirst { get; set; } = true;
     public bool MatchCase { get; set; }
-    public bool MatchWholeWord { get; set; }
+    /// <summary>On unless changed: "port" finds port, not report.</summary>
+    public bool MatchWholeWord { get; set; } = true;
+    /// <summary>The folder tree unfolds down to each folder opened (File Explorer's "Expand to open folder"); off unless changed.</summary>
+    public bool ExpandTreeToFolder { get; set; }
+    /// <summary>A USB drive plugged in: Rock Preview asks to open it, in place of Windows' AutoPlay.</summary>
+    public bool UsbPrompt { get; set; } = true;
+    /// <summary>The defaults now, to tell what Settings changed.</summary>
+    internal SearchDefaults Defaults => new(Sort, SortDescending, FoldersFirst, MatchCase, MatchWholeWord, MatchPath, MatchDiacritics, Regex);
     public bool MatchPath { get; set; }
     public bool MatchDiacritics { get; set; }
     public bool Regex { get; set; }
@@ -206,11 +216,16 @@ internal sealed partial class AppSettings
             cs.Width = Math.Clamp(Int(c.Key + "_column_width", cs.Width), 20, 4000);
             cs.Position = Int(c.Key + "_column_pos", cs.Position);
         }
-        if (Enum.TryParse(Str("sort", ""), true, out SortKey sk)) s.Sort = sk;
-        s.SortDescending = !Bool("sort_ascending", true);
+        // The defaults have their own keys: "sort", "sort_ascending" and "match_whole_word" were the last window's, saved
+        // as it closed, and are left behind.
+        if (Enum.TryParse(Str("default_sort", ""), true, out SortKey sk)) s.Sort = sk;
+        s.SortDescending = Bool("default_sort_descending", true);
+        s.FoldersFirst = Bool("folders_first", true);
+        s.ExpandTreeToFolder = Bool("expand_tree_to_folder", false);
+        s.UsbPrompt = Bool("usb_prompt", true);
 
         s.MatchCase = Bool("match_case", false);
-        s.MatchWholeWord = Bool("match_whole_word", false);
+        s.MatchWholeWord = Bool("default_match_whole_word", true);
         s.MatchPath = Bool("match_path", false);
         s.MatchDiacritics = Bool("match_diacritics", false);
         s.Regex = Bool("match_regex", false);
@@ -321,10 +336,13 @@ internal sealed partial class AppSettings
             W(key + "_column_width", c.Width);
             W(key + "_column_pos", c.Position);
         }
-        W("sort", Sort);
-        B("sort_ascending", !SortDescending);
+        W("default_sort", Sort);
+        B("default_sort_descending", SortDescending);
+        B("folders_first", FoldersFirst);
+        B("expand_tree_to_folder", ExpandTreeToFolder);
+        B("usb_prompt", UsbPrompt);
         B("match_case", MatchCase);
-        B("match_whole_word", MatchWholeWord);
+        B("default_match_whole_word", MatchWholeWord);
         B("match_path", MatchPath);
         B("match_diacritics", MatchDiacritics);
         B("match_regex", Regex);
@@ -561,3 +579,7 @@ internal sealed partial class AppSettings
         catch { }
     }
 }
+
+/// <summary>Settings › Defaults for searches, as one value.</summary>
+internal readonly record struct SearchDefaults(SortKey Sort, bool Descending, bool FoldersFirst, bool MatchCase, bool WholeWord,
+    bool MatchPath, bool Diacritics, bool Regex);

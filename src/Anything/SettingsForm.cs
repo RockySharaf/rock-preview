@@ -2,6 +2,7 @@ using System.Drawing.Drawing2D;
 using Anything.Core;
 using Anything.Core.Indexing;
 using Anything.Core.Search;
+using Anything.Explorer;
 using Anything.Interop;
 
 namespace Anything;
@@ -25,8 +26,11 @@ internal sealed partial class SettingsForm : Form
     // Appearance
     readonly ToggleSwitch _filtersBar = new(), _statusBar = new();
     SettingCard? _fontCard;
-    // Search
+    // Defaults
+    readonly ComboBox _defaultSort = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly ToggleSwitch _foldersFirst = new();
     readonly ToggleSwitch _matchCase = new(), _wholeWord = new(), _matchPath = new(), _diacritics = new(), _regex = new();
+    readonly ToggleSwitch _expandTree = new(), _hiddenFiles = new(), _usbPrompt = new();
     // Thumbnails
     readonly ToggleSwitch _everydayOnly = new();
     readonly List<(EverydayFiles.Kind Kind, ToggleSwitch Switch)> _everydayKinds = [];
@@ -83,7 +87,7 @@ internal sealed partial class SettingsForm : Form
 
         AddSection("General", '', GeneralPage());
         AddSection("Appearance", '', AppearancePage());
-        AddSection("Search", '', SearchPage());
+        AddSection("Defaults", '', DefaultsPage());
         AddSection("Thumbnails", ExplorerTheme.GGrid, ThumbnailsPage());
         AddSection("Indexing", '', IndexingPage());
         AddSection("Folders", '', FoldersPage());
@@ -283,14 +287,53 @@ internal sealed partial class SettingsForm : Form
             _fontCard);
     }
 
-    PageStack SearchPage() => Page("Search",
-        Header("New searches start with"),
-        Card("Match case", "\"Report\" finds Report, not report.", _matchCase),
-        Card("Match whole words", "\"port\" finds port, not report.", _wholeWord),
-        Card("Match the full path", "Search words can match folder names on the way to a file.", _matchPath),
-        Card("Match accents", "\"resume\" finds resume, not résumé.", _diacritics),
-        Card("Regular expressions", "Search with patterns like ^IMG_\\d+\\.jpg$.", _regex),
-        ContentSearchDefaultCard());
+    /// <summary>
+    /// What every new window and tab starts with, in one place. Changed here, every open tab takes it too (Sort and
+    /// Search options still change a tab on its own).
+    /// </summary>
+    PageStack DefaultsPage()
+    {
+        _defaultSort.Width = S(240);
+        _defaultSort.AccessibleName = "Sort results by";
+        foreach (var c in SortChoices) _defaultSort.Items.Add(c);
+        return Page("Defaults",
+            Header("Search results"),
+            Card("Sort by", "How results are ordered when a search starts.", _defaultSort),
+            Card("Folders first", "Folders found come before files, each in the order above.", _foldersFirst),
+            Card("Match whole words", "\"port\" finds port, not report.", _wholeWord),
+            Card("Match case", "\"Report\" finds Report, not report.", _matchCase),
+            Card("Match the full path", "Search words can match folder names on the way to a file.", _matchPath),
+            Card("Match accents", "\"resume\" finds resume, not résumé.", _diacritics),
+            Card("Regular expressions", "Search with patterns like ^IMG_\\d+\\.jpg$.", _regex),
+            ContentSearchDefaultCard(),
+            Header("Folders"),
+            Card("Expand the folder tree to the open folder",
+                "Off, the tree on the left stays as you leave it: opening Desktop doesn't unfold This PC down to it.", _expandTree),
+            Card("Show hidden files and folders", "The same setting as File Explorer's View › Show › Hidden items.", _hiddenFiles),
+            Header("USB drives"),
+            Card("Ask to open a USB drive when it's plugged in",
+                "Rock Preview asks, with one click to open it, instead of Windows' own AutoPlay.", _usbPrompt));
+    }
+
+    /// <summary>The orders Settings › Defaults offers.</summary>
+    static readonly SortChoice[] SortChoices =
+    [
+        new("Date modified, newest first", SortKey.DateModified, true),
+        new("Date modified, oldest first", SortKey.DateModified, false),
+        new("Name, A to Z", SortKey.Name, false),
+        new("Name, Z to A", SortKey.Name, true),
+        new("Size, largest first", SortKey.Size, true),
+        new("Size, smallest first", SortKey.Size, false),
+        new("Type", SortKey.Type, false),
+        new("Path", SortKey.Path, false),
+        new("Date created, newest first", SortKey.DateCreated, true),
+        new("Date accessed, newest first", SortKey.DateAccessed, true),
+    ];
+
+    sealed record SortChoice(string Name, SortKey Key, bool Descending)
+    {
+        public override string ToString() => Name;
+    }
 
     PageStack ThumbnailsPage()
     {
@@ -743,6 +786,14 @@ internal sealed partial class SettingsForm : Form
         _filtersBar.Checked = s.FiltersVisible;
         _statusBar.Checked = s.StatusBarVisible;
         UpdateFontCard();
+        var sortChoice = SortChoices.FirstOrDefault(c => c.Key == s.Sort && c.Descending == s.SortDescending)
+            ?? new SortChoice($"{s.Sort}, {(s.SortDescending ? "descending" : "ascending")}", s.Sort, s.SortDescending);
+        if (!_defaultSort.Items.Contains(sortChoice)) _defaultSort.Items.Add(sortChoice);
+        _defaultSort.SelectedItem = sortChoice;
+        _foldersFirst.Checked = s.FoldersFirst;
+        _expandTree.Checked = s.ExpandTreeToFolder;
+        _hiddenFiles.Checked = ExplorerOptions.ShowHidden;
+        _usbPrompt.Checked = s.UsbPrompt;
         _matchCase.Checked = s.MatchCase;
         _wholeWord.Checked = s.MatchWholeWord;
         _matchPath.Checked = s.MatchPath;
@@ -772,8 +823,15 @@ internal sealed partial class SettingsForm : Form
         _loading = false;
 
         foreach (var sw in new[] { _startWithWindows, _runInBackground, _showTray, _replaceExplorer, _openInTabs, _checkUpdates, _filtersBar, _statusBar,
-                                   _matchCase, _wholeWord, _matchPath, _diacritics, _regex })
+                                   _foldersFirst, _matchCase, _wholeWord, _matchPath, _diacritics, _regex, _expandTree, _usbPrompt })
             sw.CheckedChanged += (_, _) => GeneralChanged();
+        _defaultSort.SelectedIndexChanged += (_, _) => GeneralChanged();
+        _hiddenFiles.CheckedChanged += (_, _) =>
+        {
+            if (_loading) return;
+            ExplorerOptions.ShowHidden = _hiddenFiles.Checked;
+            foreach (var w in _app.Windows) w.OnHiddenFilesChanged();
+        };
         _ntfs.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.IndexNtfsVolumes = _ntfs.Checked; UpdateDrivesEnabled(); IndexChanged(); };
         _removable.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.IndexRemovableDrives = _removable.Checked; IndexChanged(); };
         _network.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.IndexNetworkDrives = _network.Checked; IndexChanged(); };
@@ -857,12 +915,18 @@ internal sealed partial class SettingsForm : Form
         s.CheckForUpdates = _checkUpdates.Checked;
         s.FiltersVisible = _filtersBar.Checked;
         s.StatusBarVisible = _statusBar.Checked;
+        var before = s.Defaults;
+        if (_defaultSort.SelectedItem is SortChoice sort) (s.Sort, s.SortDescending) = (sort.Key, sort.Descending);
+        s.FoldersFirst = _foldersFirst.Checked;
         s.MatchCase = _matchCase.Checked;
         s.MatchWholeWord = _wholeWord.Checked;
         s.MatchPath = _matchPath.Checked;
         s.MatchDiacritics = _diacritics.Checked;
         s.Regex = _regex.Checked;
+        s.ExpandTreeToFolder = _expandTree.Checked;
+        s.UsbPrompt = _usbPrompt.Checked;
         _app.ApplySettings(indexChanged: false);
+        if (s.Defaults != before) foreach (var w in _app.Windows) w.OnDefaultsChanged(before, s.Defaults);
     }
 
     /// <summary>

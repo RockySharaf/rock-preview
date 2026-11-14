@@ -642,9 +642,10 @@ internal sealed partial class MainForm
         var paths = SelectedPaths(2000);
         if (paths.Count == 0) { ShowBackgroundMenu(screen); return; }
 
+        // After Open: Open file location, then (moved up from the shell's items) Open with.
         var extras = new List<ExtraMenuItem>
         {
-            new("Open &Path", OpenSelectedPath),
+            new("Open file &location", OpenSelectedPath),
             new("Show in &Windows Explorer", ShowInWindowsExplorer),
             new("Copy &Full Name to Clipboard", CopyFullName),
             new("Copy Pat&h to Clipboard", CopyPath),
@@ -666,7 +667,7 @@ internal sealed partial class MainForm
         m.Items.AddRange(
         [
             open,
-            Item("Open &Path", OpenSelectedPath),
+            Item("Open file &location", OpenSelectedPath),
             new ToolStripSeparator(),
             Item("Copy &Full Name to Clipboard", CopyFullName),
             Item("Copy Pat&h to Clipboard", CopyPath),

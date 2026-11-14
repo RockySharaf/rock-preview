@@ -776,13 +776,7 @@ internal sealed partial class MainForm : Form
         s.AlwaysOnTop = TopMost;
         SaveColumnState();
         foreach (var (k, v) in _cols) s.Columns[k] = new ColumnSetting { Visible = v.Visible, Width = v.Width, Position = v.Position };
-        s.Sort = _sort;
-        s.SortDescending = _desc;
-        s.MatchCase = _matchCase;
-        s.MatchWholeWord = _wholeWord;
-        s.MatchPath = _matchPath;
-        s.MatchDiacritics = _diacritics;
-        s.Regex = _regex;
+        // The order and the match options are Settings › Defaults' own: what a tab changes stays in the tab.
         s.Filter = _filterIndex == 0 ? "" : Filters.All[_filterIndex].Name;
     }
 
@@ -970,7 +964,36 @@ internal sealed partial class MainForm : Form
         Filter = CombineFilters(CombineFilters(Filters.All[_filterIndex].Search, BrowseFilter()),
             SearchInsideFolders && _app.Settings.EverydayFilesOnly ? _app.Settings.Everyday.Filter : null),
         InsideFolders = SearchInsideFolders,
+        FoldersFirst = _app.Settings.FoldersFirst,
     };
+
+    /// <summary>
+    /// Settings › Defaults changed: every tab takes what changed (another default a tab changed for itself stays), and
+    /// the results show it at once.
+    /// </summary>
+    public void OnDefaultsChanged(SearchDefaults before, SearchDefaults now)
+    {
+        foreach (var t in _tabs)
+        {
+            if (before.MatchCase != now.MatchCase) t.MatchCase = now.MatchCase;
+            if (before.WholeWord != now.WholeWord) t.WholeWord = now.WholeWord;
+            if (before.MatchPath != now.MatchPath) t.MatchPath = now.MatchPath;
+            if (before.Diacritics != now.Diacritics) t.Diacritics = now.Diacritics;
+            if (before.Regex != now.Regex) t.Regex = now.Regex;
+            if ((before.Sort, before.Descending) != (now.Sort, now.Descending))
+            {
+                // While every file in a folder shows, the folder's order holds; the tab goes back to the new one after.
+                if (t.SortBeforeZap is not null) t.SortBeforeZap = (now.Sort, now.Descending);
+                else (t.Sort, t.Descending) = (now.Sort, now.Descending);
+            }
+            if (t != _tab) t.Stale = t.StaleNewQuery = true;
+        }
+        if (!_loaded) return;
+        UpdateSortIndicator();
+        SyncMenus();
+        if (Visible) RunSearch(SearchReason.NewQuery);
+        else _tab.Stale = _tab.StaleNewQuery = true;
+    }
 
     /// <summary>
     /// Thumbnails of search results are of files: those found and every file inside the folders found, as Thumbnails
@@ -1064,6 +1087,9 @@ internal sealed partial class MainForm : Form
             if (_list.SelectedIndices.Count > 0) _list.SetAllSelected(false);
             _list.VirtualListSize = _ids.Length;
             newFocus = SelectIds(focusedId, selectedIds);
+            // A new order follows the selected file to its new place; with nothing selected the focus is only where
+            // the keyboard would start (the first row, say), and the results show from the top.
+            if (selectedIds is not { Count: > 0 }) newFocus = -1;
             if (_ids.Length > 0)
             {
                 if (reason == SearchReason.NewQuery) _list.EnsureVisible(0);
@@ -1081,8 +1107,8 @@ internal sealed partial class MainForm : Form
         if (ThumbnailMode)
         {
             _grid.SetCount(_ids.Length, reset: reason == SearchReason.NewQuery);
-            // A new sort order moves the focused file: the grid follows it, as the list does.
-            if (reason == SearchReason.Resort && newFocus >= 0) _grid.EnsureVisible(newFocus);
+            // A new sort order moves the selected file: the grid follows it, as the list does; else back to the top.
+            if (reason == SearchReason.Resort) _grid.EnsureVisible(newFocus >= 0 ? newFocus : 0);
         }
         UpdateStatus();
         QueuePreview();

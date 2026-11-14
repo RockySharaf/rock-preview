@@ -148,6 +148,7 @@ internal sealed class ExplorerHost : Control
         _selectionTimer.Stop();
         try { if (_cookie != 0) b.Unadvise(_cookie); } catch { }
         try { ((IObjectWithSite)b).SetSite(null); } catch { }
+        _menuHook.ReleaseHandle();
         try { b.Destroy(); } catch { }
         try { Marshal.FinalReleaseComObject(b); } catch { }
         _pendingItem = null;
@@ -322,8 +323,63 @@ internal sealed class ExplorerHost : Control
         }
         if (_selectAfterNavigate != null) { _selectAttempts = 0; _selectTimer.Start(); }
         ApplyViewTheme();
+        HookViewMenu();
         Navigated?.Invoke();
         SelectionChanged?.Invoke();
+    }
+
+    readonly ViewMenuHook _menuHook = new();
+
+    /// <summary>Each folder gets a new view window: its context menu is watched there (<see cref="ViewMenuHook"/>).</summary>
+    void HookViewMenu()
+    {
+        var view = GetView<IShellView>(ShellNative.IID_IShellView);
+        if (view == null) return;
+        try
+        {
+            if (view.GetWindow(out IntPtr hwnd) != ShellNative.S_OK || hwnd == IntPtr.Zero || hwnd == _menuHook.Handle) return;
+            _menuHook.ReleaseHandle();
+            _menuHook.AssignHandle(hwnd);
+        }
+        catch (Exception e) when (e is COMException or InvalidOperationException) { }
+        finally { Marshal.ReleaseComObject(view); }
+    }
+
+    /// <summary>
+    /// The folder view's window, which owns the menu it shows for the items right-clicked: as that menu opens (the first
+    /// popup of a menu loop it starts), "Open with" moves up to right after the default verb, Open. Nothing else changes.
+    /// </summary>
+    sealed class ViewMenuHook : NativeWindow
+    {
+        const int WM_ENTERMENULOOP = 0x0211, WM_EXITMENULOOP = 0x0212, WM_NCDESTROY = 0x0082;
+        bool _firstPopup;
+
+        protected override void WndProc(ref Message m)
+        {
+            switch (m.Msg)
+            {
+                case WM_ENTERMENULOOP:
+                    _firstPopup = m.WParam != IntPtr.Zero; // TRUE: a menu from TrackPopupMenu, the context menu
+                    break;
+                case Anything.Interop.Native.WM_INITMENUPOPUP when _firstPopup:
+                    _firstPopup = false;
+                    try
+                    {
+                        int open = Anything.Interop.Native.GetMenuDefaultItem(m.WParam, 1, Anything.Interop.Native.GMDI_USEDISABLED);
+                        if (open >= 0) Anything.Interop.MenuOrder.MoveOpenWith(m.WParam, open + 1);
+                    }
+                    catch (Exception) { }
+                    break;
+                case WM_EXITMENULOOP:
+                    _firstPopup = false;
+                    break;
+                case WM_NCDESTROY:
+                    base.WndProc(ref m);
+                    ReleaseHandle();
+                    return;
+            }
+            base.WndProc(ref m);
+        }
     }
 
     /// <summary>

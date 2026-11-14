@@ -89,6 +89,7 @@ internal sealed class DemoSearchEngine : ISearchEngine
             }
             var arr = ids.ToArray();
             SortIds(index, arr, sort, descending, cancellationToken);
+            if (options.FoldersFirst) arr = [.. arr.Where(index.IsDirectory), .. arr.Where(id => !index.IsDirectory(id))];
             return new SearchResults { Ids = arr, Elapsed = sw.Elapsed };
 
             // A folder found by the query, or one above it; a root (a drive) never counts, as in the real engine.

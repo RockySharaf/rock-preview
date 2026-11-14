@@ -599,6 +599,21 @@ internal sealed partial class MainForm
         _cmdView.DropDownItems.Add(new ToolStripSeparator());
         _cmdView.DropDownItems.Add(new ToolStripMenuItem("Navigation pane", MenuIcon(ExplorerIcons.NavPane), (_, _) => ToggleNavPane()) { Checked = _app.Settings.ExplorerNavPane });
         _cmdView.DropDownItems.Add(new ToolStripMenuItem("Preview pane", MenuIcon(ExplorerIcons.DetailsPane), (_, _) => TogglePreview()) { Checked = _app.Settings.PreviewVisible });
+        _cmdView.DropDownItems.Add(new ToolStripSeparator());
+        _cmdView.DropDownItems.Add(new ToolStripMenuItem("Hidden items", null, (_, _) => ToggleHiddenItems()) { Checked = ExplorerOptions.ShowHidden });
+    }
+
+    /// <summary>View › Hidden items: File Explorer's own setting, so both apps show the same; every tab's folder follows.</summary>
+    void ToggleHiddenItems()
+    {
+        ExplorerOptions.ShowHidden = !ExplorerOptions.ShowHidden;
+        foreach (var w in _app.Windows) w.OnHiddenFilesChanged();
+    }
+
+    /// <summary>Hidden items were turned on or off: each tab's folder view shows its files again.</summary>
+    internal void OnHiddenFilesChanged()
+    {
+        foreach (var t in _tabs) if (t.Explorer.IsHandleCreated) t.Explorer.RefreshView();
     }
 
     void ToggleNavPane()

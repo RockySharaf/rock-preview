@@ -188,6 +188,10 @@ internal sealed class ShellContextMenu
             for (int i = 0; i < extras.Count; i++)
                 Native.InsertMenu(hmenu, insertAt + (uint)i, Native.MF_BYPOSITION | Native.MF_STRING, (UIntPtr)(FirstExtraId + (uint)i), extras[i].Text);
             Native.InsertMenu(hmenu, insertAt + (uint)extras.Count, Native.MF_BYPOSITION | Native.MF_SEPARATOR, UIntPtr.Zero, null);
+            // Open, Open file location (the first extra), then Open with.
+            if (extras.Count > 0)
+                MenuOrder.MoveOpenWith(hmenu, (int)insertAt + 1, id => id >= FirstShellId && id <= LastShellId
+                    && GetVerb(menu, id - FirstShellId) is "openas" or "openwith");
 
             s_menu3 = menuObj as IContextMenu3;
             s_menu2 = s_menu3 is null ? menuObj as IContextMenu2 : null;

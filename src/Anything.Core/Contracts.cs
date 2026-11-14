@@ -26,6 +26,9 @@ public sealed record SearchOptions
     /// folder's subfolders), each also matching <see cref="Filter"/>. A drive the query finds doesn't bring in all of it.
     /// </summary>
     public bool InsideFolders { get; init; }
+
+    /// <summary>The folders found come before the files, each in the order asked for (Settings › Defaults).</summary>
+    public bool FoldersFirst { get; init; }
 }
 
 public sealed class SearchResults

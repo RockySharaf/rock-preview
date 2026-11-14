@@ -100,6 +100,7 @@ public sealed class SearchEngine : ISearchEngine
                         cancellationToken.ThrowIfCancellationRequested();
                         found = cache.Order(found, descending);
                     }
+                    if (options.FoldersFirst) found = FoldersFirst(index, found);
                     return Content.Search.ContentSearch.Results(found, matcher, ctx, sw, cancellationToken);
                 }
             }
@@ -108,6 +109,7 @@ public sealed class SearchEngine : ISearchEngine
             if (ctx.Dupe) ids = DupeFilter(index, ids);
             cancellationToken.ThrowIfCancellationRequested();
             ResultSorter.Sort(index, ctx, ids, sort, descending, cancellationToken);
+            if (options.FoldersFirst) ids = FoldersFirst(index, ids);
             return Content.Search.ContentSearch.Results(ids, matcher, ctx, sw, cancellationToken);
         }
         finally
@@ -158,6 +160,21 @@ public sealed class SearchEngine : ISearchEngine
             pos += counts[c];
             ArrayPool<int>.Shared.Return(b);
         }
+        return result;
+    }
+
+    /// <summary>
+    /// The folders, then the files, each kept in the order they had: a new array, since the sorted order may be the
+    /// presorted cache's own.
+    /// </summary>
+    internal static int[] FoldersFirst(FileIndex index, int[] ids)
+    {
+        var result = new int[ids.Length];
+        int folders = 0;
+        foreach (int id in ids) if (index.IsDirectory(id)) result[folders++] = id;
+        if (folders == 0 || folders == ids.Length) return ids;
+        int files = folders;
+        foreach (int id in ids) if (!index.IsDirectory(id)) result[files++] = id;
         return result;
     }
 

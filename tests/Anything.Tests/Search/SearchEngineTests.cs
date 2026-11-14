@@ -174,6 +174,39 @@ public class SearchEngineTests : SearchTestBase
         Assert.Equal([OldZip, Notes2], Find("archive", Inside, SortKey.Name, descending: true));
     }
 
+    // ---------------- folders first ----------------
+
+    static readonly SearchOptions FoldersFirst = new() { FoldersFirst = true };
+
+    [Fact]
+    public void Folders_first_puts_the_folders_found_before_the_files_each_in_order()
+    {
+        // "o" finds folders (Docs, Program Files, Music) and files; by name the folders come first, in name order too.
+        var mixed = Find("o", sort: SortKey.Name);
+        var first = Find("o", FoldersFirst, SortKey.Name);
+        Assert.Equal(mixed.Order(), first.Order());
+        var folders = first.TakeWhile(p => AllFolders.Contains(p)).ToArray();
+        Assert.NotEmpty(folders);
+        Assert.Equal(mixed.Where(p => AllFolders.Contains(p)), folders);
+        Assert.Equal(mixed.Where(p => !AllFolders.Contains(p)), first.Skip(folders.Length));
+        // Descending too: still folders first, each group descending.
+        var down = Find("o", FoldersFirst, SortKey.Name, descending: true);
+        Assert.Equal(folders.Reverse(), down.Take(folders.Length));
+    }
+
+    [Fact]
+    public void Folders_first_with_presorted_order()
+    {
+        Engine.SortCacheThreshold = 1;
+        var mixed = Find("o", sort: SortKey.Name);
+        var first = Find("o", FoldersFirst, SortKey.Name);
+        Assert.Equal(mixed.Where(p => AllFolders.Contains(p)).Concat(mixed.Where(p => !AllFolders.Contains(p))), first);
+        // Everything (no query) with the cache's own order: the cache isn't changed by it.
+        var all = Find("", sort: SortKey.Name);
+        Find("", FoldersFirst, SortKey.Name);
+        Assert.Equal(all, Find("", sort: SortKey.Name));
+    }
+
     // ---------------- functions ----------------
 
     [Fact]
