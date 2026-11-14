@@ -63,6 +63,9 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
   folder's name at the start of the box to search everything instead, and **Everything** to go back; it always
   switches, also while folders are selected (it then shows their name) or every file in a folder shows. Select
   folders first to search only inside them ("images"). Everything stays chosen until you open another folder.
+- Results start newest first, **folders before files**, matching **whole words** ("port" finds port, not report).
+  **Settings › Defaults** changes any of it, with the other match options, and every open tab follows; Sort and
+  Search options still change one tab on its own.
 - **Search options**, on the command bar while you search, sets where to look, the kind of file (Audio, Compressed,
   Document, Executable, Folder, Picture, Video) and how words match (case, whole word, path, diacritics, regex). While a
   kind is chosen the button shows it ("Video", with its icon) and splits in two, like Windows' split buttons: the
@@ -124,7 +127,7 @@ documents; the first pass takes about 2 minutes in the background"):
   depending on how many pages the PDFs have.
 - Text in scans and screenshots isn't read yet: reading it (OCR) is planned, and **Settings › Indexing** lists it as
   coming later.
-- With **Search › Match inside files** on (the default, set in **Settings › Search**), a plain search word of three or
+- With **Search › Match inside files** on (the default, set in **Settings › Defaults**), a plain search word of three or
   more letters also finds files with that word inside (in Chinese, Japanese or Korean, two characters; a longer run
   of those matches names only, so use `content:` for it); files matched by name come first, then those matched only
   inside files; **Match Case** and **Match Diacritics** apply inside files too, while with **Match Path** or **Regex** on
@@ -144,6 +147,15 @@ documents; the first pass takes about 2 minutes in the background"):
 - **This PC** opens as Explorer shows it: drive tiles with a storage bar (red when nearly full) and "X GB free of
   Y GB", locked BitLocker drives with their lock. Other folders open in Details; **View** switches either.
 - The real shell **New** menu, the Windows **Share** sheet, Properties, Select all / none / invert.
+- The navigation pane keeps **Quick access** (Home, Gallery, your pinned folders) at the top while This PC and the
+  drives scroll below it; its header folds it away. Opening a folder doesn't unfold the tree down to it (File
+  Explorer's *Expand to open folder*, in **Settings › Defaults**).
+- The address bar runs what isn't a place in the open folder, as File Explorer's does: `cmd`, `powershell`, `wt`,
+  `notepad notes.txt`; a web address opens in the browser.
+- Right-click a file: **Open**, then **Open file location** (in search results), then **Open with**.
+- **View › Hidden items** shows hidden files and folders (File Explorer's own setting).
+- Plug in a USB drive and a small window offers to open it, one click, in place of Windows' AutoPlay (**Settings ›
+  Defaults**).
 - Light and dark themes, the file view included.
 
 ### Tabs
@@ -162,6 +174,8 @@ Like Windows 11 File Explorer, one window holds several folders and searches as 
   the others. Right-click folders in the search results to open them in new tabs.
 - Folders opened from Windows (when Rock Preview replaces File Explorer) and **Win+E** open as a new tab in
   the window you used last. **Settings › General › Open folders in tabs** turns that off for a new window each time.
+- Drag files onto a tab and hold them there: the tab opens, to drop them in its folder. Let go on the tab itself and
+  they go into its folder.
 
 ### Preview pane — hundreds of formats
 | Kind | Examples |
@@ -191,8 +205,10 @@ The arrow next to it shows the same files as a list instead (`Ctrl+Shift+Z`), or
 **Everyday files** (next to Thumbnails while it shows files) keeps it to what people look at: pictures (camera raw
 too), videos, music, PDFs, documents, e-books, design and 3D files, fonts and ZIP/RAR/7z archives. Code, settings,
 logs, program and system files are left out, in a folder and in a search alike. It's on until you turn it off; turn it
-off to see every file. **Thumbnails ⌄ › Choose everyday files** (or **Settings › Thumbnails**) picks which kinds count,
-and adds extensions of your own, like `md` or `json`; **Reset** brings back the usual.
+off to see every file. The arrow beside **Everyday files** picks which kinds count, one click each; **Settings ›
+Thumbnails** also adds extensions of your own, like `md` or `json`; **Reset** brings back the usual.
+
+At **Home**, Thumbnails shows the files you opened lately (Windows' Recent files), as pictures.
 
 A folder the index doesn't have (left out in **Settings › Folders**, on a drive that's turned off, or not read yet)
 is read straight from the disk instead, and kept up to date while it shows. A bar says why its files don't show up in

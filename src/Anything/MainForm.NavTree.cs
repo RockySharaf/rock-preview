@@ -21,8 +21,13 @@ internal sealed partial class MainForm
     {
         foreach (var t in new[] { _pinTree, _tree })
         {
-            t.ExpandToFolder = _app.Settings.ExpandTreeToFolder;
-            t.FolderSelected += location => OpenFolder(location);
+            var tree = t;
+            tree.ExpandToFolder = _app.Settings.ExpandTreeToFolder;
+            tree.FolderSelected += location =>
+            {
+                _navClick = (tree, Environment.TickCount64);
+                OpenFolder(location);
+            };
         }
         // Docked from the back of the z-order: the header on top, Quick access, the line, then the places fill the rest.
         _navPanel.Controls.AddRange([_tree, _pinDivider, _pinTree, _pinHeader]);
@@ -58,8 +63,21 @@ internal sealed partial class MainForm
         if (want > 0 && _pinTree.Height != height) _pinTree.Height = height;
     }
 
+    /// <summary>
+    /// The part of the pane just clicked: the folder it opens keeps that highlight, though the folder may go by another
+    /// name there (a pinned Desktop is Quick access's own item, not the Desktop folder under This PC).
+    /// </summary>
+    (NavigationTree Tree, long Ticks)? _navClick;
+
     partial void SyncNavTreeCore(string location)
     {
+        if (_navClick is { } click && Environment.TickCount64 - click.Ticks < 5000)
+        {
+            _navClick = null;
+            (click.Tree == _pinTree ? _tree : _pinTree).ClearHighlight();
+            return;
+        }
+        _navClick = null;
         bool Same(string? name) => string.Equals(name, location, StringComparison.OrdinalIgnoreCase);
         // Already highlighted in one part (it was clicked there): the other part lets go of its own.
         if (Same(_pinTree.SelectedParsingName)) { _tree.ClearHighlight(); return; }
