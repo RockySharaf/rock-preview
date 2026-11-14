@@ -921,7 +921,7 @@ internal sealed partial class AnythingApp : ApplicationContext
     void UpdateTrayNotice()
     {
         if (_tray?.ContextMenuStrip?.Items["update"] is not ToolStripMenuItem item) return;
-        item.Visible = NewVersion is not null;
+        item.Visible = NewVersion is not null && !UpdatesItself; // silent where it updates itself
         item.Enabled = UpdateProgress is null;
         if (NewVersion is { } v)
             item.Text = UpdateProgress is { } p ? $"Downloading Rock Preview {v.ToString(3)}... {(int)(p * 100)}%"

@@ -773,11 +773,12 @@ internal sealed partial class SettingsForm : Form
             ? (p < 1 ? $"Updating to Rock Preview {v.ToString(3)}... {(int)(p * 100)}%" : $"Installing Rock Preview {v.ToString(3)}: Rock Preview opens again in a moment.")
         : _app.UpdateError is { } error ? "Updating didn't work: " + error
         : _updateReport is { } report ? report
+        : _app.JustUpdatedFrom is { } from ? $"Updated to Rock Preview {AnythingApp.CurrentVersion.ToString(3)} (from {from.ToString(3)})."
+        // Where it updates itself, nothing is announced: it just happens.
+        : _app.UpdatesItself ? "Rock Preview keeps itself up to date."
         : _app.NewVersion is { } n ? (_app.CanUpdateInApp
             ? $"Rock Preview {n.ToString(3)} is out: Check for updates installs it now."
             : $"Rock Preview {n.ToString(3)} is out. This copy isn't the installed one, so it can't update itself: Download gets it.")
-        : _app.JustUpdatedFrom is { } from ? $"Updated to Rock Preview {AnythingApp.CurrentVersion.ToString(3)} (from {from.ToString(3)})."
-        : _app.UpdatesItself ? $"Up to date. New versions install by themselves every night at {DateTime.Today.Add(_app.Settings.AutoUpdateAt):h:mm tt}."
         : "See if a newer version is out.";
 
     void ShowUpdateState()

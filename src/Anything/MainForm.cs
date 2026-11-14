@@ -265,9 +265,10 @@ internal sealed partial class MainForm : Form
     internal void UpdateUpdateBar()
     {
         // An Update now running or that didn't work shows even after "Not now" hid the notice (it was asked for since).
-        // A copy that updates itself shows nothing here (Settings › About's Updates card does): the bar is for one that
-        // needs the user to update it (installed for everyone, run as administrator, or not the installed copy).
-        bool show = !_app.UpdatesItself && _app.NewVersion is not null && (_app.ShowUpdateNotice || _app.UpdateProgress is not null || _app.UpdateError is not null);
+        // Updates are silent, as Claude Code's are: a new version installs by itself, with no bar or notice. A copy that
+        // can't install it by itself (installed for everyone, run as administrator, or not the installed copy) says so
+        // only on Settings › About's Updates card.
+        bool show = false;
         if (show && _app.NewVersion is { } v)
         {
             string version = v.ToString(3);
