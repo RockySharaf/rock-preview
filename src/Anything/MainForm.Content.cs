@@ -320,14 +320,9 @@ internal sealed partial class MainForm
         };
         _offerChoose = choose;
         _offerSearchNetwork = searchNetwork;
+        // The bar wraps its sentence (which can name folders left out) at its own width. Capping the sentence's width
+        // as the bar is resized made a minimized window's bar come back the height of the window.
         bar.Controls.AddRange([_offerText, _offerTurnOn, choose, searchNetwork, later]);
-        // The sentence wraps in a narrow window rather than run past its edge (it can name folders left out).
-        var text = _offerText;
-        bar.SizeChanged += (_, _) =>
-        {
-            var max = new Size(Math.Max(1, bar.ClientSize.Width - bar.Padding.Horizontal - text.Margin.Horizontal), 0);
-            if (text.MaximumSize != max) text.MaximumSize = max;
-        };
         _offerBar = bar;
         // Docked bars stack in the order of the window's controls: just below the new-version bar.
         Controls.Add(bar);

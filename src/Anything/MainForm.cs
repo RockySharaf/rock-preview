@@ -247,13 +247,9 @@ internal sealed partial class MainForm : Form
         _updateGetLink.LinkClicked += (_, _) => _app.OpenReleasePage();
         _updateCancelLink.LinkClicked += (_, _) => _app.CancelUpdate();
         _updateLaterLink.LinkClicked += (_, _) => _app.HideUpdateNotice();
+        // The bar wraps its sentence at its own width. Don't also cap the sentence's width as the bar is resized: a
+        // minimized window measured it a few pixels wide, and the bar came back the height of the window.
         _updateBar.Controls.AddRange([_updateText, _updateNowLink, _updateGetLink, _updateCancelLink, _updateLaterLink]);
-        // The sentence wraps in a narrow window rather than run past its edge (a reason why updating didn't work can be long).
-        _updateBar.SizeChanged += (_, _) =>
-        {
-            var max = new Size(Math.Max(1, _updateBar.ClientSize.Width - _updateBar.Padding.Horizontal - _updateText.Margin.Horizontal), 0);
-            if (_updateText.MaximumSize != max) _updateText.MaximumSize = max;
-        };
         _updateBar.Visible = false;
         UpdateUpdateBar();
     }
