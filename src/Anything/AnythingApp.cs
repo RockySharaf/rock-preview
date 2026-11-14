@@ -317,6 +317,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         if (Settings.RunInBackground)
         {
             w.Hide();
+            Post(UpdateAutomaticallyIfIdle); // a new version waiting goes in now, while nothing is open
             foreach (var other in _windows.Where(x => x != w && !x.Visible).ToArray())
             {
                 other.ForceClose = true;
@@ -590,7 +591,8 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// update this copy in place (every choice kept) and closes. The installer waits for this copy to close, updates it
     /// and opens the new version.
     /// </summary>
-    public async void UpdateNow()
+    /// <param name="background">An automatic update: the new version starts in the tray, and a problem waits in the bar.</param>
+    public async void UpdateNow(bool background = false)
     {
         if (_exiting || UpdateProgress is not null || InstalledCopy is not { } installed) return;
         UpdateError = null;
@@ -641,16 +643,16 @@ internal sealed partial class AnythingApp : ApplicationContext
                     WorkingDirectory = Path.GetDirectoryName(setup)!,
                     // The installation this copy is, named: the installer updates that one, whoever's account elevates it.
                     // For everyone it runs elevated, maybe as an administrator's account: it is told whose update it is.
-                    Arguments = CommandLine.Quote(installed.AllUsers
+                    Arguments = CommandLine.Quote([.. installed.AllUsers
                         ? ["-update", "-launch", "-dir", installed.Folder, "-allusers", "-asuser", System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value]
-                        : ["-update", "-launch", "-dir", installed.Folder]),
+                        : new[] { "-update", "-launch", "-dir", installed.Folder }, .. background ? ["-background"] : Array.Empty<string>()]),
                 };
                 try { Process.Start(start)?.Dispose(); }
                 catch (Win32Exception e) when (e.NativeErrorCode == 1223) // ERROR_CANCELLED: Windows' question declined
                 {
                     UpdateError = "Windows' permission to update it for everyone on this PC was declined, so nothing changed.";
                     SetUpdateProgress(null);
-                    if (_windows.Count == 0 && !_exiting) ShowSearchWindow(); // asked from the tray: the bar says it
+                    if (_windows.Count == 0 && !_exiting && !background) ShowSearchWindow(); // asked from the tray: the bar says it
                     return;
                 }
             }
@@ -671,8 +673,9 @@ internal sealed partial class AnythingApp : ApplicationContext
                 _ => ex.Message,
             };
             SetUpdateProgress(null);
-            // Asked from the tray with no window open: one opens, so the reason shows in its bar.
-            if (_windows.Count == 0 && !_exiting) ShowSearchWindow();
+            // Asked from the tray with no window open: one opens, so the reason shows in its bar (an automatic update
+            // waits for the next window instead, and tries again with the next check).
+            if (_windows.Count == 0 && !_exiting && !background) ShowSearchWindow();
         }
         finally
         {
@@ -680,6 +683,23 @@ internal sealed partial class AnythingApp : ApplicationContext
             cts.Dispose();
         }
     }
+
+    /// <summary>
+    /// Settings › General › Update automatically: a newer version found is installed by itself once no window is open
+    /// (closed into the background, or started with Windows), and comes back in the background. Not where Windows would
+    /// have to ask for permission (installed for everyone, or run as administrator): there the bar offers Update now.
+    /// </summary>
+    void UpdateAutomaticallyIfIdle()
+    {
+        if (!Settings.AutoUpdate || !Settings.CheckForUpdates || IsDemo || _exiting || NewVersion is null || UpdateProgress is not null) return;
+        if (UpdateError is not null && _autoUpdateTried == NewVersion) return; // it didn't work for this version: Update now in the bar
+        if (InstalledCopy is not { } installed || installed.AllUsers || Program.IsElevated() || Setup.InstalledRunsAsAdmin(false)) return;
+        if (_windows.Any(w => w.Visible)) return; // in use: when its windows are closed
+        _autoUpdateTried = NewVersion;
+        UpdateNow(background: true);
+    }
+
+    Version? _autoUpdateTried;
 
     /// <summary>Stops Update now's download (nothing of it is kept).</summary>
     public void CancelUpdate() => _updateCts?.Cancel();
@@ -705,6 +725,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         {
             _updateTimer.Interval = 60 * 60 * 1000;
             await CheckForUpdatesIfDue();
+            UpdateAutomaticallyIfIdle();
         };
         _updateTimer.Start();
     }
@@ -740,6 +761,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         NewVersion = version;
         UpdateTrayNotice();
         foreach (var w in _windows) w.UpdateUpdateBar();
+        UpdateAutomaticallyIfIdle();
         if (version is null || Settings.NotifiedVersion == version.ToString(3)) return;
         Settings.NotifiedVersion = version.ToString(3);
         Settings.Save();
@@ -902,6 +924,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         {
             if (!Settings.CheckForUpdates) { if (NewVersion is not null) SetNewVersion(null); }
             else _ = CheckForUpdatesIfDue();
+            UpdateAutomaticallyIfIdle();
         }
         if (rebuildIndex) RebuildIndex();
         else if (indexChanged) ApplyIndexSettings();

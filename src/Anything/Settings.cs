@@ -159,6 +159,8 @@ internal sealed partial class AppSettings
     // New versions
     /// <summary>Ask GitHub at most once a day whether a newer Rock Preview is out (Options &gt; General, Setup).</summary>
     public bool CheckForUpdates { get; set; } = true;
+    /// <summary>A new version found installs by itself while no window is open (Settings › General).</summary>
+    public bool AutoUpdate { get; set; } = true;
     /// <summary>When the last check got an answer (UTC).</summary>
     public DateTime LastUpdateCheck { get; set; }
     /// <summary>The latest version that check found, kept so the notice shows at the next start even offline.</summary>
@@ -272,6 +274,7 @@ internal sealed partial class AppSettings
         s.TourSeen = Math.Max(0, Int("tour_seen", 0));
         s.RunHistoryEnabled = Bool("run_history_enabled", true);
         s.CheckForUpdates = Bool("check_for_updates", true);
+        s.AutoUpdate = Bool("auto_update", true);
         s.LastUpdateCheck = DateTime.TryParse(Str("last_update_check", ""), CultureInfo.InvariantCulture,
             DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var checkedAt) ? checkedAt : default;
         s.LatestVersion = Str("latest_version", "").Trim();
@@ -383,6 +386,7 @@ internal sealed partial class AppSettings
         W("tour_seen", TourSeen);
         B("run_history_enabled", RunHistoryEnabled);
         B("check_for_updates", CheckForUpdates);
+        B("auto_update", AutoUpdate);
         if (LastUpdateCheck != default) W("last_update_check", LastUpdateCheck.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
         W("latest_version", Clean(LatestVersion));
         W("notified_version", Clean(NotifiedVersion));

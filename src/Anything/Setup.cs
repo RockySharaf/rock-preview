@@ -53,6 +53,7 @@ internal static partial class Setup
         public Anything.Core.Content.ContentMode? Content; // search inside files; null = leave the user's choice as it is
         public string? AsUser; // the SID of the user who chose in the setup window: an elevated copy writes their choices only for them
         public bool Launch;
+        public bool Background; // an automatic update: the new version starts in the background (the tray), and nothing pops up
         public bool Quiet;
         public bool RemoveData;
         public bool Confirmed; // uninstall: the user already said yes (Settings › About), so don't ask again
@@ -78,6 +79,7 @@ internal static partial class Setup
             if (Content is { } content) { l.Add("-content"); l.Add(Anything.Core.Content.ContentSettings.ModeName(content)); }
             if (!string.IsNullOrEmpty(AsUser)) { l.Add("-asuser"); l.Add(AsUser!); }
             if (Launch) l.Add("-launch");
+            if (Background) l.Add("-background");
             if (Quiet) l.Add("-quiet");
             if (Auto) l.Add("-auto");
             return l;
@@ -145,6 +147,7 @@ internal static partial class Setup
                 case "content" when i + 1 < args.Count: o.Content = ParseContentMode(args[++i]); break;
                 case "asuser" when i + 1 < args.Count: o.AsUser = args[++i]; break;
                 case "launch": o.Launch = true; break;
+                case "background": o.Background = true; break;
                 case "quiet": o.Quiet = true; break;
                 case "removedata": o.RemoveData = true; break;
                 case "confirmed": o.Confirmed = true; break;
@@ -410,7 +413,7 @@ internal static partial class Setup
         var inst = string.IsNullOrWhiteSpace(o.Folder) ? FindInstalled() : FindInstalled(o.Folder);
         if (inst is null || (o.AllUsers && !inst.AllUsers))
         {
-            MessageBox.Show("Rock Preview isn't installed there any more, so there is nothing to update. Run its Setup to install it.",
+            if (!o.Background) MessageBox.Show("Rock Preview isn't installed there any more, so there is nothing to update. Run its Setup to install it.",
                 AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
             // The copy that closed for this opens again, from the folder it named, when it is still there.
             if (o.Launch && !string.IsNullOrWhiteSpace(o.Folder) && File.Exists(o.TargetExe))
@@ -431,6 +434,7 @@ internal static partial class Setup
             StartWithWindows = StartsWithWindows(),
             ReplaceExplorer = ExplorerReplacement.IsEnabled(),
             Launch = o.Launch,
+            Background = o.Background,
             Quiet = true, // a copy that doesn't close when asked is ended: the update was asked for
         };
         int code = 0;
@@ -439,7 +443,7 @@ internal static partial class Setup
             // The app asks Windows before it closes; run without rights (by hand, or where Windows can't give them), it
             // stops here rather than ask again and again.
             code = 5;
-            MessageBox.Show("Updating Rock Preview for everyone on this PC needs administrator rights, and Windows didn't give them. " +
+            if (!o.Background) MessageBox.Show("Updating Rock Preview for everyone on this PC needs administrator rights, and Windows didn't give them. " +
                 "Nothing changed: run its Setup as administrator to update it.", AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         else
@@ -449,7 +453,7 @@ internal static partial class Setup
             {
                 Log(ex);
                 code = 1;
-                MessageBox.Show($"Rock Preview couldn't finish updating: {ex.Message}\n\n" +
+                if (!o.Background) MessageBox.Show($"Rock Preview couldn't finish updating: {ex.Message}\n\n" +
                     "It opens again as it is now. Try Update now later, or get the new version from its page on GitHub.",
                     AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
@@ -485,7 +489,7 @@ internal static partial class Setup
     }
 
     /// <summary>Whether the installed copy's shortcuts run it as administrator (its Settings › Apps entry says).</summary>
-    static bool InstalledRunsAsAdmin(bool allUsers)
+    internal static bool InstalledRunsAsAdmin(bool allUsers)
     {
         try
         {
@@ -498,14 +502,16 @@ internal static partial class Setup
     /// <summary>Opens the installed copy: elevated when chosen, otherwise with normal rights even from an elevated setup.</summary>
     public static void LaunchInstalled(Options o)
     {
+        // After an automatic update it goes back to the background, as it was: no window opens.
+        string args = o.Background ? "-startup" : "";
         try
         {
             if (o.RunAsAdmin)
-                Process.Start(new ProcessStartInfo(o.TargetExe) { UseShellExecute = true, Verb = "runas", WorkingDirectory = o.TargetFolder })?.Dispose();
+                Process.Start(new ProcessStartInfo(o.TargetExe, args) { UseShellExecute = true, Verb = "runas", WorkingDirectory = o.TargetFolder })?.Dispose();
             else if (Program.IsElevated())
                 Process.Start(new ProcessStartInfo("explorer.exe", "\"" + o.TargetExe + "\"") { UseShellExecute = false })?.Dispose(); // Explorer starts it unelevated
             else
-                Process.Start(new ProcessStartInfo(o.TargetExe) { UseShellExecute = true, WorkingDirectory = o.TargetFolder })?.Dispose();
+                Process.Start(new ProcessStartInfo(o.TargetExe, args) { UseShellExecute = true, WorkingDirectory = o.TargetFolder })?.Dispose();
         }
         catch (Win32Exception) { /* UAC cancelled */ }
     }

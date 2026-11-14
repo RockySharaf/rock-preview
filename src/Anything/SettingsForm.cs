@@ -22,7 +22,7 @@ internal sealed partial class SettingsForm : Form
     bool _loading, _indexChanged;
 
     // General
-    readonly ToggleSwitch _startWithWindows = new(), _runInBackground = new(), _showTray = new(), _replaceExplorer = new(), _openInTabs = new(), _checkUpdates = new();
+    readonly ToggleSwitch _startWithWindows = new(), _runInBackground = new(), _showTray = new(), _replaceExplorer = new(), _openInTabs = new(), _checkUpdates = new(), _autoUpdate = new();
     // Appearance
     readonly ToggleSwitch _filtersBar = new(), _statusBar = new();
     SettingCard? _fontCard;
@@ -261,7 +261,7 @@ internal sealed partial class SettingsForm : Form
     PageStack GeneralPage()
     {
         string key = _app.ActiveHotkey ?? "the hotkey";
-        _replaceExplorer.Enabled = _checkUpdates.Enabled = !_app.IsDemo;
+        _replaceExplorer.Enabled = _checkUpdates.Enabled = _autoUpdate.Enabled = !_app.IsDemo;
         return Page("General",
             Card("Start when Windows starts", $"So {key} opens Rock Preview any time.", _startWithWindows),
             Card("Keep running in the background", $"Closing the window keeps it ready for {key}, with your searches as you left them.", _runInBackground),
@@ -272,7 +272,10 @@ internal sealed partial class SettingsForm : Form
             Card("Open folders in tabs",
                 "A folder opened from Windows, or Win+E, opens as a new tab in the window you used last. Off: each opens in a new window.", _openInTabs),
             Card("Tell me when a new version is out",
-                "Once a day it asks GitHub for the latest version. Nothing about you or your files is sent.", _checkUpdates));
+                "Once a day it asks GitHub for the latest version. Nothing about you or your files is sent.", _checkUpdates),
+            Card("Update automatically",
+                "A new version installs by itself while Rock Preview is closed to the background, and comes back there. " +
+                "Your settings and index are kept.", _autoUpdate));
     }
 
     PageStack AppearancePage()
@@ -784,6 +787,7 @@ internal sealed partial class SettingsForm : Form
         _replaceExplorer.Checked = s.UseInsteadOfExplorer;
         _openInTabs.Checked = s.OpenFoldersInTabs;
         _checkUpdates.Checked = s.CheckForUpdates;
+        _autoUpdate.Checked = s.AutoUpdate;
         _filtersBar.Checked = s.FiltersVisible;
         _statusBar.Checked = s.StatusBarVisible;
         UpdateFontCard();
@@ -823,7 +827,7 @@ internal sealed partial class SettingsForm : Form
         _hotkeyWin.Checked = (mods & Native.MOD_WIN) != 0;
         _loading = false;
 
-        foreach (var sw in new[] { _startWithWindows, _runInBackground, _showTray, _replaceExplorer, _openInTabs, _checkUpdates, _filtersBar, _statusBar,
+        foreach (var sw in new[] { _startWithWindows, _runInBackground, _showTray, _replaceExplorer, _openInTabs, _checkUpdates, _autoUpdate, _filtersBar, _statusBar,
                                    _foldersFirst, _matchCase, _wholeWord, _matchPath, _diacritics, _regex, _expandTree, _usbPrompt })
             sw.CheckedChanged += (_, _) => GeneralChanged();
         _defaultSort.SelectedIndexChanged += (_, _) => GeneralChanged();
@@ -914,6 +918,7 @@ internal sealed partial class SettingsForm : Form
         s.UseInsteadOfExplorer = _replaceExplorer.Checked;
         s.OpenFoldersInTabs = _openInTabs.Checked;
         s.CheckForUpdates = _checkUpdates.Checked;
+        s.AutoUpdate = _autoUpdate.Checked;
         s.FiltersVisible = _filtersBar.Checked;
         s.StatusBarVisible = _statusBar.Checked;
         var before = s.Defaults;
