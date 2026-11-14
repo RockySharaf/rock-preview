@@ -275,8 +275,24 @@ internal sealed partial class SettingsForm : Form
             Card("Tell me when a new version is out",
                 "Once a day it asks GitHub for the latest version. Nothing about you or your files is sent.", _checkUpdates),
             Card("Update automatically",
-                "A new version installs by itself while Rock Preview is closed to the background, and comes back there. " +
-                "Your settings and index are kept.", _autoUpdate));
+                "A new version installs by itself every night at the time set, even with Rock Preview open (it opens again " +
+                "after); if the PC is off then, the next time it starts. It also installs whenever Rock Preview is closed to " +
+                "the background. Your settings and index are kept.", AutoUpdateControls()));
+    }
+
+    readonly DateTimePicker _autoUpdateAt = new() { Format = DateTimePickerFormat.Custom, CustomFormat = "h:mm tt", ShowUpDown = true };
+
+    /// <summary>The nightly update's time (11:00 PM unless changed) beside its switch.</summary>
+    Control AutoUpdateControls()
+    {
+        _autoUpdateAt.Width = S(110);
+        _autoUpdateAt.AccessibleName = "Update every night at";
+        _autoUpdateAt.Margin = new Padding(0, S(2), S(12), 0);
+        var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty };
+        row.Controls.Add(new Label { Text = "Every night at", AutoSize = true, Margin = new Padding(0, S(6), S(6), 0), BackColor = Color.Transparent });
+        row.Controls.Add(_autoUpdateAt);
+        row.Controls.Add(_autoUpdate);
+        return row;
     }
 
     PageStack AppearancePage()
@@ -719,10 +735,42 @@ internal sealed partial class SettingsForm : Form
         var current = AnythingApp.CurrentVersion.ToString(3);
         return Page("About",
             Card("Rock Preview", $"Version {current}. Free software under the GNU GPL v3."),
-            Card("Updates", "See if a newer version is out.", CardButton("Check for updates", () => _app.CheckForUpdatesInteractive(this))),
+            UpdatesCard(),
             Card("Get started", "The short tour: Alt+X, searching everything from a folder, Thumbnails, subfolders, sorting and choosing folders.", CardButton("Show", () => { Close(); _app.ShowGetStarted(); })),
             Card("Source code and releases", "github.com/RockySharaf/rock-preview", CardButton("Open", () => AnythingApp.OpenWebPage("https://github.com/" + Anything.Core.UpdateCheck.Repository))),
             UninstallCard());
+    }
+
+    SettingCard? _updatesCard;
+    Button? _checkButton;
+
+    /// <summary>
+    /// Check for updates: a newer version starts installing right here, no question asked, and the card says how far
+    /// (downloading, then Rock Preview closes and opens again as the new version); up to date, it says so.
+    /// </summary>
+    SettingCard UpdatesCard()
+    {
+        _checkButton = CardButton("Check for updates", () => _app.CheckForUpdatesInteractive(this, text => _updatesCard?.SetDescription(text)));
+        _updatesCard = Card("Updates", UpdatesText(), _checkButton);
+        _app.UpdateStateChanged += ShowUpdateState;
+        FormClosed += (_, _) => _app.UpdateStateChanged -= ShowUpdateState;
+        return _updatesCard;
+    }
+
+    string UpdatesText() => _app.UpdateProgress is { } p && _app.NewVersion is { } v
+            ? $"Updating to Rock Preview {v.ToString(3)}: downloading, {(int)(p * 100)}%. Then Rock Preview closes and opens again as the new version."
+        : _app.UpdateError is { } error ? "Updating didn't work: " + error
+        : _app.NewVersion is { } n ? (_app.UpdatesItself
+            ? $"Rock Preview {n.ToString(3)} is out. It installs by itself tonight at {DateTime.Today.Add(_app.Settings.AutoUpdateAt):h:mm tt}, or now with Check for updates."
+            : $"Rock Preview {n.ToString(3)} is out: Check for updates installs it now.")
+        : _app.UpdatesItself ? $"New versions install by themselves every night at {DateTime.Today.Add(_app.Settings.AutoUpdateAt):h:mm tt}."
+        : "See if a newer version is out.";
+
+    void ShowUpdateState()
+    {
+        if (IsDisposed || _updatesCard == null) return;
+        _updatesCard.SetDescription(UpdatesText());
+        if (_checkButton != null) _checkButton.Enabled = _app.UpdateProgress is null;
     }
 
     /// <summary>
@@ -807,6 +855,8 @@ internal sealed partial class SettingsForm : Form
         _openInTabs.Checked = s.OpenFoldersInTabs;
         _checkUpdates.Checked = s.CheckForUpdates;
         _autoUpdate.Checked = s.AutoUpdate;
+        _autoUpdateAt.Value = DateTime.Today + s.AutoUpdateAt;
+        _autoUpdateAt.Enabled = s.AutoUpdate && !_app.IsDemo;
         _filtersBar.Checked = s.FiltersVisible;
         _statusBar.Checked = s.StatusBarVisible;
         UpdateFontCard();
@@ -852,6 +902,17 @@ internal sealed partial class SettingsForm : Form
                                    _foldersFirst, _matchCase, _wholeWord, _matchPath, _diacritics, _regex, _expandTree, _usbPrompt })
             sw.CheckedChanged += (_, _) => GeneralChanged();
         _defaultSort.SelectedIndexChanged += (_, _) => GeneralChanged();
+        _autoUpdateAt.ValueChanged += (_, _) =>
+        {
+            if (_loading) return;
+            var at = new TimeSpan(_autoUpdateAt.Value.Hour, _autoUpdateAt.Value.Minute, 0);
+            if (at == _app.Settings.AutoUpdateAt) return;
+            _app.Settings.AutoUpdateAt = at;
+            // A new time counts from now: not a night "missed" because the time moved behind the clock.
+            _app.Settings.LastScheduledUpdate = AnythingApp.LastNightlySlot(DateTime.UtcNow, at);
+            _app.Settings.Save();
+            foreach (var w in _app.Windows) w.UpdateUpdateBar();
+        };
         foreach (var sw in _navRoots.Select(r => r.Switch).Append(_frequentFolders)) sw.CheckedChanged += (_, _) => NavPaneChanged();
         _hiddenFiles.CheckedChanged += (_, _) =>
         {
@@ -941,6 +1002,7 @@ internal sealed partial class SettingsForm : Form
         s.OpenFoldersInTabs = _openInTabs.Checked;
         s.CheckForUpdates = _checkUpdates.Checked;
         s.AutoUpdate = _autoUpdate.Checked;
+        _autoUpdateAt.Enabled = s.AutoUpdate && !_app.IsDemo;
         s.FiltersVisible = _filtersBar.Checked;
         s.StatusBarVisible = _statusBar.Checked;
         var before = s.Defaults;

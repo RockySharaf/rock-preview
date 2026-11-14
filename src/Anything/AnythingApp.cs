@@ -107,6 +107,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         StartContent();
         HandleCommandLine(cmd, initial: true);
         StartUpdateChecks();
+        StartNightlyUpdates();
         CheckServiceVersion();
         RefreshDrives();
         _autoPlay.Set(Settings.UsbPrompt && !IsDemo);
@@ -399,6 +400,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         _usbPrompt?.Close();
         _autoPlay.Dispose();
         _jumpListTimer?.Dispose();
+        _nightlyTimer?.Dispose();
         _messageWindow.UnregisterHotkey();
         _messageWindow.DestroyHandle();
         StopContent();
@@ -642,8 +644,9 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// update this copy in place (every choice kept) and closes. The installer waits for this copy to close, updates it
     /// and opens the new version.
     /// </summary>
-    /// <param name="background">An automatic update: the new version starts in the tray, and a problem waits in the bar.</param>
-    public async void UpdateNow(bool background = false)
+    /// <param name="background">The new version starts in the tray (nothing was open).</param>
+    /// <param name="unattended">An automatic update: a problem waits in the bar, and no window opens to say it.</param>
+    public async void UpdateNow(bool background = false, bool unattended = false)
     {
         if (_exiting || UpdateProgress is not null || InstalledCopy is not { } installed) return;
         UpdateError = null;
@@ -703,7 +706,7 @@ internal sealed partial class AnythingApp : ApplicationContext
                 {
                     UpdateError = "Windows' permission to update it for everyone on this PC was declined, so nothing changed.";
                     SetUpdateProgress(null);
-                    if (_windows.Count == 0 && !_exiting && !background) ShowSearchWindow(); // asked from the tray: the bar says it
+                    if (_windows.Count == 0 && !_exiting && !unattended) ShowSearchWindow(); // asked from the tray: the bar says it
                     return;
                 }
             }
@@ -726,7 +729,7 @@ internal sealed partial class AnythingApp : ApplicationContext
             SetUpdateProgress(null);
             // Asked from the tray with no window open: one opens, so the reason shows in its bar (an automatic update
             // waits for the next window instead, and tries again with the next check).
-            if (_windows.Count == 0 && !_exiting && !background) ShowSearchWindow();
+            if (_windows.Count == 0 && !_exiting && !unattended) ShowSearchWindow();
         }
         finally
         {
@@ -742,12 +745,11 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// </summary>
     void UpdateAutomaticallyIfIdle()
     {
-        if (!Settings.AutoUpdate || !Settings.CheckForUpdates || IsDemo || _exiting || NewVersion is null || UpdateProgress is not null) return;
+        if (!UpdatesItself || _exiting || NewVersion is null || UpdateProgress is not null) return;
         if (UpdateError is not null && _autoUpdateTried == NewVersion) return; // it didn't work for this version: Update now in the bar
-        if (InstalledCopy is not { } installed || installed.AllUsers || Program.IsElevated() || Setup.InstalledRunsAsAdmin(false)) return;
-        if (_windows.Any(w => w.Visible)) return; // in use: when its windows are closed
+        if (_windows.Any(w => w.Visible)) return; // in use: when its windows are closed, or tonight
         _autoUpdateTried = NewVersion;
-        UpdateNow(background: true);
+        UpdateNow(background: true, unattended: true);
     }
 
     Version? _autoUpdateTried;
@@ -761,6 +763,69 @@ internal sealed partial class AnythingApp : ApplicationContext
         if (_exiting) return;
         UpdateTrayNotice();
         foreach (var w in _windows) w.UpdateUpdateBar();
+        UpdateStateChanged?.Invoke();
+    }
+
+    /// <summary>A new version was found or went, or updating to it moved on, stopped or didn't work (Settings › About shows it).</summary>
+    public event Action? UpdateStateChanged;
+
+    /// <summary>
+    /// Updates install by themselves here (Settings › General › Update automatically): this copy is the installed one,
+    /// just for this user, and nothing about it makes Windows ask for permission (run as administrator).
+    /// </summary>
+    public bool UpdatesItself => Settings.AutoUpdate && Settings.CheckForUpdates && !IsDemo
+                                 && InstalledCopy is { AllUsers: false } && !Program.IsElevated() && !Setup.InstalledRunsAsAdmin(false);
+
+    // ---- the nightly update -------------------------------------------------------------------
+
+    System.Windows.Forms.Timer? _nightlyTimer;
+
+    /// <summary>Looks every minute whether the nightly update is due (a sleeping PC catches up when it wakes).</summary>
+    void StartNightlyUpdates()
+    {
+        if (IsDemo) return;
+        _nightlyTimer = new System.Windows.Forms.Timer { Interval = 30_000 }; // the first look half a minute after starting
+        _nightlyTimer.Tick += (_, _) =>
+        {
+            _nightlyTimer.Interval = 60_000;
+            _ = UpdateNightlyIfDue();
+        };
+        _nightlyTimer.Start();
+    }
+
+    /// <summary>The last time the nightly update was due, at <paramref name="at"/> local time, at or before <paramref name="now"/> (UTC).</summary>
+    public static DateTime LastNightlySlot(DateTime now, TimeSpan at) => NightlyUpdate.LastSlot(now, at);
+
+    bool _nightlyBusy;
+
+    /// <summary>
+    /// The nightly update: at the time set (11:00 PM unless changed) it asks GitHub and installs a newer version, windows
+    /// open or not (they open again after). Missed (the PC off or asleep then), it runs the next time it can.
+    /// </summary>
+    async Task UpdateNightlyIfDue()
+    {
+        if (_nightlyBusy || _exiting || !UpdatesItself || UpdateProgress is not null) return;
+        var slot = LastNightlySlot(DateTime.UtcNow, Settings.AutoUpdateAt);
+        if (Settings.LastScheduledUpdate == default)
+        {
+            // The first night is the next one: it doesn't update on the spot just because it was never done.
+            Settings.LastScheduledUpdate = slot;
+            Settings.Save();
+            return;
+        }
+        if (Settings.LastScheduledUpdate >= slot) return;
+        _nightlyBusy = true;
+        try
+        {
+            Version? latest;
+            try { latest = await CheckForUpdatesNow(); }
+            catch (Exception) { return; } // offline: the next minute's look tries again
+            Settings.LastScheduledUpdate = slot;
+            Settings.Save();
+            if (UpdateCheck.IsNewer(latest, CurrentVersion) && !_exiting)
+                UpdateNow(background: !_windows.Any(w => w.Visible), unattended: true);
+        }
+        finally { _nightlyBusy = false; }
     }
 
     /// <summary>Tells about a version found earlier right away, then asks GitHub when a day has passed (looked at hourly).</summary>
@@ -812,11 +877,13 @@ internal sealed partial class AnythingApp : ApplicationContext
         NewVersion = version;
         UpdateTrayNotice();
         foreach (var w in _windows) w.UpdateUpdateBar();
+        UpdateStateChanged?.Invoke();
         UpdateAutomaticallyIfIdle();
         if (version is null || Settings.NotifiedVersion == version.ToString(3)) return;
         Settings.NotifiedVersion = version.ToString(3);
         Settings.Save();
-        Notify($"Rock Preview {version.ToString(3)} is available", $"You have {CurrentVersion.ToString(3)}.");
+        // It installs by itself: no notification to act on (the bar says when).
+        if (!UpdatesItself) Notify($"Rock Preview {version.ToString(3)} is available", $"You have {CurrentVersion.ToString(3)}.");
     }
 
     /// <summary>
@@ -873,15 +940,21 @@ internal sealed partial class AnythingApp : ApplicationContext
         if (NewVersion is { } v) OpenWebPage(UpdateCheck.ReleasePage(v));
     }
 
-    /// <summary>Help › Check for Updates, Settings › About: asks GitHub now and says what it found.</summary>
-    public async void CheckForUpdatesInteractive(IWin32Window? owner)
+    /// <summary>
+    /// Help › Check for Updates, Settings › About: asks GitHub now, and a newer version starts installing right away (the
+    /// bar, and Settings › About, show how far), no question asked. <paramref name="report"/>, when given, is told what
+    /// was found instead of a message box (Settings › About says it on its card).
+    /// </summary>
+    public async void CheckForUpdatesInteractive(IWin32Window? owner, Action<string>? report = null)
     {
         var current = CurrentVersion;
         Version? latest;
+        report?.Invoke("Looking for a newer version...");
         try { latest = await CheckForUpdatesNow(); }
         catch (Exception)
         {
             if (owner is Control { IsDisposed: true }) return;
+            if (report != null) { report("Rock Preview couldn't reach GitHub. Check your internet connection and try again."); return; }
             TaskDialog.ShowDialog(owner!, new TaskDialogPage
             {
                 Caption = Title,
@@ -892,6 +965,12 @@ internal sealed partial class AnythingApp : ApplicationContext
             return;
         }
         if (owner is Control { IsDisposed: true }) return;
+        if (UpdateCheck.IsNewer(latest, current) && CanUpdateInApp)
+        {
+            report?.Invoke($"Updating to Rock Preview {latest!.ToString(3)}...");
+            UpdateNow();
+            return;
+        }
         if (UpdateCheck.IsNewer(latest, current))
         {
             bool inApp = CanUpdateInApp;
@@ -917,6 +996,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         }
         else
         {
+            if (report != null) { report($"Rock Preview is up to date: you have the latest version, {current.ToString(3)}."); return; }
             TaskDialog.ShowDialog(owner!, new TaskDialogPage
             {
                 Caption = Title,

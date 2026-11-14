@@ -270,8 +270,9 @@ internal sealed partial class MainForm : Form
         {
             string version = v.ToString(3);
             bool inApp = _app.CanUpdateInApp, downloading = _app.UpdateProgress is not null;
-            _updateText.Text = _app.UpdateProgress is { } p ? $"Downloading Rock Preview {version}... {(int)(p * 100)}%"
+            _updateText.Text = _app.UpdateProgress is { } p ? $"Updating to Rock Preview {version}: downloading, {(int)(p * 100)}%. Rock Preview opens again as the new version."
                 : _app.UpdateError is { } error ? $"Rock Preview {version} is available, but updating to it didn't work. {error}"
+                : _app.UpdatesItself ? $"Rock Preview {version} installs by itself tonight at {DateTime.Today.Add(_app.Settings.AutoUpdateAt):h:mm tt}, or as soon as Rock Preview is closed."
                 : $"Rock Preview {version} is available. You have {AnythingApp.CurrentVersion.ToString(3)}.";
             _updateNowLink.Text = _app.UpdateError is null ? "Update now" : "Try again";
             _updateNowLink.Visible = inApp && !downloading;

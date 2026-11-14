@@ -165,8 +165,15 @@ internal sealed partial class AppSettings
     // New versions
     /// <summary>Ask GitHub at most once a day whether a newer Rock Preview is out (Options &gt; General, Setup).</summary>
     public bool CheckForUpdates { get; set; } = true;
-    /// <summary>A new version found installs by itself while no window is open (Settings › General).</summary>
+    /// <summary>
+    /// A new version installs by itself (Settings › General): every night at <see cref="AutoUpdateAt"/>, open windows or
+    /// not (the next time the PC is on, when it wasn't then), and whenever Rock Preview is closed to the background.
+    /// </summary>
     public bool AutoUpdate { get; set; } = true;
+    /// <summary>The time of day the nightly update runs: 11:00 PM unless changed.</summary>
+    public TimeSpan AutoUpdateAt { get; set; } = new(23, 0, 0);
+    /// <summary>The nightly update last done (the time it was due, UTC); one missed is done the next time Rock Preview runs.</summary>
+    public DateTime LastScheduledUpdate { get; set; }
     /// <summary>When the last check got an answer (UTC).</summary>
     public DateTime LastUpdateCheck { get; set; }
     /// <summary>The latest version that check found, kept so the notice shows at the next start even offline.</summary>
@@ -284,6 +291,9 @@ internal sealed partial class AppSettings
         s.RunHistoryEnabled = Bool("run_history_enabled", true);
         s.CheckForUpdates = Bool("check_for_updates", true);
         s.AutoUpdate = Bool("auto_update", true);
+        if (TimeSpan.TryParseExact(Str("auto_update_at", ""), @"hh\:mm", CultureInfo.InvariantCulture, out var at) && at < TimeSpan.FromDays(1)) s.AutoUpdateAt = at;
+        s.LastScheduledUpdate = DateTime.TryParse(Str("last_scheduled_update", ""), CultureInfo.InvariantCulture,
+            DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var lastNightly) ? lastNightly : default;
         s.LastUpdateCheck = DateTime.TryParse(Str("last_update_check", ""), CultureInfo.InvariantCulture,
             DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var checkedAt) ? checkedAt : default;
         s.LatestVersion = Str("latest_version", "").Trim();
@@ -399,6 +409,8 @@ internal sealed partial class AppSettings
         B("run_history_enabled", RunHistoryEnabled);
         B("check_for_updates", CheckForUpdates);
         B("auto_update", AutoUpdate);
+        W("auto_update_at", AutoUpdateAt.ToString(@"hh\:mm", CultureInfo.InvariantCulture));
+        if (LastScheduledUpdate != default) W("last_scheduled_update", LastScheduledUpdate.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
         if (LastUpdateCheck != default) W("last_update_check", LastUpdateCheck.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
         W("latest_version", Clean(LatestVersion));
         W("notified_version", Clean(NotifiedVersion));
