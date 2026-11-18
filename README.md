@@ -286,8 +286,8 @@ whatever you renamed it to): delete it afterwards. The instant-indexing service 
 other accounts on this PC use it too (not a local account deleted from this PC). If the copy set nothing up, deleting
 its file is all there is to do.
 
-> **Windows SmartScreen** may say "Windows protected your PC" because the download isn't code-signed yet.
-> Click **More info › Run anyway**.
+> **Windows SmartScreen** may say "Windows protected your PC" because the download isn't code-signed yet
+> (see [Code signing policy](#code-signing-policy)). Click **More info › Run anyway**.
 
 > **Instant indexing, approved once.** Reading a drive's Master File Table needs administrator rights, so Setup offers
 > *Instant indexing for all drives*: it installs the small **Rock Preview Service** and Windows asks for permission one
@@ -423,20 +423,39 @@ deletes it too.
 `rockpreview-cli` can read the text index (as it reads the name index), and a CSV exported with the **Matching text**
 column contains document text.
 
-Its only network connection is the check for a new version: at most once a day (and when you choose **Help › Check
+Its only network connection is to GitHub, for new versions: at most once a day (and when you choose **Help › Check
 for Updates**) it asks GitHub's API for the latest release of `RockySharaf/rock-preview`. The request carries
-Rock Preview's version number and nothing about you, your PC or your files; GitHub sees it like any web request. It
-downloads nothing by itself: only **Update now** downloads the new installer, from the release on GitHub, and uses it only
-when its SHA-256 is the one GitHub gives. Turn the check off in Setup or **Settings › General**.
+Rock Preview's version number and nothing about you, your PC or your files; GitHub sees it like any web request. When
+there is a newer version, **Update now** downloads its installer from the release on GitHub (with **Update
+automatically** on, the app downloads it by itself), and uses it only when its SHA-256 is the one GitHub gives. Turn the
+check off in Setup or **Settings › General** and Rock Preview connects to nothing, unless you choose **Help › Check for
+Updates**. Setup shows this, with a link to this policy, before it installs anything.
 
 The optional Rock Preview Service runs from `C:\Program Files\Rock Preview Service` (only administrators can change
 it). It answers only the Windows accounts that installed it, only on this PC, never over the network. It returns file
 names, folders, sizes and dates from local NTFS drives (internal and USB), and never raw disk data or file contents. Uninstalling Rock
 Preview removes it.
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+*(Applied for. Until it's approved, releases are not signed yet.)*
+
+- **What is signed:** `RockPreview-Setup.exe` and `RockPreview.exe` in each [release](https://github.com/RockySharaf/rock-preview/releases)
+  (the same program under two names). Only programs built from this repository's own source code are signed.
+- **How a release is built:** by GitHub Actions on GitHub's own servers, from the release's tag in this repository
+  ([release workflow](.github/workflows/release.yml)). Nothing built on a personal PC is signed.
+- **Team roles:**
+  - Committers and reviewers: [Rocky Sharaf](https://github.com/RockySharaf)
+  - Approvers: [Rocky Sharaf](https://github.com/RockySharaf)
+
+  Changes from anyone else are reviewed before they're merged, and every release is approved by hand before it's signed.
+- **Privacy:** see [Privacy](#privacy). Rock Preview's only network connection is to GitHub, for new versions, and Setup
+  and **Settings › General** turn it off.
+
 ## Roadmap
 
-- Code-signed releases and a Microsoft Store listing
+- Code-signed releases (see [Code signing policy](#code-signing-policy)) and a Microsoft Store listing
 - ARM64 builds
 
 Ideas and bug reports are welcome in [Issues](https://github.com/RockySharaf/rock-preview/issues).

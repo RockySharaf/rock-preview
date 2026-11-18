@@ -26,6 +26,7 @@ internal sealed class SetupForm : Form
     readonly CheckBox _service = new() { Text = "Instant indexing for all drives (Windows asks for permission once)", AutoSize = true, Checked = true };
     readonly CheckBox _updates = new() { Text = "Tell me when a new version is out (checks GitHub once a day)", AutoSize = true, Checked = true };
     readonly CheckBox _launch = new() { Text = "Open Rock Preview when setup finishes", AutoSize = true, Checked = true };
+    readonly LinkLabel _privacy = new() { AutoSize = true, UseMnemonic = false };
     readonly Button _install = new() { Text = "Install", AutoSize = true, FlatStyle = FlatStyle.System };
     readonly Button _cancel = new() { Text = "Cancel", AutoSize = true, FlatStyle = FlatStyle.System };
     readonly Label _status = new() { AutoSize = false, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
@@ -139,6 +140,20 @@ internal sealed class SetupForm : Form
         body.Controls.Add(content);
         body.Controls.Add(Heading("Options"));
         body.Controls.Add(options);
+        // The privacy policy, before anything is installed: what goes over the network (only what the update option above
+        // turns off) and where the whole policy is.
+        const string policy = "Privacy policy";
+        _privacy.Text = "Rock Preview has no telemetry. It connects only to GitHub, to check for and download new versions " +
+            "(the option above turns that off). " + policy;
+        _privacy.LinkArea = new LinkArea(_privacy.Text.Length - policy.Length, policy.Length);
+        _privacy.Font = _small;
+        _privacy.ForeColor = ExplorerTheme.SecondaryText;
+        _privacy.MaximumSize = new Size(inner, 0);
+        // The body scrolls only as far as its rows reach, leaving out its own padding: the last row carries that room
+        // as its margin, or a scrolled window cuts off the line's bottom.
+        _privacy.Margin = new Padding(0, S(6), 0, body.Padding.Vertical);
+        _privacy.LinkClicked += (_, _) => AnythingApp.OpenWebPage($"https://github.com/{Anything.Core.UpdateCheck.Repository}#privacy");
+        body.Controls.Add(_privacy);
 
         // Footer: status / progress on the left, buttons on the right.
         var footer = new Panel { Dock = DockStyle.Bottom, Height = S(64), BackColor = ExplorerTheme.TitleBar };

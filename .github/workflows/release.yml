@@ -1,0 +1,99 @@
+name: release
+
+# Builds a release from its tag (v1.2.3) on GitHub's own servers and puts both downloads in a draft release, which is
+# checked and published by hand with its notes. Once SignPath Foundation's free code signing is set up (repository
+# variable SIGNPATH_ORGANIZATION_ID and secret SIGNPATH_API_TOKEN), the build is signed first: SignPath emails the
+# approver, and the run waits until the release is approved. See README › Code signing policy.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # the draft release
+  actions: read   # SignPath downloads the build from this run
+
+jobs:
+  release:
+    runs-on: windows-latest # GitHub-hosted, as SignPath requires for open-source projects
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Check the tag is the version being built
+        id: version
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = $env:TAG -replace '^v', ''
+          foreach ($file in 'Directory.Build.props', 'src/Anything/Anything.csproj') {
+            [xml]$project = Get-Content $file
+            $declared = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
+            if ($declared -ne $version) { throw "$file says $declared, but the tag is $env:TAG" }
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Build
+        shell: pwsh
+        run: ./build/Publish.ps1
+
+      - name: Keep the build for signing
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: RockPreview-unsigned
+          path: dist/RockPreview.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Sign (SignPath Foundation)
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: rock-preview
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          parameters: |
+            version: "${{ steps.version.outputs.version }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 14400 # each release is approved by hand
+          output-artifact-directory: signed
+
+      - name: Use the signed build for both downloads
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature signed/RockPreview.exe
+          if ($signature.Status -ne 'Valid') { throw "The signed build's signature is $($signature.Status): $($signature.StatusMessage)" }
+          Write-Host "Signed by $($signature.SignerCertificate.Subject)"
+          # The same file under both names: named "...Setup.exe" it installs itself.
+          Copy-Item signed/RockPreview.exe dist/RockPreview.exe -Force
+          Copy-Item signed/RockPreview.exe dist/RockPreview-Setup.exe -Force
+
+      - name: Draft the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $files = 'dist/RockPreview-Setup.exe', 'dist/RockPreview.exe'
+          $signed = (Get-AuthenticodeSignature $files[0]).Status -eq 'Valid'
+          $notes = @(
+            "Built from $env:TAG by $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID ($(if ($signed) { 'signed' } else { 'not signed' })).",
+            '',
+            'SHA-256:'
+          ) + ($files | ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash)  $(Split-Path $_ -Leaf)" })
+          Set-Content draft-notes.md $notes -Encoding utf8
+          # A run done again replaces a draft's downloads; a published release's downloads are never replaced.
+          $release = gh release list --limit 100 --json tagName,isDraft | ConvertFrom-Json | Where-Object tagName -eq $env:TAG
+          if (-not $release) { gh release create $env:TAG $files --draft --verify-tag --title "Rock Preview $env:VERSION" --notes-file draft-notes.md }
+          elseif ($release.isDraft) { gh release upload $env:TAG $files --clobber }
+          else { throw "Release $env:TAG is already published: its downloads are left as they are." }
