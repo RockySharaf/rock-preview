@@ -1,12 +1,13 @@
 # Packs the built program (build\Publish.ps1's dist\RockPreview.exe) into the Microsoft Store's package:
 #   dist\RockPreview-Store.msix   - uploaded in Partner Center; the Store signs it and installs, updates and removes it
-# The identity comes from Partner Center › the app › Product identity. Until it is known, test values are used: such a
-# package installs only on a PC in Developer Mode (Add-AppxPackage -Register on its folder), for trying the Store mode.
+# The identity is the app's in Partner Center (Rock Preview, Store ID 9NCCSZW9VVK1 › Product identity). Unsigned, the
+# package installs only through the Store, or for trying the Store mode on a PC in Developer Mode
+# (Add-AppxPackage -Register dist\store\layout\AppxManifest.xml).
 # Usage:  powershell -ExecutionPolicy Bypass -File build\Package-Store.ps1 [-IdentityName ...] [-Publisher "CN=..."] [-PublisherDisplayName ...]
 param(
-    [string]$IdentityName = $(if ($env:STORE_IDENTITY_NAME) { $env:STORE_IDENTITY_NAME } else { "RockPreview.Test" }),
-    [string]$Publisher = $(if ($env:STORE_PUBLISHER) { $env:STORE_PUBLISHER } else { "CN=Rock Preview Test" }),
-    [string]$PublisherDisplayName = $(if ($env:STORE_PUBLISHER_DISPLAY_NAME) { $env:STORE_PUBLISHER_DISPLAY_NAME } else { "Rocky Sharaf" }),
+    [string]$IdentityName = "RockySharaf.RockPreview",
+    [string]$Publisher = "CN=FEB78D64-CABE-490A-BB8B-64B5A36E7F51",
+    [string]$PublisherDisplayName = "Rocky Sharaf",
     [string]$Exe = "",
     [string]$Out = ""
 )
