@@ -25,7 +25,9 @@ internal static class Toast
                 "</binding></visual>" +
                 $"<actions><action content=\"{SecurityElement.Escape(button)}\" activationType=\"protocol\" arguments=\"{link}\"/></actions>" +
                 "</toast>");
-            ToastNotificationManager.CreateToastNotifier(Shortcuts.AppId).Show(new ToastNotification(xml));
+            // The Store's copy notifies as its package (its name and icon come from it).
+            var notifier = StorePackage.IsInstalled ? ToastNotificationManager.CreateToastNotifier() : ToastNotificationManager.CreateToastNotifier(Shortcuts.AppId);
+            notifier.Show(new ToastNotification(xml));
             return true;
         }
         catch (Exception) { return false; }

@@ -872,10 +872,13 @@ internal sealed partial class MainForm : Form
         if (show)
         {
             string version = _app.OutdatedService is { Major: > 0 } v ? $" ({v.ToString(3)})" : "";
+            // The Store's copy has no service: run as administrator, it reads the drives itself.
+            bool store = StorePackage.IsInstalled;
             string text = outdated
                 ? $"Rock Preview's background service is an older version{version}. Update it to this one: Windows asks for permission one time."
+                : store ? "Instant indexing is off, so Rock Preview is scanning folders (slower). Run it as administrator to read drives instantly: Windows asks for permission each time."
                 : "Instant indexing is off, so Rock Preview is scanning folders (slower). Turn it on once and it stays on: Windows asks for permission one time.";
-            string action = outdated ? "Update the service" : "Turn on instant indexing";
+            string action = outdated ? "Update the service" : store ? "Run as administrator" : "Turn on instant indexing";
             if (_infoLabel.Text != text) _infoLabel.Text = text;
             if (_infoAction.Text != action) _infoAction.Text = action;
         }

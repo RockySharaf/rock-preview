@@ -263,21 +263,33 @@ internal sealed partial class SettingsForm : Form
     {
         string key = _app.ActiveHotkey ?? "the hotkey";
         _replaceExplorer.Enabled = _checkUpdates.Enabled = _autoUpdate.Enabled = !_app.IsDemo;
-        return Page("General",
-            Card("Start when Windows starts", $"So {key} opens Rock Preview any time.", _startWithWindows),
+        // The Store's copy leaves File Explorer as it is, and the Store updates it.
+        bool store = StorePackage.IsInstalled;
+        var cards = new List<Control>
+        {
+            Card("Start when Windows starts", store
+                ? $"So {key} opens Rock Preview any time. Task Manager › Startup apps can turn it off too."
+                : $"So {key} opens Rock Preview any time.", _startWithWindows),
             Card("Keep running in the background", $"Closing the window keeps it ready for {key}, with your searches as you left them.", _runInBackground),
             Card("Show the tray icon", "An icon by the clock to open it, or to exit.", _showTray),
-            Card("Use instead of Windows File Explorer",
+        };
+        if (!store)
+            cards.Add(Card("Use instead of Windows File Explorer",
                 "Folders, drives, Win+E, This PC and File Explorer's taskbar button open Rock Preview. " +
-                "Turn it off to get File Explorer back exactly as it was.", _replaceExplorer),
-            Card("Open folders in tabs",
-                "A folder opened from Windows, or Win+E, opens as a new tab in the window you used last. Off: each opens in a new window.", _openInTabs),
-            Card("Tell me when a new version is out",
-                "Once a day it asks GitHub for the latest version. Nothing about you or your files is sent.", _checkUpdates),
-            Card("Update automatically",
+                "Turn it off to get File Explorer back exactly as it was.", _replaceExplorer));
+        cards.Add(Card("Open folders in tabs", store
+            ? "A folder opened from the taskbar button's list, or a command line, opens as a new tab in the window you used last. Off: each opens in a new window."
+            : "A folder opened from Windows, or Win+E, opens as a new tab in the window you used last. Off: each opens in a new window.", _openInTabs));
+        if (!store)
+        {
+            cards.Add(Card("Tell me when a new version is out",
+                "Once a day it asks GitHub for the latest version. Nothing about you or your files is sent.", _checkUpdates));
+            cards.Add(Card("Update automatically",
                 "A new version installs by itself every night at the time set, even with Rock Preview open (it opens again " +
                 "after); if the PC is off then, the next time it starts. It also installs whenever Rock Preview is closed to " +
                 "the background. Your settings and index are kept.", AutoUpdateControls()));
+        }
+        return Page("General", [.. cards]);
     }
 
     readonly DateTimePicker _autoUpdateAt = new() { Format = DateTimePickerFormat.Custom, CustomFormat = "h:mm tt", ShowUpDown = true };
@@ -402,15 +414,19 @@ internal sealed partial class SettingsForm : Form
         bool service = !_app.IsDemo && IndexService.IsInstalled();
         // An older service (setup's update declined, say) still works, but without this release's fixes.
         bool outdated = service && IndexService.NeedsUpdate();
-        string status = index.UsesService && outdated ? "On, through an older version of the Rock Preview Service. Update it to this one for its fixes; Windows asks for permission once."
+        // The Store's copy never installs or updates the service (a package can't leave one behind; one Setup installed
+        // still serves it): run as administrator, it reads the drives itself.
+        bool store = StorePackage.IsInstalled;
+        string status = index.UsesService && outdated && !store ? "On, through an older version of the Rock Preview Service. Update it to this one for its fixes; Windows asks for permission once."
             : index.UsesService ? "On: the Rock Preview Service reads your drives, so every change shows up at once."
             : index.IsElevated ? "On, because Rock Preview runs as administrator."
+            : store ? "Off: folders are scanned instead, which is slower. Run Rock Preview as administrator to read drives instantly; Windows asks for permission each time."
             : service && !index.ScansInsteadOfReading ? "Ready: the Rock Preview Service is installed. None of the drives searched now is one it reads (a local NTFS drive); network, FAT32 and exFAT drives are scanned."
             : service && outdated ? "The Rock Preview Service isn't answering. Updating it usually brings it back; Windows asks for permission once."
             : service ? "The Rock Preview Service isn't answering. Restarting the PC usually brings it back."
             : "Off: folders are scanned instead, which is slower. Windows asks for permission once to turn it on.";
-        bool offer = !_app.IsDemo && (!service || (outdated && (index.UsesService || !index.IsElevated)));
-        Control? turnOn = !offer ? null : CardButton(service ? "Update" : "Turn on", () => { Close(); _app.Post(() => _app.TurnOnInstantIndexing(null)); });
+        bool offer = !_app.IsDemo && (store ? !index.UsesService && !index.IsElevated : !service || (outdated && (index.UsesService || !index.IsElevated)));
+        Control? turnOn = !offer ? null : CardButton(store ? "Run as administrator" : service ? "Update" : "Turn on", () => { Close(); _app.Post(() => _app.TurnOnInstantIndexing(null)); });
 
         // The drives the app listed last show at once; the look in the background (RefreshRoots) brings them up to date.
         if (_app.KnownDrives.Count > 0) ShowDrives(_app.KnownDrives);
@@ -754,6 +770,9 @@ internal sealed partial class SettingsForm : Form
     /// </summary>
     SettingCard UpdatesCard()
     {
+        // The Store updates its copy: its page there shows a new version and installs it.
+        if (StorePackage.IsInstalled)
+            return Card("Updates", "The Microsoft Store keeps Rock Preview up to date.", CardButton("Open in Store", StorePackage.OpenStorePage));
         _checkButton = CardButton("Check for updates", () =>
         {
             if (_app.NewVersion is not null && !_app.CanUpdateInApp && _app.UpdateProgress is null) { _app.OpenReleasePage(); return; }
@@ -802,6 +821,10 @@ internal sealed partial class SettingsForm : Form
     /// </summary>
     SettingCard UninstallCard()
     {
+        // Windows uninstalls the Store's copy (Setup has nothing to remove).
+        if (StorePackage.IsInstalled)
+            return Card("Uninstall", "Uninstall Rock Preview in Settings › Apps › Installed apps, or right-click it in the Start menu.",
+                CardButton("Open Settings", StorePackage.OpenInstalledApps));
         _uninstallButton = CardButton("Uninstall", () => _uninstallAction?.Invoke());
         _uninstallButton.Enabled = false;
         return _uninstallCard = Card("Uninstall", "", _uninstallButton);

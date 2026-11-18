@@ -81,7 +81,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         IndexManager = index;
         SearchEngine = engine;
         Settings = AppSettings.Load(AppSettings.DefaultPath(cmd.Demo));
-        if (!cmd.Demo) ExplorerReplacement.RepairIfMissing(Environment.ProcessPath); // folders must never point at a deleted copy
+        if (!cmd.Demo && !StorePackage.IsInstalled) ExplorerReplacement.RepairIfMissing(Environment.ProcessPath); // folders must never point at a deleted copy
         AppIcon = LoadIcon();
 
         ShellInfo.Initialize();
@@ -138,7 +138,7 @@ internal sealed partial class AnythingApp : ApplicationContext
 
     async Task UpdateJumpListAsync()
     {
-        if (_jumpListBusy || _exiting || Environment.ProcessPath is not { } exe) return;
+        if (_jumpListBusy || _exiting || StorePackage.LaunchPath is not { } exe) return;
         _jumpListBusy = true;
         try
         {
@@ -160,7 +160,7 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// <summary>Looks at the installed service (off the UI thread: the service manager can be slow to answer).</summary>
     void CheckServiceVersion()
     {
-        if (IsDemo) return;
+        if (IsDemo || StorePackage.IsInstalled) return; // the Store's copy never installs the service (a service left by Setup still serves it)
         Task.Run(() =>
         {
             Version? old = null;
@@ -427,6 +427,8 @@ internal sealed partial class AnythingApp : ApplicationContext
     public async void TurnOnInstantIndexing(IWin32Window? owner)
     {
         if (IsDemo) return;
+        // The Store's copy has no service (a package can't leave one behind): run as administrator, it reads the drives itself.
+        if (StorePackage.IsInstalled) { RestartElevated(); return; }
         int code;
         if (Program.IsElevated())
         {
@@ -774,7 +776,7 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// Updates install by themselves here (Settings › General › Update automatically): this copy is the installed one,
     /// just for this user, and nothing about it makes Windows ask for permission (run as administrator).
     /// </summary>
-    public bool UpdatesItself => Settings.AutoUpdate && Settings.CheckForUpdates && !IsDemo
+    public bool UpdatesItself => Settings.AutoUpdate && Settings.CheckForUpdates && !IsDemo && !StorePackage.IsInstalled
                                  && InstalledCopy is { AllUsers: false } && !Program.IsElevated() && !Setup.InstalledRunsAsAdmin(false);
 
     // ---- the nightly update -------------------------------------------------------------------
@@ -784,7 +786,7 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// <summary>Looks every minute whether the nightly update is due (a sleeping PC catches up when it wakes).</summary>
     void StartNightlyUpdates()
     {
-        if (IsDemo) return;
+        if (IsDemo || StorePackage.IsInstalled) return; // the Store updates its copy
         _nightlyTimer = new System.Windows.Forms.Timer { Interval = 30_000 }; // the first look half a minute after starting
         _nightlyTimer.Tick += (_, _) =>
         {
@@ -832,7 +834,7 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// <summary>Tells about a version found earlier right away, then asks GitHub when a day has passed (looked at hourly).</summary>
     void StartUpdateChecks()
     {
-        if (IsDemo) return;
+        if (IsDemo || StorePackage.IsInstalled) return; // the Store updates its copy: nothing is asked of GitHub
         // Installers Update now downloaded for this version (the one that just updated it) or older ones go.
         _ = Task.Run(() => UpdateDownload.CleanUp(UpdatesFolder, CurrentVersion));
         if (Settings.CheckForUpdates && UpdateCheck.ParseTag(Settings.LatestVersion) is { } known && UpdateCheck.IsNewer(known, CurrentVersion))
@@ -849,7 +851,7 @@ internal sealed partial class AnythingApp : ApplicationContext
 
     async Task CheckForUpdatesIfDue()
     {
-        if (IsDemo || _exiting || !Settings.CheckForUpdates || DateTime.UtcNow - Settings.LastUpdateCheck < TimeSpan.FromDays(1)) return;
+        if (IsDemo || _exiting || StorePackage.IsInstalled || !Settings.CheckForUpdates || DateTime.UtcNow - Settings.LastUpdateCheck < TimeSpan.FromDays(1)) return;
         try { await CheckForUpdatesNow(); }
         catch (Exception) { /* offline, or GitHub didn't answer: the next hourly look tries again */ }
     }
@@ -946,6 +948,7 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// <summary>Help › Check for Updates: Settings › About, checking there (its Updates card shows what happens).</summary>
     public void ShowUpdates(IWin32Window? owner)
     {
+        if (StorePackage.IsInstalled) { StorePackage.OpenStorePage(); return; } // the Store shows a new version and installs it
         _checkOnOpen = true;
         ShowSettings(owner, "About");
         _checkOnOpen = false;

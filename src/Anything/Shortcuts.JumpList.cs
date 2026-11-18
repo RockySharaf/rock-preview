@@ -24,7 +24,7 @@ internal static partial class Shortcuts
         try
         {
             list = (ICustomDestinationList)new DestinationListObject();
-            list.SetAppID(AppId);
+            if (!StorePackage.IsInstalled) list.SetAppID(AppId); // the Store's copy's taskbar button is its package's
             var iidArray = typeof(IObjectArray).GUID;
             list.BeginList(out _, ref iidArray, out object removedObj);
             var removed = Targets(removedObj as IObjectArray);

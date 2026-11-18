@@ -306,7 +306,7 @@ internal sealed partial class AppSettings
         s.NotifiedVersion = Str("notified_version", "").Trim();
         s.LeftOutDrivesKept = List("left_out_drive_notice_dismissed", s.LeftOutDrivesKept);
         s.StartWithWindows = ReadStartWithWindows();
-        s.UseInsteadOfExplorer = ExplorerReplacement.IsEnabled();
+        s.UseInsteadOfExplorer = !StorePackage.IsInstalled && ExplorerReplacement.IsEnabled();
 
         var ix = s.Index;
         ix.IndexNtfsVolumes = Bool("index_ntfs_volumes", ix.IndexNtfsVolumes);
@@ -563,6 +563,7 @@ internal sealed partial class AppSettings
             MoveIfMissing(Path.Combine(roaming, "Anything", demo ? "Anything-demo.ini" : "Anything.ini"), DefaultPath(demo));
             if (demo) return;
             MoveIfMissing(Path.Combine(local, "Anything", "Anything.db"), new IndexSettings().DatabasePath);
+            if (StorePackage.IsInstalled) return; // the Store's copy starts with Windows through its startup task
             using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
             if (key?.GetValue("Anything") is string)
             {
@@ -589,6 +590,9 @@ internal sealed partial class AppSettings
     /// <summary>Turns "Use Rock Preview instead of File Explorer" on or off for this user, when the choice changed.</summary>
     public void ApplyExplorerReplacement()
     {
+        // The Store's copy leaves File Explorer as it is: Windows keeps a package's changes to how folders open to the
+        // package itself, and its uninstall couldn't give File Explorer back.
+        if (StorePackage.IsInstalled) return;
         try
         {
             bool on = ExplorerReplacement.IsEnabled();
@@ -603,6 +607,7 @@ internal sealed partial class AppSettings
 
     static bool ReadStartWithWindows()
     {
+        if (StorePackage.IsInstalled) return StorePackage.StartsWithWindows();
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(RunKey);
@@ -613,6 +618,13 @@ internal sealed partial class AppSettings
 
     public void ApplyStartWithWindows()
     {
+        if (StorePackage.IsInstalled)
+        {
+            // The package's startup task. Turned off in Task Manager › Startup apps, Windows keeps it off: the setting then
+            // shows that.
+            if (StartWithWindows != StorePackage.StartsWithWindows()) StartWithWindows = StorePackage.SetStartsWithWindows(StartWithWindows);
+            return;
+        }
         try
         {
             using var key = Registry.CurrentUser.CreateSubKey(RunKey);

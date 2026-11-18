@@ -26,9 +26,17 @@ static class Program
         if (args.Any(a => a.TrimStart('-', '/').Equals("uninstallservice", StringComparison.OrdinalIgnoreCase)))
             return UninstallServiceCommand(quiet: args.Any(a => a.TrimStart('-', '/').Equals("quiet", StringComparison.OrdinalIgnoreCase)));
 
-        // The single-file build is also the installer: "RockPreview-Setup.exe", -install, -uninstall.
-        if (Setup.IsSetupLaunch(args)) return Setup.Run(args);
-        Shortcuts.UseAppIdForThisProcess(); // one taskbar button for all windows, matching Rock Preview's shortcuts
+        // The single-file build is also the installer: "RockPreview-Setup.exe", -install, -uninstall. The Store installs
+        // its own package, and its windows and notifications carry the package's identity.
+        if (StorePackage.IsInstalled)
+        {
+            if (StorePackage.StartedWithWindows()) args = [.. args, "-startup"];
+        }
+        else
+        {
+            if (Setup.IsSetupLaunch(args)) return Setup.Run(args);
+            Shortcuts.UseAppIdForThisProcess(); // one taskbar button for all windows, matching Rock Preview's shortcuts
+        }
 
         var cmd = CommandLine.Parse(args);
         string suffix = cmd.Demo ? ".Demo" : "";
@@ -145,7 +153,7 @@ static class Program
     {
         try
         {
-            var psi = new ProcessStartInfo(Environment.ProcessPath!, CommandLine.Quote(args))
+            var psi = new ProcessStartInfo(StorePackage.LaunchPath, CommandLine.Quote(args))
             {
                 UseShellExecute = false,
                 WorkingDirectory = Environment.CurrentDirectory,
@@ -213,7 +221,7 @@ static class Program
     {
         try
         {
-            var psi = new ProcessStartInfo(Environment.ProcessPath!, CommandLine.Quote(args))
+            var psi = new ProcessStartInfo(StorePackage.LaunchPath, CommandLine.Quote(args))
             {
                 UseShellExecute = true,
                 Verb = "runas",

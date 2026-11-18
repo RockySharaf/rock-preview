@@ -286,8 +286,22 @@ whatever you renamed it to): delete it afterwards. The instant-indexing service 
 other accounts on this PC use it too (not a local account deleted from this PC). If the copy set nothing up, deleting
 its file is all there is to do.
 
-> **Windows SmartScreen** may say "Windows protected your PC" because the download isn't code-signed yet
-> (see [Code signing policy](#code-signing-policy)). Click **More info › Run anyway**.
+> **Windows SmartScreen** may say "Windows protected your PC" because the download isn't code-signed. Click **More
+> info › Run anyway**. The [Microsoft Store version](#microsoft-store-version-coming-soon) installs without the warning.
+
+### Microsoft Store version (coming soon)
+
+Rock Preview is on its way to the Microsoft Store. It's the same program, but Microsoft signs it, so Windows installs it
+without a warning, and the Store installs, updates and uninstalls it. A few things work differently there:
+
+- **Instant indexing** comes from running Rock Preview as administrator (**Tools › Run as Administrator**, or the
+  yellow bar), and Windows asks for permission each time: the Store version has no service. Otherwise it scans folders,
+  which is slower and doesn't see changes at once.
+- **Use instead of Windows File Explorer** isn't in it: the Store version leaves File Explorer as it is.
+- **Start when Windows starts** is off until you turn it on in **Settings › General**. Task Manager's **Startup apps**
+  can turn it off too.
+- There's no Setup, update check or **Update now**: the Store does all of that. Uninstall it from Windows'
+  **Settings › Apps**.
 
 > **Instant indexing, approved once.** Reading a drive's Master File Table needs administrator rights, so Setup offers
 > *Instant indexing for all drives*: it installs the small **Rock Preview Service** and Windows asks for permission one
@@ -312,6 +326,9 @@ With **Update automatically** on (**Settings › General**, on unless you turn i
 while Rock Preview is closed to the background, and comes back there; nothing to click. Where Windows would have to ask
 for permission (installed for everyone, or run as administrator) the bar offers **Update now** instead. Turning on instant
 indexing asks Windows for permission once: updates don't ask again unless the service itself changes.
+
+The [Microsoft Store version](#microsoft-store-version-coming-soon) doesn't do any of this: the Store updates it, and
+**Help › Check for Updates** opens its page in the Store.
 
 ## Keyboard shortcuts
 
@@ -431,31 +448,18 @@ automatically** on, the app downloads it by itself), and uses it only when its S
 check off in Setup or **Settings › General** and Rock Preview connects to nothing, unless you choose **Help › Check for
 Updates**. Setup shows this, with a link to this policy, before it installs anything.
 
+The Microsoft Store version connects to nothing at all: the Store updates it. Windows keeps the files it creates in the
+app's own storage (under `%LOCALAPPDATA%\Packages`) and deletes them when it's uninstalled. On a PC that also has the
+GitHub version, the Store version uses that version's settings and index, and they stay.
+
 The optional Rock Preview Service runs from `C:\Program Files\Rock Preview Service` (only administrators can change
 it). It answers only the Windows accounts that installed it, only on this PC, never over the network. It returns file
 names, folders, sizes and dates from local NTFS drives (internal and USB), and never raw disk data or file contents. Uninstalling Rock
 Preview removes it.
 
-## Code signing policy
-
-Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
-*(Applied for. Until it's approved, releases are not signed yet.)*
-
-- **What is signed:** `RockPreview-Setup.exe` and `RockPreview.exe` in each [release](https://github.com/RockySharaf/rock-preview/releases)
-  (the same program under two names). Only programs built from this repository's own source code are signed.
-- **How a release is built:** by GitHub Actions on GitHub's own servers, from the release's tag in this repository
-  ([release workflow](.github/workflows/release.yml)). Nothing built on a personal PC is signed.
-- **Team roles:**
-  - Committers and reviewers: [Rocky Sharaf](https://github.com/RockySharaf)
-  - Approvers: [Rocky Sharaf](https://github.com/RockySharaf)
-
-  Changes from anyone else are reviewed before they're merged, and every release is approved by hand before it's signed.
-- **Privacy:** see [Privacy](#privacy). Rock Preview's only network connection is to GitHub, for new versions, and Setup
-  and **Settings › General** turn it off.
-
 ## Roadmap
 
-- Code-signed releases (see [Code signing policy](#code-signing-policy)) and a Microsoft Store listing
+- The [Microsoft Store listing](#microsoft-store-version-coming-soon) (in progress)
 - ARM64 builds
 
 Ideas and bug reports are welcome in [Issues](https://github.com/RockySharaf/rock-preview/issues).

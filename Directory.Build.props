@@ -13,8 +13,8 @@
     <RepositoryUrl>https://github.com/RockySharaf/rock-preview</RepositoryUrl>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
     <Version>1.7.25</Version>
-    <!-- The program's product version is the release's own ("1.7.25", not "1.7.25+<commit>"): code signing checks it
-         against the release being signed (README › Code signing policy). -->
+    <!-- The program's product version is the release's own ("1.7.25", not "1.7.25+<commit>"), as Windows shows it in
+         the file's properties; code signing would check it against the release being signed. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 </Project>

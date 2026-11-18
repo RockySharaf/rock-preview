@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Microsoft Store package's manifest. build/Package-Store.ps1 fills in the $...$ values: the identity Partner
+     Center gives the app (Product identity) and the version from Directory.Build.props. -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 desktop rescap">
+
+  <Identity Name="$IdentityName$" Publisher="$Publisher$" Version="$Version$" ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Rock Preview</DisplayName>
+    <PublisherDisplayName>$PublisherDisplayName$</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="RockPreview" Executable="RockPreview.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Rock Preview"
+        Description="Search every file on your PC instantly, browse folders with the real File Explorer, and preview hundreds of file types."
+        BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- "RockPreview.exe" starts it from anywhere (Run, a command line), and its restarts go through it
+             (StorePackage.AliasPath). -->
+        <uap3:Extension Category="windows.appExecutionAlias" Executable="RockPreview.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="RockPreview.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+        <!-- Settings › General › Start when Windows starts (off until the user turns it on). -->
+        <desktop:Extension Category="windows.startupTask" Executable="RockPreview.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="RockPreviewStartup" Enabled="false" DisplayName="Rock Preview" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- A desktop program (WinForms, with Windows' own folder view and preview handlers inside it). -->
+    <rescap:Capability Name="runFullTrust" />
+    <!-- Run as administrator (Tools menu, Settings › Indexing): it then reads NTFS drives' file tables directly, so
+         every file is found in seconds and changes show up at once, as voidtools Everything does. -->
+    <rescap:Capability Name="allowElevation" />
+  </Capabilities>
+</Package>
