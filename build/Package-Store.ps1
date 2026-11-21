@@ -54,4 +54,24 @@ if ($LASTEXITCODE -ne 0) { throw "makepri new failed ($LASTEXITCODE)" }
 
 & $makeappx pack /d $layout /p $Out /o | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "makeappx pack failed ($LASTEXITCODE)" }
+
+# What MakeAppx doesn't check, so a package Partner Center would refuse (or that shows blank logos) fails here instead.
+$problems = @()
+$text = Get-Content (Join-Path $layout "AppxManifest.xml") -Raw
+if ($text -match '\$[A-Za-z]+\$') { $problems += "the manifest still has $($Matches[0]) in it" }
+$bytes = [IO.File]::ReadAllBytes((Join-Path $layout "RockPreview.exe"))
+$machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
+if ($machine -ne 0x8664) { $problems += ("RockPreview.exe is for machine 0x{0:X4}, but the manifest says x64" -f $machine) }
+$product = (Get-Item (Join-Path $layout "RockPreview.exe")).VersionInfo.ProductVersion
+if ($product -ne $version.Substring(0, $version.LastIndexOf('.'))) { $problems += "RockPreview.exe is version $product, the package $version" }
+$dump = Join-Path $work "resources.xml"
+& $makepri dump /if (Join-Path $layout "resources.pri") /of $dump /o | Out-Null
+[xml]$pri = Get-Content $dump
+foreach ($logo in 'StoreLogo.png', 'Square44x44Logo.png', 'Square150x150Logo.png', 'Wide310x150Logo.png') {
+    $candidates = @($pri.SelectNodes("//NamedResource[@name='$logo']/Candidate"))
+    if ($candidates.Count -eq 0) { $problems += "resources.pri has no $logo" }
+    foreach ($c in $candidates) { if (-not (Test-Path (Join-Path $layout $c.Value))) { $problems += "resources.pri points at a missing $($c.Value)" } }
+}
+if ($problems) { throw "The Store package isn't right:`n  " + ($problems -join "`n  ") }
+Write-Host "Checked: identity $IdentityName, version $version, x64, every logo size present (Windows SDK $($sdk.Directory.Parent.Name))."
 Get-Item $Out | Format-Table Name, @{ n = "MB"; e = { [math]::Round($_.Length / 1MB, 1) } }, @{ n = "Version"; e = { $version } }, @{ n = "Identity"; e = { $IdentityName } } -AutoSize
