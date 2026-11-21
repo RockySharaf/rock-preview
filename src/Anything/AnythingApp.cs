@@ -50,6 +50,9 @@ internal sealed partial class AnythingApp : ApplicationContext
 
     public static AnythingApp? Create(CommandLine cmd)
     {
+        // Run as administrator, the user's mapped network drives aren't in this session: connect them again while the
+        // index loads (see AwaitReconnectedDrives).
+        Task<IReadOnlyList<string>>? reconnect = !cmd.Demo && Program.IsElevated() ? Task.Run(Drives.ReconnectHiddenMappings) : null;
         IIndexManager index;
         ISearchEngine engine;
         try
@@ -71,10 +74,30 @@ internal sealed partial class AnythingApp : ApplicationContext
                 "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return null;
         }
-        return new AnythingApp(cmd, index, engine);
+        return new AnythingApp(cmd, index, engine, reconnect);
     }
 
-    AnythingApp(CommandLine cmd, IIndexManager index, ISearchEngine engine)
+    /// <summary>
+    /// Run as administrator: gives the user's network drives being connected again (<see cref="Drives.ReconnectHiddenMappings"/>)
+    /// a few seconds before the index plans, so it has them under their letters as before, not as shares to scan again.
+    /// One whose server takes longer comes in later: the index sees its letter then, and This PC and the navigation pane
+    /// are told it was added.
+    /// </summary>
+    static void AwaitReconnectedDrives(Task<IReadOnlyList<string>>? reconnect)
+    {
+        if (reconnect is null) return;
+        try { reconnect.Wait(TimeSpan.FromSeconds(3)); } catch (AggregateException) { }
+        reconnect.ContinueWith(t =>
+        {
+            if (!t.IsCompletedSuccessfully) return;
+            foreach (string root in t.Result) SHChangeNotify(0x00000100 /* SHCNE_DRIVEADD */, 0x0005 /* SHCNF_PATHW */, root, IntPtr.Zero);
+        }, TaskScheduler.Default);
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    static extern void SHChangeNotify(int wEventId, uint uFlags, string dwItem1, IntPtr dwItem2);
+
+    AnythingApp(CommandLine cmd, IIndexManager index, ISearchEngine engine, Task<IReadOnlyList<string>>? reconnect = null)
     {
         _sync = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         IsDemo = cmd.Demo;
@@ -93,6 +116,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         IndexManager.StateChanged += OnStateChangedBackground;
         SubscribeIndex();
         if (!cmd.Demo) LoadRunHistory();
+        AwaitReconnectedDrives(reconnect);
         try { IndexManager.Start(Settings.Index); }
         catch (Exception ex)
         {

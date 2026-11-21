@@ -91,6 +91,53 @@ public static class Drives
         return found;
     }
 
+    /// <summary>
+    /// Running as administrator: connects the user's remembered network drives (HKCU\Network) again in this program's
+    /// session, under their own letters, so This PC, the navigation pane, the address bar and the index have P: as File
+    /// Explorer does, not only its share (<see cref="HiddenMappings"/>). Nothing is remembered: the letters last until the
+    /// user signs out, HKCU\Network isn't touched, and the normal session keeps its own drives. A letter taken here, or a
+    /// share that is offline or wants another account's password (nothing asks for one), is left out: its share is still
+    /// listed. All at once, as a server that doesn't answer holds its connection for half a minute; each letter is there
+    /// as soon as its own connection is made. Returns the roots connected ("P:\").
+    /// </summary>
+    public static IReadOnlyList<string> ReconnectHiddenMappings()
+    {
+        Task<string?>[] work;
+        try
+        {
+            work = [.. MappingsToReconnect(DrivesNative.GetLogicalDrives(), RememberedMappings())
+                .Select(m => Task.Run(() => Connect(m.Local, m.Share) ? m.Local + "\\" : null))];
+        }
+        catch (Exception) { return []; }
+        try { Task.WaitAll(work); } catch (AggregateException) { }
+        return [.. work.Where(t => t.IsCompletedSuccessfully && t.Result != null).Select(t => t.Result!)];
+    }
+
+    /// <summary>The remembered mappings whose letters aren't here: ("P:", "\\server\share"), each letter once.</summary>
+    internal static List<(string Local, string Share)> MappingsToReconnect(uint mask, IEnumerable<(string Letter, string RemotePath)> remembered)
+    {
+        var list = new List<(string Local, string Share)>();
+        foreach (var (letter, remote) in remembered)
+        {
+            if (letter.Length != 1 || !char.IsAsciiLetter(letter[0])) continue;
+            char upper = char.ToUpperInvariant(letter[0]);
+            if ((mask & (1u << (upper - 'A'))) != 0) continue; // here already (or the letter is taken)
+            string share = remote.Trim().TrimEnd('\\');
+            if (!share.StartsWith(@"\\", StringComparison.Ordinal) || share.Length < 5) continue;
+            string local = upper + ":";
+            if (list.Exists(m => m.Local == local)) continue;
+            list.Add((local, share));
+        }
+        return list;
+    }
+
+    /// <summary>Maps <paramref name="local"/> ("P:") to the share for this session only: not remembered, no password prompt.</summary>
+    static bool Connect(string local, string share)
+    {
+        var resource = new DrivesNative.NETRESOURCEW { dwType = 1 /* RESOURCETYPE_DISK */, lpLocalName = local, lpRemoteName = share };
+        return DrivesNative.WNetAddConnection2W(ref resource, null, null, 0 /* not CONNECT_UPDATE_PROFILE or CONNECT_INTERACTIVE */) == 0;
+    }
+
     /// <summary>The user's remembered network drives (HKCU\Network: one key per letter, with its share in RemotePath).</summary>
     static IEnumerable<(string Letter, string RemotePath)> RememberedMappings()
     {
@@ -289,6 +336,17 @@ internal static partial class DrivesNative
 
     [LibraryImport("mpr.dll", StringMarshalling = StringMarshalling.Utf16)]
     public static partial int WNetGetConnectionW(string local, [Out] char[] remote, ref int length);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct NETRESOURCEW
+    {
+        public int dwScope, dwType, dwDisplayType, dwUsage;
+        public string? lpLocalName, lpRemoteName, lpComment, lpProvider;
+    }
+
+    // DllImport: LibraryImport can't marshal a struct holding strings.
+    [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
+    public static extern int WNetAddConnection2W(ref NETRESOURCEW resource, string? password, string? user, int flags);
 
     [LibraryImport("kernel32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
     [return: MarshalAs(UnmanagedType.Bool)]

@@ -54,6 +54,26 @@ public sealed class HiddenNetworkDriveTests
     }
 
     [Fact]
+    public void Run_as_administrator_the_missing_letters_are_connected_again()
+    {
+        // The office PC: P: and S: mapped in the normal session, missing here; C: and the USB stick D: are here.
+        const uint D = 1u << 3;
+        var connect = Drives.MappingsToReconnect(C | D, [("P", @"\\Titan\Bob"), ("s", @"\\Titan\CURRENT DATA\")]);
+        Assert.Equal([("P:", @"\\Titan\Bob"), ("S:", @"\\Titan\CURRENT DATA")], connect);
+    }
+
+    [Fact]
+    public void Letters_already_here_or_malformed_mappings_are_not_connected()
+    {
+        // The normal session (Z: is there), or a letter something else took: left alone.
+        Assert.Empty(Drives.MappingsToReconnect(C | Z, [("Z", @"\\fileserver\Projects")]));
+        Assert.Empty(Drives.MappingsToReconnect(C, [("Z", "not a share"), ("", @"\\a\b"), ("1", @"\\a\b"), ("ZZ", @"\\a\b"), ("Q", @"\\a")]));
+        // Two letters on one share are both connected, as in the normal session; one letter only once.
+        Assert.Equal(2, Drives.MappingsToReconnect(C, [("X", @"\\a\b"), ("W", @"\\A\B\")]).Count);
+        Assert.Single(Drives.MappingsToReconnect(C, [("X", @"\\a\b"), ("x", @"\\a\c")]));
+    }
+
+    [Fact]
     public void Share_also_mapped_to_a_visible_letter_is_indexed_once()
     {
         var drives = new List<DriveEntry>
