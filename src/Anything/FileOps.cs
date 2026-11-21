@@ -66,23 +66,30 @@ internal static class FileOps
             Native.SHObjectProperties(owner.Handle, Native.SHOP_FILEPATH, p, null);
     }
 
-    /// <summary>Recycle (or permanently delete) after confirmation. Returns true when the operation ran.</summary>
+    /// <summary>
+    /// Recycle (or permanently delete), the shell asking first as File Explorer's Delete does (the user's Recycle Bin
+    /// setting; always for a permanent delete). Returns true when the operation ran.
+    /// </summary>
     public static bool Delete(IWin32Window owner, IReadOnlyList<string> paths, bool permanent)
     {
         if (paths.Count == 0) return false;
-        string what = paths.Count == 1 ? $"\"{Path.GetFileName(paths[0].TrimEnd('\\'))}\"" : $"these {paths.Count:N0} items";
-        string msg = permanent
-            ? $"Are you sure you want to permanently delete {what}?"
-            : $"Are you sure you want to move {what} to the Recycle Bin?";
-        if (MessageBox.Show(owner, msg, permanent ? "Delete Permanently" : "Delete", MessageBoxButtons.YesNo,
-                permanent ? MessageBoxIcon.Warning : MessageBoxIcon.Question) != DialogResult.Yes)
-            return false;
+        switch (ShellFileOperation.Delete(owner.Handle, paths, permanent, out int error, out var skipped))
+        {
+            case ShellFileOperation.Outcome.Done:
+                if (skipped.Count > 0) ShowSkipped(owner, skipped);
+                return true;
+            case ShellFileOperation.Outcome.NotDone: return false;
+            case ShellFileOperation.Outcome.Failed:
+                MessageBox.Show(owner, $"Unable to delete (error 0x{error:X}).", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+        }
+        // The copy engine isn't there: the older shell function, which asks the same way without FOF_NOCONFIRMATION.
         var op = new Native.SHFILEOPSTRUCT
         {
             hwnd = owner.Handle,
             wFunc = Native.FO_DELETE,
             pFrom = string.Join('\0', paths) + '\0',
-            fFlags = (ushort)(Native.FOF_NOCONFIRMATION | (permanent ? 0 : Native.FOF_ALLOWUNDO | Native.FOF_WANTNUKEWARNING)),
+            fFlags = (ushort)(permanent ? 0 : Native.FOF_ALLOWUNDO | Native.FOF_WANTNUKEWARNING),
         };
         int r = Native.SHFileOperation(ref op);
         if (r != 0 && !op.fAnyOperationsAborted)
@@ -90,13 +97,42 @@ internal static class FileOps
         return r == 0;
     }
 
-    public static bool Rename(IWin32Window owner, string fullPath, string newName)
+    /// <summary>The items a delete left where they were because the shell couldn't be given them: how many, the first few, and why.</summary>
+    static void ShowSkipped(IWin32Window owner, List<(string Path, int Error)> skipped)
     {
-        if (string.IsNullOrWhiteSpace(newName) || newName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        string nl = Environment.NewLine;
+        string count = skipped.Count == 1 ? "1 item couldn't be deleted" : $"{skipped.Count:N0} items couldn't be deleted";
+        var lines = skipped.Take(5).Select(s => $"{s.Path} (error 0x{s.Error:X})");
+        string more = skipped.Count > 5 ? $"{nl}...and {skipped.Count - 5:N0} more" : "";
+        MessageBox.Show(owner, $"{count}:{nl}{nl}{string.Join(nl, lines)}{more}", "Rock Preview", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    /// <summary>
+    /// Renames with File Explorer's checks: a name with characters a name can't hold is refused, a file's changed
+    /// extension is asked about first, and the shell itself does the rename (asking about a name that's taken, and
+    /// putting it on its undo list). True when it was renamed.
+    /// </summary>
+    public static bool Rename(IWin32Window owner, string fullPath, string newName, bool isDirectory = false)
+    {
+        if (string.IsNullOrWhiteSpace(newName) || newName.Any(Anything.Core.RenameRules.IsForbidden)
+            || newName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
         {
-            MessageBox.Show(owner, "The file name is not valid.", "Rename", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(owner, Anything.Core.RenameRules.ForbiddenMessage, "Rename", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
+        if (Anything.Core.RenameRules.ExtensionChanged(Path.GetFileName(fullPath.TrimEnd('\\')), newName, isDirectory)
+            && MessageBox.Show(owner, Anything.Core.RenameRules.ExtensionChangeQuestion, "Rename", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning) != DialogResult.Yes)
+            return false;
+        switch (ShellFileOperation.Rename(owner.Handle, fullPath, newName, out int error))
+        {
+            case ShellFileOperation.Outcome.Done: return true;
+            case ShellFileOperation.Outcome.NotDone: return false;
+            case ShellFileOperation.Outcome.Failed:
+                MessageBox.Show(owner, $"Unable to rename \"{Path.GetFileName(fullPath)}\" (error 0x{error:X}).", "Rename", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+        }
+        // The copy engine isn't there: the older shell function, which also asks about a name that's taken.
         string dir = Path.GetDirectoryName(fullPath) ?? "";
         var op = new Native.SHFILEOPSTRUCT
         {

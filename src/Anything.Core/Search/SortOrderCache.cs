@@ -205,9 +205,7 @@ internal sealed class SortOrderCache(SortKey key)
             };
             if (c == 0)
             {
-                string na = index.Name(a), nb = index.Name(b);
-                c = string.Compare(na, nb, StringComparison.OrdinalIgnoreCase);
-                if (c == 0) c = string.CompareOrdinal(na, nb);
+                c = NameOrder.CompareWithTieBreak(index.Name(a), index.Name(b));
             }
             return c != 0 ? c : a.CompareTo(b);
         }

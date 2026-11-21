@@ -61,12 +61,18 @@ internal sealed partial class MainForm
             // The view reports to the window the tab is in now, as tabs move between windows.
             Explorer.Navigated += () => Window?.OnExplorerNavigated(this);
             Explorer.SelectionChanged += () => Window?.OnTabSelectionChanged(this);
+            Explorer.SelectionContentChanged += () => { if (Window?._tab == this) Window.QueueStatusUpdate(); }; // the selection's size
             Explorer.NavigationFailed += msg => Window?.OnTabNavigationFailed(this, msg);
+            Explorer.FolderOpenInNewTab += location => Window?.OpenTabBehind(location); // its menu's "Open in new tab"
         }
 
         /// <summary>The window the tab is in.</summary>
         public MainForm? Window;
         public string SearchText = "";
+        /// <summary>The search Back closed, which Forward shows again; dropped once another folder or search shows.</summary>
+        public (string Text, SortKey Sort, bool Descending)? ForwardSearch;
+        /// <summary>Where <see cref="ForwardSearch"/> was closed: the folder, and how many places Back held there.</summary>
+        public (string? Place, int BackCount) ForwardSearchAt;
         public int[] Ids = [];
         public long ResultGeneration;
         /// <summary>The index the Ids came from (the app's, or <see cref="Listing"/>'s): ids mean nothing in another one.</summary>
@@ -186,14 +192,61 @@ internal sealed partial class MainForm
 
     void OnTabNavigationFailed(FolderTab t, string message)
     {
-        if (t == _tab) _statusRight.Text = message;
+        if (t != _tab)
+        {
+            // A tab opened behind (OpenTabBehind) whose folder failed to open later, through the view's events: it never
+            // had a location, so it goes, as when its navigation fails at once, rather than stay an empty "New tab".
+            if (!t.Explorer.HasLocation && DropTabBehind(t)) _statusRight.Text = message;
+            return;
+        }
+        _statusRight.Text = message;
+        if (IsHandleCreated) UpdateNavButtons(ExplorerShown); // a Back or Forward that failed put the history back
     }
 
-    /// <summary>Opens a tab at the end of the strip and shows it: at <paramref name="location"/>, or Home like Explorer's new tabs.</summary>
+    /// <summary>Opens a tab at the end of the strip and shows it: at <paramref name="location"/>, or where Explorer's new tabs open ("Open File Explorer to").</summary>
     public void NewTab(string? location = null) => OpenTab(location, -1, null, null);
 
     /// <summary>
-    /// Opens a tab and shows it: at <paramref name="location"/>, or Home, at <paramref name="index"/> (-1 = the end). It
+    /// Opens a folder in a new tab at the end of the strip without showing it, as File Explorer's "Open in new tab" and a
+    /// middle-click in its pane do: the tab you are on stays, and the new one loads its folder hidden.
+    /// </summary>
+    void OpenTabBehind(string location)
+    {
+        if (string.IsNullOrWhiteSpace(location) || IsDisposed) return;
+        var from = _tab;
+        var t = new FolderTab
+        {
+            MatchCase = from.MatchCase, WholeWord = from.WholeWord, MatchPath = from.MatchPath, Diacritics = from.Diacritics, Regex = from.Regex,
+            FilterIndex = from.FilterIndex,
+            Browsing = true,
+        };
+        (t.Sort, t.Descending) = from.SortBeforeZap ?? (from.Sort, from.Descending);
+        _tabs.Add(t);
+        AttachTab(t);
+        _ = t.Explorer.Handle; // the shell view is created while hidden
+        if (!t.Explorer.Navigate(location))
+        {
+            if (DropTabBehind(t)) _statusRight.Text = $"Can't open \"{location.Trim()}\"";
+            return;
+        }
+        if (!_tabs.Contains(t)) return; // it failed inside Navigate and is gone already
+        _tabStrip.SelectedIndex = _tabs.IndexOf(_tab);
+        _tabStrip.TabsChanged();
+    }
+
+    /// <summary>Removes a tab that was never shown (opened behind, its folder failed to open). False when it isn't here any more.</summary>
+    bool DropTabBehind(FolderTab t)
+    {
+        if (t == _tab || !_tabs.Remove(t)) return false;
+        _split.Panel1.Controls.Remove(t.Explorer);
+        t.Window = null;
+        BeginInvoke(t.Explorer.Dispose);
+        if (IsHandleCreated) { _tabStrip.SelectedIndex = _tabs.IndexOf(_tab); _tabStrip.TabsChanged(); }
+        return true;
+    }
+
+    /// <summary>
+    /// Opens a tab and shows it: at <paramref name="location"/>, or where File Explorer opens, at <paramref name="index"/> (-1 = the end). It
     /// searches the way <paramref name="like"/> (by default the active tab) does: match options, kind of file and sort,
     /// as a new window does.
     /// </summary>
@@ -210,7 +263,7 @@ internal sealed partial class MainForm
         _tabs.Insert(index < 0 || index > _tabs.Count ? _tabs.Count : index, t);
         AttachTab(t);
         SelectTab(t);
-        if (location is not { Length: > 0 } || !BrowseTo(location)) GoHome();
+        if (location is not { Length: > 0 } || !BrowseTo(location)) GoToStartPlace();
         if (search is { Length: > 0 }) SetSearch(search);
         else RunSearch(SearchReason.NewQuery);
         BeginInvoke(() => { if (t == _tab) FocusTabContent(); }); // after whatever else wants the focus now (showing the window)
@@ -358,7 +411,7 @@ internal sealed partial class MainForm
         if (i < 0) return;
         if (_tabs.Count == 1)
         {
-            ClosedToBackground = true; // nothing left open: shown again, it starts at This PC
+            ClosedToBackground = true; // nothing left open: shown again, it starts where File Explorer opens
             Close();
             return;
         }
@@ -375,7 +428,7 @@ internal sealed partial class MainForm
     [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public bool ClosedToBackground { get; set; }
 
-    /// <summary>As a new window opens: one tab, at This PC with its drives, no search.</summary>
+    /// <summary>As a new window opens: one tab, where File Explorer opens ("Open File Explorer to"), no search.</summary>
     public void StartAfresh()
     {
         if (!_loaded) return;
@@ -387,7 +440,7 @@ internal sealed partial class MainForm
             _search.Clear();
             _suppress = false;
         }
-        OpenFolder(ThisPcLocation);
+        GoToStartPlace();
     }
 
     void CloseTabs(IEnumerable<FolderTab> tabs)
@@ -414,6 +467,19 @@ internal sealed partial class MainForm
 
     string? TabLocation(FolderTab t) => t.Browsing ? t.Explorer.CurrentParsingName : null;
 
+    /// <summary>
+    /// A new window on <paramref name="t"/>'s folder (by default the active tab's; Ctrl+N, a tab's Open in new window):
+    /// the folder its search looks in when it shows results, where File Explorer opens when it has none. The keyboard
+    /// goes to the new window's files, as in Explorer.
+    /// </summary>
+    public void OpenInNewWindow(FolderTab? t = null)
+    {
+        var w = _app.CreateWindow(this);
+        w.OpenAsExplorer(TabLocation(t ?? _tab));
+        _app.ShowWindow(w);
+        w.BeginInvoke(() => { if (!w.IsDisposed) w.FocusTabContent(); }); // after ShowWindow's search box focus
+    }
+
     void ShowTabMenu(int index, Point screen)
     {
         if ((uint)index >= (uint)_tabs.Count) return;
@@ -433,12 +499,7 @@ internal sealed partial class MainForm
         [
             Item("New tab", () => NewTab(), display: "Ctrl+T"),
             Item("Duplicate tab", () => OpenTab(TabLocation(t), _tabs.IndexOf(t) + 1, t.SearchText, t)),
-            Item("Open in new window", () =>
-            {
-                var w = _app.CreateWindow(this);
-                w.OpenAsExplorer(TabLocation(t));
-                _app.ShowWindow(w);
-            }),
+            Item("Open in new window", () => OpenInNewWindow(t)),
             move,
             new ToolStripSeparator(),
             Item("Close tab", () => CloseTab(t), display: "Ctrl+W"),

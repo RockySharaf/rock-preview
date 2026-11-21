@@ -37,6 +37,7 @@ internal sealed partial class MainForm
                 _navClick = (tree, Environment.TickCount64);
                 OpenFolder(location);
             };
+            tree.FolderOpenInNewTab += OpenTabBehind; // a middle-click, or "Open in new tab": the tab showing stays
         }
         // Docked from the back of the z-order: the header on top, Quick access, the line, then the places fill the rest.
         _navPanel.Controls.AddRange([_tree, _pinDivider, _pinTree, _pinHeader]);

@@ -32,7 +32,7 @@ internal sealed partial class MainForm
         file.DropDownItems.AddRange(
         [
             Item("New &Tab", () => NewTab(), Keys.Control | Keys.T),
-            Item("&New Search Window", () => _app.NewWindow(this), Keys.Control | Keys.N),
+            Item("&New Window", () => _app.NewWindow(this), Keys.Control | Keys.N),
             new ToolStripSeparator(),
             Item("&Open", OpenSelected, display: "Enter"),
             Item("Open &Path", OpenSelectedPath, display: "Ctrl+Enter"),
@@ -49,12 +49,19 @@ internal sealed partial class MainForm
         var edit = new ToolStripMenuItem("&Edit");
         edit.DropDownItems.AddRange(
         [
-            Item("Cu&t", () => { if (_search.Focused) _search.Cut(); else CopyFiles(true); }, display: "Ctrl+X"),
-            Item("&Copy", () => { if (_search.Focused) _search.Copy(); else CopyFiles(false); }, display: "Ctrl+C"),
-            Item("&Paste", PasteIntoSearch, display: "Ctrl+V"),
+            Item("&Undo", () => { if (_search.Focused) _search.Undo(); else UndoRedo(redo: false); }, display: "Ctrl+Z"),
+            Item("&Redo", () => UndoRedo(redo: true), display: "Ctrl+Y"),
             new ToolStripSeparator(),
-            Item("Copy &Full Name to Clipboard", CopyFullName, Keys.Control | Keys.Shift | Keys.C),
-            Item("Copy Pat&h to Clipboard", CopyPath),
+            // Files from the folder view or the results, whichever is showing, as Paste and Copy as path below.
+            Item("Cu&t", () => { if (_search.Focused) _search.Cut(); else CmdClipboard(true); }, display: "Ctrl+X"),
+            Item("&Copy", () => { if (_search.Focused) _search.Copy(); else CmdClipboard(false); }, display: "Ctrl+C"),
+            // Text into the search box while it has the focus; otherwise files into the folder showing (there is none
+            // to paste into under search results, where it stays the search box's).
+            Item("&Paste", () => { if (!_search.Focused && ExplorerShown) CmdPaste(); else PasteIntoSearch(); }, display: "Ctrl+V"),
+            new ToolStripSeparator(),
+            Item("Copy a&s Path", CopyAsPath, Keys.Control | Keys.Shift | Keys.C),
+            Item("Copy &Full Name to Clipboard", CopyFullName),
+            Item("Copy Folder Pat&h to Clipboard", CopyPath),
             new ToolStripSeparator(),
             Item("Select &All", () => { if (_search.Focused) _search.SelectAll(); else SelectAll(); }, display: "Ctrl+A"),
             Item("&Invert Selection", InvertSelection),
@@ -104,9 +111,23 @@ internal sealed partial class MainForm
             int s = size;
             _miViewModes.Add((Item(title, () => SetViewMode(s), Keys.Control | Keys.Shift | key), s));
         }
+        // The results' thumbnail sizes: in folder view Ctrl+Shift+1..8 change the folder's layout instead (the command
+        // bar's View menu), so these items, which would quietly change the hidden results, are not offered there.
+        var viewModesSeparator = new ToolStripSeparator();
+        view.DropDownOpening += (_, _) =>
+        {
+            foreach (var (item, _) in _miViewModes) item.Available = !ExplorerShown;
+            viewModesSeparator.Available = !ExplorerShown;
+        };
+        // Shown again once the menu closes, so their keys keep working when the results show.
+        view.DropDownClosed += (_, _) =>
+        {
+            foreach (var (item, _) in _miViewModes) item.Available = true;
+            viewModesSeparator.Available = true;
+        };
         view.DropDownItems.AddRange(
         [
-            .. _miViewModes.Select(v => (ToolStripItem)v.Item), new ToolStripSeparator(),
+            .. _miViewModes.Select(v => (ToolStripItem)v.Item), viewModesSeparator,
             _miPreview, _miFiltersBar, _miStatusBar, theme, new ToolStripSeparator(),
             sortBy, zoom, new ToolStripSeparator(),
             Item("&Refresh", RefreshResults, Keys.F5), new ToolStripSeparator(),
@@ -199,6 +220,14 @@ internal sealed partial class MainForm
         var settings = Item("Settings", () => _app.ShowSettings(this), display: "Ctrl+,");
         // The way to the real File Explorer (useful when Rock Preview replaces it): this location, in a File Explorer window.
         var inExplorer = Item("Open in File Explorer", OpenInFileExplorer);
+        // Always available: the shell does nothing when there is nothing to undo or redo.
+        // As Ctrl+Z: the typing in the search box while it has the focus, else the last file operation.
+        var undo = Item("Undo", () => { if (_search.Focused) _search.Undo(); else UndoRedo(redo: false); }, display: "Ctrl+Z");
+        var redo = Item("Redo", () => UndoRedo(redo: true), display: "Ctrl+Y");
+        var copyAsPath = Item("Copy as path", CopyAsPath, display: "Ctrl+Shift+C");
+        undo.Image = MenuIcon(ExplorerIcons.Undo);
+        redo.Image = MenuIcon("windows.redo");
+        copyAsPath.Image = MenuIcon(ExplorerIcons.CopyPath);
         selectAll.Image = MenuIcon(ExplorerIcons.SelectAll);
         selectNone.Image = MenuIcon(ExplorerIcons.SelectNone);
         invert.Image = MenuIcon(ExplorerIcons.InvertSelection);
@@ -207,7 +236,8 @@ internal sealed partial class MainForm
         settings.Font = new Font(settings.Font, FontStyle.Bold);
         inExplorer.Image = MenuIcon(ExplorerIcons.OpenNewWindow);
         _miFiltersBar.Visible = false; // the filter now lives in Search options
-        _cmdMore.DropDownItems.AddRange([settings, new ToolStripSeparator(), selectAll, selectNone, invert, new ToolStripSeparator(), properties, inExplorer, new ToolStripSeparator(),
+        _cmdMore.DropDownItems.AddRange([settings, new ToolStripSeparator(), undo, redo, new ToolStripSeparator(), selectAll, selectNone, invert, new ToolStripSeparator(),
+                                         copyAsPath, properties, inExplorer, new ToolStripSeparator(),
                                          file, edit, view, browse, search, _miBookmarks, tools, help]);
         SyncMenus();
     }
@@ -318,10 +348,31 @@ internal sealed partial class MainForm
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        // File Explorer's layout keys for the folder view, Ctrl+Shift+1 to 8 (the view leaves them to its frame). While
+        // results show they stay the View menu's thumbnail sizes.
+        if (ExplorerShown && (keyData & Keys.Modifiers) == (Keys.Control | Keys.Shift)
+            && CommandBarRules.LayoutForDigit((int)(keyData & Keys.KeyCode) - (int)Keys.D0) is var layout and >= 0)
+        {
+            SetExplorerLayout(layout);
+            return true;
+        }
         switch (keyData)
         {
             case Keys.Escape:
                 if (_filter.DroppedDown) break;
+                // While an address is typed, Escape is the address box's: it closes the suggestion list when that is
+                // open (AutoComplete's own handling, so the key goes on to the box), else ends the typing. Never the window.
+                if (_breadcrumb.Editing && _address.Focused)
+                {
+                    if (AddressAutoComplete.SuggestionsShown(_address))
+                    {
+                        _escapeForSuggestions = true;
+                        BeginInvoke(() => _escapeForSuggestions = false); // after the key has been handed to the box
+                        return false;
+                    }
+                    CancelAddressEdit();
+                    return true;
+                }
                 HandleEscape();
                 return true;
             case Keys.Alt | Keys.Enter:
@@ -329,7 +380,12 @@ internal sealed partial class MainForm
                 return true;
             case Keys.Alt | Keys.D:
             case Keys.F4:
-                FocusAddress(); // Explorer's address bar keys (Ctrl+L is on the Browse menu)
+                // F4 while typing an address drops the list and keeps what was typed, as in Explorer.
+                if (keyData == Keys.F4 && _breadcrumb.Editing) { _breadcrumb.OpenHistory(); return true; }
+                // Explorer's address bar keys (Ctrl+L is on the Browse menu). F4 only starts typing here: the list is a
+                // menu that takes the keyboard, so dropping it as well would send the path typed next into the menu.
+                // Alt+Down or the arrow drops it.
+                FocusAddress();
                 return true;
             case Keys.Control | Keys.E:
             case Keys.Control | Keys.F:
@@ -357,6 +413,16 @@ internal sealed partial class MainForm
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
+    bool _escapeForSuggestions; // the Escape now on its way to the address box closes its suggestion list only
+
+    /// <summary>Ends typing an address: the breadcrumb comes back and the keyboard goes back to where it was before.</summary>
+    void CancelAddressEdit()
+    {
+        _breadcrumb.EndEdit();
+        SyncAddress();
+        ReturnFocusFromAddress();
+    }
+
     void HandleEscape()
     {
         if (_zapActive && _search.TextLength == 0)
@@ -378,12 +444,18 @@ internal sealed partial class MainForm
         {
             case Keys.Down:
             case Keys.PageDown:
+                FocusList();
+                break;
             case Keys.Enter:
+                RememberSearch();
                 FocusList();
                 break;
             case Keys.Control | Keys.Enter:
                 FocusList();
                 OpenSelectedPath();
+                break;
+            case Keys.Alt | Keys.Down:
+                ShowSearchHistory(keyboard: true);
                 break;
             case Keys.Control | Keys.Back:
                 DeletePreviousWord();
@@ -397,14 +469,10 @@ internal sealed partial class MainForm
 
     void DeletePreviousWord()
     {
-        int caret = _search.SelectionStart;
         if (_search.SelectionLength > 0) { _search.SelectedText = ""; return; }
-        string t = _search.Text;
-        int i = caret;
-        while (i > 0 && char.IsWhiteSpace(t[i - 1])) i--;
-        while (i > 0 && !char.IsWhiteSpace(t[i - 1])) i--;
-        _search.Text = t[..i] + t[caret..];
-        _search.SelectionStart = i;
+        var (text, caret) = RenameRules.DeletePreviousWord(_search.Text, _search.SelectionStart, 0);
+        _search.Text = text;
+        _search.SelectionStart = caret;
     }
 
     void FocusList()
@@ -434,6 +502,8 @@ internal sealed partial class MainForm
             case Keys.Control | Keys.C:
             case Keys.Control | Keys.Insert: CopyFiles(false); break;
             case Keys.Control | Keys.X: CopyFiles(true); break;
+            case Keys.Control | Keys.Z: UndoRedo(redo: false); break;
+            case Keys.Control | Keys.Y: UndoRedo(redo: true); break;
             case Keys.Control | Keys.V:
             case Keys.Shift | Keys.Insert: PasteIntoSearch(); break;
             case Keys.Back:
@@ -485,7 +555,11 @@ internal sealed partial class MainForm
         return list;
     }
 
-    void OpenSelected() => OpenSelectedOrBrowse();
+    void OpenSelected()
+    {
+        RememberSearch(); // a result opened: the search found what it was for
+        OpenSelectedOrBrowse();
+    }
 
     /// <summary>Everything's Set Run Count: how often the item counts as opened (0 forgets it).</summary>
     void SetRunCount(string path)
@@ -501,7 +575,11 @@ internal sealed partial class MainForm
         }
         history.Set(path, count, DateTime.UtcNow.ToFileTimeUtc());
     }
-    void OpenSelectedPath() => BrowseToSelectedItemFolder();
+    void OpenSelectedPath()
+    {
+        RememberSearch();
+        BrowseToSelectedItemFolder();
+    }
     void ShowInWindowsExplorer() => FileOps.OpenPath(this, SelectedPaths(64));
     void Properties() => FileOps.Properties(this, SelectedPaths(8));
 
@@ -592,7 +670,21 @@ internal sealed partial class MainForm
         var paths = SelectedPaths(100_000);
         if (paths.Count == 0) return;
         if (paths.Any(p => p.Length <= 3)) return; // never offer to delete a drive root
-        FileOps.Delete(this, paths, permanent);
+        bool released = ReleasePreviewOf(paths);
+        if (!FileOps.Delete(this, paths, permanent) && released) QueuePreview(); // cancelled or failed: shown again
+    }
+
+    /// <summary>
+    /// Lets go of the previewed file before it (or a folder holding it) is renamed or deleted from the results: a played
+    /// or paused media file stays open in the player, and the shell would report it as in use by Rock Preview. True when
+    /// it did: when the rename or delete then doesn't happen (cancelled, or it failed), <see cref="QueuePreview"/> shows
+    /// the selection again, as a selection change would.
+    /// </summary>
+    bool ReleasePreviewOf(IEnumerable<string> paths)
+    {
+        if (!Anything.Core.FileOpRules.Touches(_preview.CurrentPath, paths)) return false;
+        ClearPreview();
+        return true;
     }
 
     void RenameFocused()
@@ -605,11 +697,17 @@ internal sealed partial class MainForm
         }
         var row = RowAt(i);
         if (row is null || row.IsRoot || row.FullPath.Length == 0) return;
+        // One item: renamed in place over its name, as in Explorer; several (or the name not on show): the dialog.
+        if (_list.SelectedIndices.Count == 1 && StartInPlaceRename(i)) return;
         string name = row.Name;
-        int selLen = row.IsDir ? name.Length : name.LastIndexOf('.') is > 0 and var dot ? dot : name.Length;
-        string? newName = InputDialog.Show(this, "Rename", "New name:", name, selLen);
-        if (newName is null || newName == name) return;
-        FileOps.Rename(this, row.FullPath, newName.Trim());
+        int selLen = Anything.Core.RenameRules.BaseNameLength(name, row.IsDir);
+        // Several selected: the focused one is renamed (as the Rename button does), and the prompt says it is only that one.
+        int selected = _list.SelectedIndices.Count;
+        string prompt = selected > 1 ? $"New name for this one of the {selected:N0} selected items:" : "New name:";
+        string? newName = InputDialog.Show(this, "Rename", prompt, name, selLen, fileName: true);
+        if (newName is null || Anything.Core.RenameRules.Normalize(newName) is not { } typed || typed == name) return;
+        bool released = ReleasePreviewOf([row.FullPath]);
+        if (!FileOps.Rename(this, row.FullPath, typed, row.IsDir) && released) QueuePreview(); // cancelled or failed: shown again
     }
 
     // ---- context menus --------------------------------------------------------------------------
@@ -648,7 +746,7 @@ internal sealed partial class MainForm
             new("Open file &location", OpenSelectedPath),
             new("Show in &Windows Explorer", ShowInWindowsExplorer),
             new("Copy &Full Name to Clipboard", CopyFullName),
-            new("Copy Pat&h to Clipboard", CopyPath),
+            new("Copy Folder Pat&h to Clipboard", CopyPath),
         };
         var folders = paths.Count <= 20 ? paths.Where(Directory.Exists).ToList() : [];
         if (folders.Count > 0) extras.Insert(1, new("Open in new &tab", () => { foreach (var f in folders) NewTab(f); }));
@@ -669,8 +767,9 @@ internal sealed partial class MainForm
             open,
             Item("Open file &location", OpenSelectedPath),
             new ToolStripSeparator(),
+            Item("Copy a&s Path", CopyAsPath),
             Item("Copy &Full Name to Clipboard", CopyFullName),
-            Item("Copy Pat&h to Clipboard", CopyPath),
+            Item("Copy Folder Pat&h to Clipboard", CopyPath),
             new ToolStripSeparator(),
             Item("Cu&t", () => CopyFiles(true)),
             Item("&Copy", () => CopyFiles(false)),

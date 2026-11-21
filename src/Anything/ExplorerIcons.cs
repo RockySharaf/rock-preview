@@ -24,7 +24,7 @@ internal static class ExplorerIcons
         IconsTiles = "windows.iconsize.tile", IconsContent = "windows.iconsize.content", ShowHidden = "windows.showhiddenfiles",
         RunAsAdmin = "RunAsAdmin", CompactMode = "windows.compactmode",
         AddressThisPc = "addressbar.desktop", AddressHome = "addressbar.home", AddressGallery = "addressbar.gallery",
-        AddressNetwork = "addressbar.network";
+        AddressNetwork = "addressbar.network", ExtractAll = "windows.compressedfile.extract";
 
     static readonly string Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
         @"SystemApps\MicrosoftWindows.Client.FileExp_cw5n1h2txyewy\FileExplorerExtensions\Assets\images\contrast-standard");

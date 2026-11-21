@@ -118,25 +118,37 @@ internal static class ExplorerReplacement
             if (ProfileOf(profiles, key) is not { } home) continue;
             string file = Path.Combine(home, @"AppData\Local\Microsoft\Windows\UsrClass.dat");
             if (!File.Exists(file)) continue; // never signed in, or no classes of its own: nothing can point here
-            AccountUse? use = null;
-            int rc = RegLoadAppKey(file, out var handle, KEY_READ, 0, 0);
-            if (rc != 0) { handle.Dispose(); use = AccountUse.CouldNotCheck; }
-            else
-            {
-                try
-                {
-                    using var classes = RegistryKey.FromHandle(handle);
-                    if (References(classes, exe)) use = AccountUse.UsesIt;
-                }
-                catch (Exception) { use = AccountUse.CouldNotCheck; }
-            }
-            if (use is not { } why) continue;
+            if (SignedOutUse(file, exe) is not { } why) continue;
             // Named only now: looking up an account away from its domain can take a while.
             var (name, notMapped) = Identify(key);
             if (UninstallRules.IsRemovedLocalAccount(key, notMapped, machine ??= MachineAccountDomain())) continue;
             found.Add(new(key, name, home, why));
         }
         return found;
+    }
+
+    /// <summary>
+    /// Whether a signed-out account's classes hive <paramref name="file"/> runs <paramref name="exe"/>: UsesIt, null when it
+    /// doesn't, or CouldNotCheck. Read with Windows' Offline Registry Library, which takes any hive file without loading
+    /// it; RegLoadAppKey, the way it was read before, only loads a hive whose keys all share one security descriptor (a
+    /// real UsrClass.dat never does) and is kept for a PC where the library is missing or can't read the file.
+    /// </summary>
+    static AccountUse? SignedOutUse(string file, string exe)
+    {
+        try
+        {
+            using var hive = OfflineHive.Open(file);
+            return References(path => hive.ReadString(path, null), exe) ? AccountUse.UsesIt : null;
+        }
+        catch (Exception) { }
+        int rc = RegLoadAppKey(file, out var handle, KEY_READ, 0, 0);
+        if (rc != 0) { handle.Dispose(); return AccountUse.CouldNotCheck; }
+        try
+        {
+            using var classes = RegistryKey.FromHandle(handle);
+            return References(classes, exe) ? AccountUse.UsesIt : null;
+        }
+        catch (Exception) { return AccountUse.CouldNotCheck; }
     }
 
     /// <summary>An account's profile folder from the ProfileList, or null when it lists none.</summary>
@@ -183,12 +195,15 @@ internal static class ExplorerReplacement
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
     static extern int RegLoadAppKey(string file, out Microsoft.Win32.SafeHandles.SafeRegistryHandle key, int access, int options, int reserved);
 
-    static bool References(RegistryKey classes, string exe)
+    static bool References(RegistryKey classes, string exe) => References(path => CommandAt(classes, path), exe);
+
+    /// <summary>Whether the classes that <paramref name="commandAt"/> reads (a key's default value, by path) run <paramref name="exe"/>.</summary>
+    static bool References(Func<string, string?> commandAt, string exe)
     {
         foreach (var cls in FolderClasses)
-            if (CommandAt(classes, cls.Key + $@"\shell\{Verb}\command") is { } command && UninstallRules.RunsProgram(command, exe)) return true;
+            if (commandAt(cls.Key + $@"\shell\{Verb}\command") is { } command && UninstallRules.RunsProgram(command, exe)) return true;
         foreach (var c in Commands)
-            if (CommandAt(classes, $@"CLSID\{c.Clsid}\shell\{c.VerbName}\command") is { } command && IsOurCommand(command) && UninstallRules.RunsProgram(command, exe)) return true;
+            if (commandAt($@"CLSID\{c.Clsid}\shell\{c.VerbName}\command") is { } command && IsOurCommand(command) && UninstallRules.RunsProgram(command, exe)) return true;
         return false;
     }
 

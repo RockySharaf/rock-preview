@@ -68,17 +68,52 @@ internal sealed partial class NavigationTree
         return null;
     }
 
+    /// <summary>A folder in the pane is to open in a new tab behind the one showing (a middle-click, or "Open in new tab"). Argument: its parsing name.</summary>
+    public event Action<string>? FolderOpenInNewTab;
+
     /// <summary>
-    /// The shell's menu for a root that can be taken out, with "Remove from navigation pane" added; null for any other
-    /// item (the shell's own menu as it is).
+    /// The parsing name a tab opens the item at, or null when a tab can't show it (a zip file the pane may list when
+    /// Windows is set to show them). Read from the item the tree holds: no disk.
+    /// </summary>
+    static string? TabLocationOf(IntPtr psi)
+    {
+        if (psi == IntPtr.Zero) return null;
+        try
+        {
+            var item = (IShellItem)Marshal.GetObjectForIUnknown(psi);
+            try
+            {
+                const uint mask = Anything.Core.ShellSelection.SfgaoFolder | Anything.Core.ShellSelection.SfgaoStream;
+                if (item.GetAttributes(mask, out uint attrs) < 0 || !Anything.Core.FolderTabs.CanOpenInTab(attrs)) return null;
+                return ParsingName(item);
+            }
+            finally { Marshal.ReleaseComObject(item); }
+        }
+        catch (Exception e) when (e is COMException or InvalidCastException or ArgumentException) { return null; }
+    }
+
+    /// <summary>Raises <see cref="FolderOpenInNewTab"/> once the tree's own call (a click, a menu command) has returned.</summary>
+    void OpenInNewTab(string? location)
+    {
+        if (location == null || !IsHandleCreated) return;
+        BeginInvoke(() => { if (!IsDisposed) FolderOpenInNewTab?.Invoke(location); });
+    }
+
+    /// <summary>
+    /// The shell's menu for a folder with "Open in new tab" at its top, and for a root that can be taken out "Remove from
+    /// navigation pane" at its end; null for an item with neither (the shell's own menu as it is).
     /// </summary>
     IntPtr WrapRootMenu(IntPtr psi, IntPtr menu, ref Guid riid)
     {
-        if (menu == IntPtr.Zero || RootKeyOf(psi) is not { } key) return IntPtr.Zero;
+        if (menu == IntPtr.Zero) return IntPtr.Zero;
+        string? key = RootKeyOf(psi), tab = TabLocationOf(psi);
+        if (key == null && tab == null) return IntPtr.Zero;
         try
         {
             var inner = Marshal.GetObjectForIUnknown(menu);
-            var wrapper = new ExtraItemMenu(inner, "Remove from navigation pane", () => BeginInvoke(() => RootRemoveRequested?.Invoke(key)));
+            var wrapper = new ExtraItemMenu(inner,
+                key == null ? null : "Remove from navigation pane", key == null ? null : () => BeginInvoke(() => RootRemoveRequested?.Invoke(key)),
+                tab == null ? null : "Open in new tab", tab == null ? null : () => OpenInNewTab(tab));
             IntPtr unknown = Marshal.GetIUnknownForObject(wrapper);
             try { return Marshal.QueryInterface(unknown, in riid, out IntPtr ppv) == 0 ? ppv : IntPtr.Zero; }
             finally { Marshal.Release(unknown); }
@@ -163,33 +198,86 @@ internal sealed partial class NavigationTree
     }
 
     /// <summary>
-    /// A shell context menu with one item of ours at its end (after a separator): the shell's own items work as before.
+    /// A shell context menu with an item of ours at its end (after a separator) and/or one at its top: the shell's own
+    /// items work as before. With an item at the top, the shell's own "Open in new tab" (which would open File Explorer)
+    /// is taken out, so it isn't there twice.
     /// </summary>
     [ComVisible(true)]
-    sealed class ExtraItemMenu(object inner, string text, Action run) : IContextMenu, IContextMenu2, IContextMenu3
+    sealed class ExtraItemMenu(object inner, string? text, Action? run, string? firstText = null, Action? firstRun = null)
+        : IContextMenu, IContextMenu2, IContextMenu3, IObjectWithSiteForMenu
     {
-        uint _offset = uint.MaxValue;
+        // The tree sites the menu it is given: passed on, so the shell's items that ask their site (a folder's own
+        // windows and tabs, pinning) find it as they would without us.
+        public int SetSite(object? pUnkSite) => inner is IObjectWithSiteForMenu site ? site.SetSite(pUnkSite) : 0;
+
+        public int GetSite(ref Guid riid, out IntPtr ppvSite)
+        {
+            if (inner is IObjectWithSiteForMenu site) return site.GetSite(ref riid, out ppvSite);
+            ppvSite = IntPtr.Zero;
+            return unchecked((int)0x80004005); // E_FAIL: no site
+        }
+
+        uint _offset = uint.MaxValue, _firstOffset = uint.MaxValue;
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool AppendMenu(IntPtr menu, uint flags, UIntPtr id, string? text);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool InsertMenu(IntPtr menu, uint position, uint flags, UIntPtr id, string? text);
+        [DllImport("user32.dll")] static extern bool DeleteMenu(IntPtr menu, uint position, uint flags);
+        [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr menu);
+        [DllImport("user32.dll")] static extern uint GetMenuItemID(IntPtr menu, int position);
 
         public int QueryContextMenu(IntPtr hmenu, uint indexMenu, uint idCmdFirst, uint idCmdLast, uint uFlags)
         {
             int hr = inner is IContextMenu menu ? menu.QueryContextMenu(hmenu, indexMenu, idCmdFirst, idCmdLast, uFlags) : 0;
             if (hr < 0 || (uFlags & 0x1 /* CMF_DEFAULTONLY */) != 0) return hr;
-            uint used = (uint)(hr & 0xFFFF);
-            if (idCmdFirst + used > idCmdLast) return hr;
-            AppendMenu(hmenu, 0x800 /* MF_SEPARATOR */, UIntPtr.Zero, null);
-            AppendMenu(hmenu, 0 /* MF_STRING */, (UIntPtr)(idCmdFirst + used), text);
-            _offset = used;
-            return (int)(used + 1);
+            uint used = (uint)(hr & 0xFFFF), next = used;
+            if (firstText != null && firstRun != null && idCmdFirst + next <= idCmdLast)
+            {
+                RemoveShellNewTab(hmenu, idCmdFirst, used);
+                InsertMenu(hmenu, indexMenu, 0x400 /* MF_BYPOSITION | MF_STRING */, (UIntPtr)(idCmdFirst + next), firstText);
+                _firstOffset = next++;
+            }
+            if (text != null && run != null && idCmdFirst + next <= idCmdLast)
+            {
+                AppendMenu(hmenu, 0x800 /* MF_SEPARATOR */, UIntPtr.Zero, null);
+                AppendMenu(hmenu, 0 /* MF_STRING */, (UIntPtr)(idCmdFirst + next), text);
+                _offset = next++;
+            }
+            return next == used ? hr : (int)next;
+        }
+
+        /// <summary>Takes the shell's "Open in new tab" (verb opennewtab) out of the items it just added, if it added one.</summary>
+        void RemoveShellNewTab(IntPtr hmenu, uint idCmdFirst, uint used)
+        {
+            if (inner is not IContextMenu menu) return;
+            IntPtr buffer = Marshal.AllocHGlobal(128 * 2);
+            try
+            {
+                for (int i = GetMenuItemCount(hmenu) - 1; i >= 0; i--)
+                {
+                    uint id = GetMenuItemID(hmenu, i); // 0xFFFFFFFF for a submenu
+                    if (id < idCmdFirst || id - idCmdFirst >= used) continue;
+                    Marshal.WriteInt16(buffer, 0);
+                    if (menu.GetCommandString((UIntPtr)(id - idCmdFirst), 0x4 /* GCS_VERBW */, IntPtr.Zero, buffer, 128) != 0) continue;
+                    if (!string.Equals(Marshal.PtrToStringUni(buffer), Anything.Core.FolderTabs.ShellNewTabVerb, StringComparison.OrdinalIgnoreCase)) continue;
+                    DeleteMenu(hmenu, (uint)i, 0x400 /* MF_BYPOSITION */);
+                    return;
+                }
+            }
+            catch (Exception e) when (e is COMException or InvalidCastException) { }
+            finally { Marshal.FreeHGlobal(buffer); }
         }
 
         public int InvokeCommand(ref CMINVOKECOMMANDINFOEX pici)
         {
             long verb = pici.lpVerb.ToInt64();
-            if ((verb >> 16) == 0 && (uint)verb == _offset)
+            if ((verb >> 16) == 0 && (uint)verb == _offset && run != null)
             {
                 run();
+                return 0;
+            }
+            if ((verb >> 16) == 0 && (uint)verb == _firstOffset && firstRun != null)
+            {
+                firstRun();
                 return 0;
             }
             return inner is IContextMenu menu ? menu.InvokeCommand(ref pici) : unchecked((int)0x80070057);
@@ -197,7 +285,7 @@ internal sealed partial class NavigationTree
 
         public int GetCommandString(UIntPtr idCmd, uint uType, IntPtr pReserved, IntPtr pszName, uint cchMax)
         {
-            if ((uint)idCmd == _offset) return unchecked((int)0x80004001);
+            if ((uint)idCmd == _offset || (uint)idCmd == _firstOffset) return unchecked((int)0x80004001);
             return inner is IContextMenu menu ? menu.GetCommandString(idCmd, uType, pReserved, pszName, cchMax) : unchecked((int)0x80004001);
         }
 

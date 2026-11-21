@@ -559,11 +559,38 @@ internal sealed class PdfContentWalker
         if (type is not ("Tx" or "Ch")) return null;
         return value switch
         {
-            PdfString s => PdfText.Decode(s.Bytes),
-            PdfArray a => string.Join("\n", a.Items.Select(x => _file.Resolve(x)).OfType<PdfString>().Take(256).Select(x => PdfText.Decode(x.Bytes))),
+            PdfString s => DecodeField(s),
+            PdfArray a => FieldValues(a),
             _ => null,
         };
     }
+
+    /// <summary>Most characters of a field's value kept (PlainText cuts there too).</summary>
+    const int MaxFieldValueChars = ExtractSink.MaxFieldChars * 16;
+
+    /// <summary>
+    /// A choice field's values, one per line: at most 256 of them, and none read once the text is full. Strings can be
+    /// megabytes each (and all the same object), so they are cut before they are decoded, never joined whole.
+    /// </summary>
+    string FieldValues(PdfArray a)
+    {
+        var sb = new System.Text.StringBuilder();
+        int count = 0;
+        foreach (var item in a.Items)
+        {
+            if (count == 256 || sb.Length >= MaxFieldValueChars) break;
+            if (_file.Resolve(item) is not PdfString s) continue;
+            if (count++ > 0) sb.Append('\n');
+            sb.Append(DecodeField(s));
+        }
+        return sb.Length > MaxFieldValueChars ? sb.ToString(0, MaxFieldValueChars) : sb.ToString();
+    }
+
+    /// <summary>
+    /// A field string's text from no more bytes than the value can keep: up to four bytes a character (UTF-16 takes two,
+    /// UTF-8 up to four) plus a BOM, as the info strings are sized. The text is cut to MaxFieldValueChars by the callers.
+    /// </summary>
+    static string DecodeField(PdfString s) => PdfText.Decode(s.Bytes.AsSpan(0, Math.Min(s.Bytes.Length, 4 * MaxFieldValueChars + 3)));
 
     /// <summary>Text that isn't drawn with a font (a field's value), as one block over a rectangle.</summary>
     void PlainText(string text, double[]? rect)
@@ -870,6 +897,8 @@ internal sealed class PdfContentWalker
             int n = font.NextCode(bytes, i, out uint code);
             i += n;
             string? text = font.Unicode(code, n);
+            // A second guard after the CMap's own: no glyph's text can hold the run list's memory.
+            if (text is { Length: > PdfCMap.MaxGlyphChars }) text = PdfCMap.CapGlyph(text);
             var m = _tm.Then(_gs.Ctm);
             double tx = 0, ty = 0;
             if (vertical) ty = font.VerticalAdvance / 1000 * size + _gs.CharSpace + (n == 1 && code == 32 ? _gs.WordSpace : 0);

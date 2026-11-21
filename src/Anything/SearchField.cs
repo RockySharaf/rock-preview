@@ -13,12 +13,16 @@ internal sealed class SearchField : Control
     readonly ScopeChip _chip = new();
     readonly ToolTip _tip = new();
     bool _hover, _glyphHover, _glyphDown;
+    bool _history, _historyHover, _historyDown, _historyOpen;
 
     /// <summary>The clear (×) button was clicked.</summary>
     public event Action? ClearClicked;
 
     /// <summary>The scope chip was clicked.</summary>
     public event Action? ScopeClicked;
+
+    /// <summary>The arrow for earlier searches was clicked.</summary>
+    public event Action? HistoryClicked;
 
     public SearchField(TextBox box)
     {
@@ -65,6 +69,24 @@ internal sealed class SearchField : Control
         _chip.Invalidate();
     }
 
+    /// <summary>Shows the arrow for earlier searches (there are some to show).</summary>
+    public void SetHistoryButton(bool visible)
+    {
+        if (_history == visible) return;
+        _history = visible;
+        _historyHover = _historyDown = false;
+        PerformLayout();
+        Invalidate();
+    }
+
+    /// <summary>The list of earlier searches is open: the arrow stays lit while it is.</summary>
+    public void SetHistoryOpen(bool open)
+    {
+        if (_historyOpen == open) return;
+        _historyOpen = open;
+        Invalidate();
+    }
+
     /// <summary>The field's height for the current DPI (32 logical, like Explorer).</summary>
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public int PreferredFieldHeight => LogicalToDeviceUnits(32);
@@ -87,10 +109,22 @@ internal sealed class SearchField : Control
         }
     }
 
+    /// <summary>The arrow for earlier searches, just left of the magnifier (empty while there are none).</summary>
+    Rectangle HistoryRect
+    {
+        get
+        {
+            if (!_history) return Rectangle.Empty;
+            var g = GlyphRect;
+            int w = LogicalToDeviceUnits(24);
+            return new Rectangle(g.Left - w, g.Top, w, g.Height);
+        }
+    }
+
     protected override void OnLayout(LayoutEventArgs levent)
     {
         base.OnLayout(levent);
-        int right = GlyphRect.Width + LogicalToDeviceUnits(4);
+        int right = GlyphRect.Width + HistoryRect.Width + LogicalToDeviceUnits(4);
         // The chip at the start, at most about half the field, so a long folder name leaves room to type.
         int inset = LogicalToDeviceUnits(5), chipH = Math.Max(1, Height - 2 * inset);
         int chipW = Math.Min(_chip.PreferredChipWidth(), Math.Max(LogicalToDeviceUnits(40), (Width - right) * 45 / 100));
@@ -139,6 +173,13 @@ internal sealed class SearchField : Control
             ExplorerTheme.FillRounded(g, gr, LogicalToDeviceUnits(4), _glyphDown ? ExplorerTheme.Pressed : ExplorerTheme.Hover);
         ExplorerTheme.DrawGlyph(g, hasText ? ExplorerTheme.GClose : ExplorerTheme.GSearch, gr,
             LogicalToDeviceUnits(hasText ? 10 : 12), ExplorerTheme.SecondaryText);
+        if (_history)
+        {
+            var hr = HistoryRect;
+            if (_historyHover || _historyDown || _historyOpen)
+                ExplorerTheme.FillRounded(g, hr, LogicalToDeviceUnits(4), _historyDown || _historyOpen ? ExplorerTheme.Pressed : ExplorerTheme.Hover);
+            ExplorerTheme.DrawGlyph(g, ExplorerTheme.GChevronDown, hr, LogicalToDeviceUnits(8), ExplorerTheme.SecondaryText);
+        }
     }
 
     void SetHover(bool hover)
@@ -153,14 +194,17 @@ internal sealed class SearchField : Control
         base.OnMouseMove(e);
         SetHover(true);
         bool over = GlyphRect.Contains(e.Location) && _box.TextLength > 0;
-        Cursor = over ? Cursors.Default : Cursors.IBeam;
+        bool overHistory = HistoryRect.Contains(e.Location);
+        Cursor = over || overHistory ? Cursors.Default : Cursors.IBeam;
         if (over != _glyphHover) { _glyphHover = over; Invalidate(); }
+        if (overHistory != _historyHover) { _historyHover = overHistory; Invalidate(); }
     }
 
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
         _glyphHover = _glyphDown = false;
+        _historyHover = _historyDown = false;
         SetHover(_box.ClientRectangle.Contains(_box.PointToClient(MousePosition)));
         Invalidate();
     }
@@ -170,6 +214,15 @@ internal sealed class SearchField : Control
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left) return;
         if (GlyphRect.Contains(e.Location) && _box.TextLength > 0) { _glyphDown = true; Invalidate(); return; }
+        if (HistoryRect.Contains(e.Location))
+        {
+            // Opens on the press, like a combo box's arrow; the list is a menu that closes on the next click anywhere.
+            _box.Focus();
+            _historyDown = true;
+            Invalidate();
+            HistoryClicked?.Invoke();
+            return;
+        }
         _box.Focus();
         _box.SelectionStart = _box.TextLength;
     }
@@ -177,6 +230,7 @@ internal sealed class SearchField : Control
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (_historyDown) { _historyDown = false; Invalidate(); }
         if (!_glyphDown) return;
         _glyphDown = false;
         Invalidate();

@@ -9,16 +9,27 @@ namespace Anything.Explorer;
 /// drop, views and thumbnails as File Explorer — inside Rock Preview. Rock Preview keeps its own Back/Forward
 /// history (so it can show button state) and tracks the selection for its preview pane.
 /// </summary>
-internal sealed class ExplorerHost : Control
+internal sealed partial class ExplorerHost : Control
 {
     IExplorerBrowser? _browser;
     uint _cookie;
     readonly Callbacks _callbacks;
-    readonly List<byte[]> _back = [], _forward = [];
+    readonly NavigationHistory<byte[]> _history = new();
     byte[]? _current;
     bool _historyNavigation;
+    // A Back or Forward the shell is still opening: when it fails after BrowseToObject returned, the history step is
+    // undone, so Back and Forward don't lead to the folder still open. _inStep: inside the step's own BrowseToObject.
+    // _stepOpening: the place the step's BrowseToObject opens; _stepFailMessage: a failure the shell reported inside it,
+    // told to the window once the history is final.
+    NavigationHistory<byte[]>.Entry? _stepTarget;
+    bool _stepWasBack, _inStep, _stepFailedEarly;
+    byte[]? _stepOpening;
+    string? _stepFailMessage;
+    byte[]? _leavingItem;              // the item selected in the folder a navigation is leaving, kept with it in Back
     IShellItem? _pendingItem;           // keeps the navigation target alive until it completes
     string? _selectAfterNavigate;       // full path to select once the view shows it
+    byte[]? _selectItemAfterNavigate;   // or an item's ID inside _selectItemIn, once that folder shows it (Back, Up)
+    byte[]? _selectItemIn;
     int _selectAttempts;
     readonly System.Windows.Forms.Timer _selectionTimer = new() { Interval = 200 };
     readonly System.Windows.Forms.Timer _selectTimer = new() { Interval = 100 };
@@ -30,6 +41,11 @@ internal sealed class ExplorerHost : Control
     bool _selectionReported;            // the view said the selection changed (CDBOSC_SELCHANGE) since the last poll
     int _itemCount, _lastItemCount = -1;
     bool _renameAfterSelect;
+    // The selection is the item Back, Forward or Up selected by itself, not changed by the user since (see
+    // SelectionFromNavigation). _navSelectionId: that item's ID in the view, once TrySelectPending has selected it.
+    bool _selectionFromNavigation;
+    byte[]? _navSelectionId;
+    NewFolderWatch? _newFolderWatch;    // the New folder command's watch for the folder it makes (CreateNewFolder)
     bool _navPane = true;
     bool _thisPcPending;                // the view being created shows This PC
 
@@ -45,6 +61,12 @@ internal sealed class ExplorerHost : Control
     /// <summary>Raised when the first selected item (or the selection count) changes.</summary>
     public event Action? SelectionChanged;
     public event Action<string>? NavigationFailed;
+
+    /// <summary>
+    /// The selection is only the item Back, Forward or Up selected by itself (the one they came from): the user hasn't
+    /// changed the selection since. Such a selection doesn't make the search look inside it.
+    /// </summary>
+    public bool SelectionFromNavigation => _selectionFromNavigation;
 
     public ExplorerHost()
     {
@@ -74,10 +96,27 @@ internal sealed class ExplorerHost : Control
     /// <summary>The location's icon in the system's small image list (shown on its tab), or -1.</summary>
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public int CurrentIconIndex { get; private set; } = -1;
+    /// <summary>The archive file the location is in or is (Extract all works on it), or null: decided at each navigation.</summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public string? CurrentArchive { get; private set; }
 
     public bool HasLocation => _current != null;
-    public bool CanGoBack => _back.Count > 0;
-    public bool CanGoForward => _forward.Count > 0;
+    /// <summary>The open location's ID list (null before the first folder), to name it to Windows without asking the disk.</summary>
+    public byte[]? CurrentIdList => _current;
+    public bool CanGoBack => _history.CanGoBack;
+    public bool CanGoForward => _history.CanGoForward;
+    /// <summary>Names of the places Back and Forward go to ("Downloads"), for the buttons' tooltips; null when unknown.</summary>
+    public string? BackName => _history.BackEntry?.Name;
+    public string? ForwardName => _history.ForwardEntry?.Name;
+    /// <summary>How many places Back holds: with the folder, where in the history the view is.</summary>
+    public int BackCount => _history.BackCount;
+    /// <summary>The last folder opened came from Back or Forward (which keep the history on the other side).</summary>
+    public bool LastNavigationWasHistory { get; private set; }
+    /// <summary>There is a folder above this one: false at the Desktop, the top of the namespace, as in Explorer.</summary>
+    public bool CanGoUp => _current != null && !IdList.IsEmpty(_current);
+    /// <summary>Name of the folder Up goes to ("Documents"), for the Up button's tooltip.</summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public string? ParentDisplayName { get; private set; }
 
     /// <summary>First selected item's file-system path (null when nothing or only virtual items are selected).</summary>
     public string? SelectedPath => _lastSelection;
@@ -101,6 +140,7 @@ internal sealed class ExplorerHost : Control
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        WatchUserInput(true);
         if (_browser != null) return;
         try
         {
@@ -123,6 +163,8 @@ internal sealed class ExplorerHost : Control
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        WatchUserInput(false);
+        EndNewFolderWatch();
         ReleaseBrowser();
         base.OnHandleDestroyed(e);
     }
@@ -135,6 +177,8 @@ internal sealed class ExplorerHost : Control
             _selectionTimer.Dispose();
             _selectTimer.Dispose();
             _themeTimer.Dispose();
+            WatchUserInput(false);
+            EndNewFolderWatch();
             ReleaseBrowser();
         }
         base.Dispose(disposing);
@@ -148,6 +192,7 @@ internal sealed class ExplorerHost : Control
         _selectionTimer.Stop();
         try { if (_cookie != 0) b.Unadvise(_cookie); } catch { }
         try { ((IObjectWithSite)b).SetSite(null); } catch { }
+        _menuHook.EndOpenInNewTab(raise: false); // a menu still open: its hook goes with the view
         _menuHook.ReleaseHandle();
         try { b.Destroy(); } catch { }
         try { Marshal.FinalReleaseComObject(b); } catch { }
@@ -164,6 +209,80 @@ internal sealed class ExplorerHost : Control
     {
         base.OnVisibleChanged(e);
         if (Visible) _browser?.SetRect(IntPtr.Zero, new RECT(ClientRectangle));
+        else
+        {
+            // Hidden (a search, another tab): Back's or Up's late select, or a new folder's rename, would come back to a
+            // moved-on view (and a rename box out of sight would take the keys).
+            DropItemSelect();
+            DropNewFolderRename();
+        }
+    }
+
+    /// <summary>
+    /// Forgets a new folder's rename still to come: the watch for the folder, and its select and rename once found. The
+    /// user went on meanwhile (input in the view, the view hidden), so what they do stands.
+    /// </summary>
+    void DropNewFolderRename()
+    {
+        EndNewFolderWatch();
+        if (!_renameAfterSelect) return;
+        _renameAfterSelect = false;
+        _selectAfterNavigate = null;
+        if (_selectItemAfterNavigate == null) _selectTimer.Stop();
+    }
+
+    /// <summary>Forgets the item Back or Up was to select (not a path asked for, nor a new folder's rename).</summary>
+    void DropItemSelect()
+    {
+        if (_selectItemAfterNavigate == null) return;
+        _selectItemAfterNavigate = _selectItemIn = null;
+        if (_selectAfterNavigate == null) _selectTimer.Stop();
+        if (_selectionFromNavigation)
+        {
+            // What is selected now is not Back's or Up's doing (the user went on, or the view hides): read it again.
+            _selectionFromNavigation = false;
+            _lastSelectionCount = -1;
+        }
+    }
+
+    UserInputWatch? _inputWatch;
+
+    /// <summary>
+    /// The user clicking, turning the wheel or pressing a key in the folder view while Back's or Up's item is still to be
+    /// selected: what they do then stands, so that select is dropped. Windows' own view windows aren't WinForms controls,
+    /// so their input is seen here, as every posted message on the thread passes the message filters. Only from the
+    /// moment the item is queued: the side button or key that started the Back or Up came before it. A selection the view
+    /// makes by itself (the first item, after keyboard use) is not the user's and does not drop it.
+    /// </summary>
+    sealed class UserInputWatch(ExplorerHost host) : IMessageFilter
+    {
+        public bool PreFilterMessage(ref Message m)
+        {
+            try
+            {
+                if (host._selectItemAfterNavigate == null && !host._selectionFromNavigation
+                    && host._newFolderWatch == null && !host._renameAfterSelect) return false;
+                if (!NavigationInput.MovesOn(m.Msg, m.WParam, m.LParam)) return false;
+                if (host.IsDisposed || !host.IsHandleCreated) return false;
+                if (m.HWnd != host.Handle && !IsChild(host.Handle, m.HWnd)) return false;
+                host.DropItemSelect();
+                // Nor a new folder's rename still to come: a late one would take the focus from what the user does now
+                // (their own F2 on it, a click elsewhere). Its own key (Ctrl+Shift+N) comes before the watch starts.
+                host.DropNewFolderRename();
+                // What makes the selection the user's is the user changing it, which the poll sees (PollSelection, by
+                // the item's ID): a click on the column header (drawn inside the items window, so not told apart from a
+                // click on an item) or on a scroll bar, the wheel, a key that moves nothing, or a click on the item
+                // already selected leave it as it was.
+            }
+            catch (Exception) { } // never out of a message filter
+            return false; // only watched: the message goes on as usual
+        }
+    }
+
+    void WatchUserInput(bool on)
+    {
+        if (on && _inputWatch == null) Application.AddMessageFilter(_inputWatch = new UserInputWatch(this));
+        else if (!on && _inputWatch != null) { Application.RemoveMessageFilter(_inputWatch); _inputWatch = null; }
     }
 
     // ---- navigation ---------------------------------------------------------------------------
@@ -181,9 +300,24 @@ internal sealed class ExplorerHost : Control
         if (ShellNative.SHCreateItemFromParsingName(location, IntPtr.Zero, ref iid, out var item) != ShellNative.S_OK || item == null)
             return false;
         _selectAfterNavigate = selectPath;
+        _selectItemAfterNavigate = _selectItemIn = null;
         _renameAfterSelect = false;
         _pendingItem = item;
+        GiveUpStep();
         return _browser.BrowseToObject(item, ShellNative.SBSP_ABSOLUTE) == ShellNative.S_OK;
+    }
+
+    /// <summary>
+    /// The user goes somewhere else (an address, Up, a link) while a Back or Forward is still opening: the shell cancels
+    /// that step, so it stops being in flight and its history is put back. The folder left then goes into Back as usual,
+    /// and the next folder to open is not taken for a history navigation.
+    /// </summary>
+    void GiveUpStep()
+    {
+        _historyNavigation = false;
+        if (_stepTarget is not { } target) return;
+        _stepTarget = null;
+        UndoStep(target, _stepWasBack);
     }
 
     bool Navigate(byte[] pidl, bool historyNavigation)
@@ -195,6 +329,7 @@ internal sealed class ExplorerHost : Control
             Marshal.Copy(pidl, 0, p, pidl.Length);
             var iid = ShellNative.IID_IShellItem;
             if (ShellNative.SHCreateItemFromIDList(p, ref iid, out var item) != ShellNative.S_OK || item == null) return false;
+            if (!historyNavigation) GiveUpStep();
             _historyNavigation = historyNavigation;
             _pendingItem = item;
             return _browser.BrowseToObject(item, ShellNative.SBSP_ABSOLUTE) == ShellNative.S_OK;
@@ -204,23 +339,74 @@ internal sealed class ExplorerHost : Control
 
     public void GoBack()
     {
-        if (_back.Count == 0 || _current == null) return;
-        var target = _back[^1];
-        _back.RemoveAt(_back.Count - 1);
-        _forward.Add(_current);
-        if (!Navigate(target, historyNavigation: true)) { _forward.RemoveAt(_forward.Count - 1); _back.Add(target); }
+        if (_current == null || !_history.CanGoBack) return;
+        Step(back: true);
     }
 
     public void GoForward()
     {
-        if (_forward.Count == 0 || _current == null) return;
-        var target = _forward[^1];
-        _forward.RemoveAt(_forward.Count - 1);
-        _back.Add(_current);
-        if (!Navigate(target, historyNavigation: true)) { _back.RemoveAt(_back.Count - 1); _forward.Add(target); }
+        if (_current == null || !_history.CanGoForward) return;
+        Step(back: false);
     }
 
-    public void GoUp() => _browser?.BrowseToIDList(IntPtr.Zero, ShellNative.SBSP_PARENT);
+    void Step(bool back)
+    {
+        _stepTarget = null;
+        _stepFailedEarly = false;
+        _stepFailMessage = null;
+        _inStep = true;
+        NavigationHistory<byte[]>.Entry? opened;
+        try { opened = back ? _history.GoBack(Here(), OpenFromHistory) : _history.GoForward(Here(), OpenFromHistory); }
+        finally { _inStep = false; _stepOpening = null; }
+        string? failed = _stepFailMessage;
+        _stepFailMessage = null;
+        if (opened != null)
+        {
+            if (_stepFailedEarly) UndoStep(opened, back);  // the shell said it failed but BrowseToObject still returned S_OK
+            else if (_historyNavigation) { _stepTarget = opened; _stepWasBack = back; } // still opening
+        }
+        // After the history is put back: the window then shows Back, Forward and their tooltips as they now are.
+        if (failed != null) NavigationFailed?.Invoke(failed);
+    }
+
+    /// <summary>Puts the history back as it was before a Back (or Forward) to <paramref name="target"/> that failed.</summary>
+    void UndoStep(NavigationHistory<byte[]>.Entry target, bool back)
+    {
+        // The step moved the place left onto the other side and took the target off: stepping the other way, with the
+        // target as "here", does exactly the reverse.
+        if (back) _history.GoForward(target, _ => true);
+        else _history.GoBack(target, _ => true);
+    }
+
+    /// <summary>This place as the history keeps it: with the item selected now, selected again on coming back.</summary>
+    NavigationHistory<byte[]>.Entry Here() => new(_current!, CurrentDisplayName, SelectedItemId());
+
+    /// <summary>Back or Forward to a place, selecting the item that was selected when it was left (nothing if none was).</summary>
+    bool OpenFromHistory(NavigationHistory<byte[]>.Entry entry)
+    {
+        // Set before browsing: the navigation can complete inside BrowseToObject.
+        _selectAfterNavigate = null;
+        _renameAfterSelect = false;
+        _selectItemAfterNavigate = entry.Item;
+        _selectItemIn = entry.Item != null ? entry.Place : null;
+        _stepOpening = entry.Place;
+        if (Navigate(entry.Place, historyNavigation: true)) return true;
+        _selectItemAfterNavigate = _selectItemIn = null;
+        return false;
+    }
+
+    /// <summary>Up to the folder above, with the folder just left selected and scrolled into view, as in Explorer.</summary>
+    public void GoUp()
+    {
+        if (_browser == null || _current == null || IdList.Parent(_current) is not { } parent) return;
+        _selectAfterNavigate = null;
+        _renameAfterSelect = false;
+        _selectItemAfterNavigate = IdList.LastItem(_current);
+        _selectItemIn = parent;
+        GiveUpStep();
+        if (_browser.BrowseToIDList(IntPtr.Zero, ShellNative.SBSP_PARENT) != ShellNative.S_OK)
+            _selectItemAfterNavigate = _selectItemIn = null;
+    }
 
     public void RefreshView()
     {
@@ -297,13 +483,12 @@ internal sealed class ExplorerHost : Control
     void OnNavigationComplete(IntPtr pidl)
     {
         var bytes = ShellNative.CopyPidl(pidl);
+        LastNavigationWasHistory = _historyNavigation;
+        _stepTarget = null;
         if (_historyNavigation) _historyNavigation = false;
         else if (_current != null && !_current.AsSpan().SequenceEqual(bytes))
-        {
-            _back.Add(_current);
-            if (_back.Count > 200) _back.RemoveAt(0);
-            _forward.Clear();
-        }
+            _history.Visit(new(_current, CurrentDisplayName, _leavingItem));
+        _leavingItem = null;
         _current = bytes;
         _pendingItem = null;
         CurrentPath = ShellNative.NameOf(pidl, SIGDN.FileSysPath);
@@ -311,8 +496,19 @@ internal sealed class ExplorerHost : Control
         CurrentDisplayName = ShellNative.NameOf(pidl, SIGDN.NormalDisplay) ?? CurrentPath;
         CurrentParsingName = ShellNative.NameOf(pidl, SIGDN.DesktopAbsoluteParsing) ?? CurrentPath;
         CurrentIconIndex = ShellInfo.GetIconIndex(pidl);
+        CurrentArchive = ArchiveAbove(bytes, CurrentParsingName);
+        ParentDisplayName = IdList.Parent(bytes) is { } parent ? NameOf(parent, SIGDN.NormalDisplay) : null;
+        // An item to select belongs to the folder it was meant for: somewhere else, a same-named item would be picked.
+        // The shell may hand back the folder's ID list with different bytes, so its name decides when they differ.
+        if (_selectItemAfterNavigate != null && (_selectItemIn == null || !(_selectItemIn.AsSpan().SequenceEqual(bytes)
+                || CurrentParsingName != null && string.Equals(NameOf(_selectItemIn, SIGDN.DesktopAbsoluteParsing), CurrentParsingName, StringComparison.OrdinalIgnoreCase))))
+            _selectItemAfterNavigate = _selectItemIn = null;
         _lastSelection = null;
         _lastSelectionCount = -1;
+        // A new folder: Back's or Up's item, if any, is to be selected again (below). From now on: Up's parent folder may
+        // select it by itself before Rock Preview does.
+        _selectionFromNavigation = _selectItemAfterNavigate != null;
+        _navSelectionId = null;
         // A new folder's rename belongs to the folder it was made in: going elsewhere before it shows (Back, Up, a
         // double-click) drops it, or the rename box would open on a same-named item here.
         if (_renameAfterSelect && !string.Equals(Path.TrimEndingDirectorySeparator(Path.GetDirectoryName(_selectAfterNavigate) ?? ""),
@@ -321,7 +517,7 @@ internal sealed class ExplorerHost : Control
             _selectAfterNavigate = null;
             _renameAfterSelect = false;
         }
-        if (_selectAfterNavigate != null) { _selectAttempts = 0; _selectTimer.Start(); }
+        if (_selectAfterNavigate != null || _selectItemAfterNavigate != null) { _selectAttempts = 0; _selectTimer.Start(); }
         ApplyViewTheme();
         HookViewMenu();
         Navigated?.Invoke();
@@ -338,6 +534,8 @@ internal sealed class ExplorerHost : Control
         try
         {
             if (view.GetWindow(out IntPtr hwnd) != ShellNative.S_OK || hwnd == IntPtr.Zero || hwnd == _menuHook.Handle) return;
+            _menuHook.Host ??= this;
+            _menuHook.EndOpenInNewTab(raise: false);
             _menuHook.ReleaseHandle();
             _menuHook.AssignHandle(hwnd);
         }
@@ -347,9 +545,10 @@ internal sealed class ExplorerHost : Control
 
     /// <summary>
     /// The folder view's window, which owns the menu it shows for the items right-clicked: as that menu opens (the first
-    /// popup of a menu loop it starts), "Open with" moves up to right after the default verb, Open. Nothing else changes.
+    /// popup of a menu loop it starts), "Open with" moves up to right after the default verb, Open, and a single folder's
+    /// menu gets "Open in new tab" at its top (ExplorerHost.NewTab.cs).
     /// </summary>
-    sealed class ViewMenuHook : NativeWindow
+    sealed partial class ViewMenuHook : NativeWindow
     {
         const int WM_ENTERMENULOOP = 0x0211, WM_EXITMENULOOP = 0x0212, WM_NCDESTROY = 0x0082;
         bool _firstPopup;
@@ -367,13 +566,19 @@ internal sealed class ExplorerHost : Control
                     {
                         int open = Anything.Interop.Native.GetMenuDefaultItem(m.WParam, 1, Anything.Interop.Native.GMDI_USEDISABLED);
                         if (open >= 0) Anything.Interop.MenuOrder.MoveOpenWith(m.WParam, open + 1);
+                        if (open >= 0) AddOpenInNewTab(m.WParam); // an item's menu (the background's has no default)
                     }
                     catch (Exception) { }
                     break;
+                case WM_MENUSELECT:
+                    TrackOpenInNewTab(m.WParam, m.LParam);
+                    break;
                 case WM_EXITMENULOOP:
                     _firstPopup = false;
+                    EndOpenInNewTab(raise: true);
                     break;
                 case WM_NCDESTROY:
+                    EndOpenInNewTab(raise: false);
                     base.WndProc(ref m);
                     ReleaseHandle();
                     return;
@@ -427,10 +632,38 @@ internal sealed class ExplorerHost : Control
 
     void OnNavigationFailedInternal(IntPtr pidl)
     {
-        _pendingItem = null;
-        _historyNavigation = false;
-        NavigationFailed?.Invoke("Unable to open " + (ShellNative.NameOf(pidl, SIGDN.DesktopAbsoluteEditing) ?? "that location") + ".");
+        // Only what belonged to the folder that failed: a navigation cancelled for a newer one leaves the newer one's alone.
+        byte[]? failed = pidl != IntPtr.Zero ? ShellNative.CopyPidl(pidl) : null;
+        string message = "Unable to open " + (ShellNative.NameOf(pidl, SIGDN.DesktopAbsoluteEditing) ?? "that location") + ".";
+        // A Back or Forward being opened is undone only when its own folder failed, whether the shell says so inside the
+        // step's BrowseToObject or later: it may report an earlier navigation, cancelled by the step, from either.
+        bool stepInFlight = _inStep || _stepTarget != null;
+        byte[]? stepPlace = _inStep ? _stepOpening : _stepTarget?.Place;
+        bool stepFailed = failed != null && stepPlace != null && SamePlace(failed, stepPlace);
+        if (!stepInFlight || stepFailed || failed == null)
+        {
+            _pendingItem = null;
+            _historyNavigation = false;
+        }
+        if (failed != null && _selectItemIn != null && failed.AsSpan().SequenceEqual(_selectItemIn)) DropItemSelect();
+        if (_inStep)
+        {
+            // Step undoes it once BrowseToObject returns (if that still said S_OK), then tells the window.
+            if (stepFailed) _stepFailedEarly = true;
+            if (stepFailed || _stepFailMessage == null) _stepFailMessage = message;
+            return;
+        }
+        if (stepFailed && _stepTarget is { } target)
+        {
+            _stepTarget = null;
+            UndoStep(target, _stepWasBack);
+        }
+        NavigationFailed?.Invoke(message); // after the history is put back, so the buttons show it
     }
+
+    /// <summary>Whether two ID lists name the same place: the shell may hand back a folder's ID list with different bytes.</summary>
+    static bool SamePlace(byte[] a, byte[] b) => a.AsSpan().SequenceEqual(b)
+        || NameOf(a, SIGDN.DesktopAbsoluteParsing) is { } name && string.Equals(name, NameOf(b, SIGDN.DesktopAbsoluteParsing), StringComparison.OrdinalIgnoreCase);
 
     // ---- selection ----------------------------------------------------------------------------
 
@@ -439,6 +672,7 @@ internal sealed class ExplorerHost : Control
         if (!Visible || _browser == null) return;
         string? first = null;
         int count = 0;
+        bool reported = false;
         var fv = GetView<IFolderView2>(ShellNative.IID_IFolderView2);
         if (fv != null)
         {
@@ -451,7 +685,7 @@ internal sealed class ExplorerHost : Control
                 // its name alone is read again from the view each tick, as a rename changes none of those.
                 int selected = fv.ItemCount(0x1 /* SVGIO_SELECTION */, out int s) == ShellNative.S_OK ? s : -1;
                 int focused = fv.GetFocusedItem(out int f) == ShellNative.S_OK ? f : -1;
-                bool reported = _selectionReported;
+                reported = _selectionReported;
                 _selectionReported = false;
                 if (selected != 0)
                 {
@@ -471,11 +705,69 @@ internal sealed class ExplorerHost : Control
             catch (COMException) { }
             finally { Marshal.ReleaseComObject(fv); }
         }
-        if (count == _lastSelectionCount && string.Equals(first, _lastSelection, StringComparison.OrdinalIgnoreCase) && _itemCount == _lastItemCount) return;
+        if (count == _lastSelectionCount && string.Equals(first, _lastSelection, StringComparison.OrdinalIgnoreCase) && _itemCount == _lastItemCount)
+        {
+            // The same count and first item, but other items; or another item without a path (a phone's) in place of
+            // Back's, which ends it.
+            if (reported) { if (EndNavigationSelection(count)) SelectionChanged?.Invoke(); else SelectionContentChanged?.Invoke(); }
+            return;
+        }
         _lastItemCount = _itemCount;
         _lastSelection = first;
         _lastSelectionCount = count;
+        EndNavigationSelection(count);
         SelectionChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Once Back's, Forward's or Up's item is selected (TrySelectPending), a selection that is anything but that one item
+    /// is the user's: <see cref="SelectionFromNavigation"/> ends, and true is returned. Before then whatever the view
+    /// shows is waited out: the user's own input drops that select (DropItemSelect), and the flag with it.
+    /// </summary>
+    bool EndNavigationSelection(int count)
+    {
+        if (!_selectionFromNavigation || _selectItemAfterNavigate != null) return false;
+        if (count == 1 && _navSelectionId != null && SelectedItemId() is { } id && SameItemInView(id, _navSelectionId)) return false;
+        _selectionFromNavigation = false;
+        return true;
+    }
+
+    static readonly Guid IID_IShellFolder = new("000214E6-0000-0000-C000-000000000046");
+    const int SHCIDS_CANONICALONLY = 0x10000000;
+
+    /// <summary>
+    /// Whether two IDs of items in the view's folder name the same item. Compared by the folder (by name, not the disk):
+    /// the view swaps in new bytes for an item when it is told of a change (a new modified date), and the history's copy
+    /// may differ from the view's.
+    /// </summary>
+    bool SameItemInView(byte[] a, byte[] b)
+    {
+        if (a.AsSpan().SequenceEqual(b)) return true;
+        var fv = GetView<IFolderView2>(ShellNative.IID_IFolderView2);
+        if (fv == null) return false;
+        IntPtr ptr = IntPtr.Zero, pa = IntPtr.Zero, pb = IntPtr.Zero;
+        object? obj = null;
+        try
+        {
+            var iid = IID_IShellFolder;
+            if (fv.GetFolder(ref iid, out ptr) != ShellNative.S_OK || ptr == IntPtr.Zero) return false;
+            obj = Marshal.GetObjectForIUnknown(ptr);
+            if (obj is not Anything.Interop.IShellFolder folder) return false;
+            pa = Marshal.AllocCoTaskMem(a.Length);
+            Marshal.Copy(a, 0, pa, a.Length);
+            pb = Marshal.AllocCoTaskMem(b.Length);
+            Marshal.Copy(b, 0, pb, b.Length);
+            int hr = folder.CompareIDs(SHCIDS_CANONICALONLY, pa, pb);
+            return hr >= 0 && (short)(hr & 0xFFFF) == 0; // the result is the HRESULT's code: 0 for the same item
+        }
+        catch (Exception e) when (e is COMException or InvalidCastException) { return false; }
+        finally
+        {
+            if (pa != IntPtr.Zero) Marshal.FreeCoTaskMem(pa);
+            if (pb != IntPtr.Zero) Marshal.FreeCoTaskMem(pb);
+            if (obj != null) Marshal.ReleaseComObject(obj);
+            if (ptr != IntPtr.Zero) Marshal.Release(ptr);
+        }
     }
 
     /// <summary>How many items are selected and the first one's file-system path, from the view's selection array.</summary>
@@ -539,6 +831,7 @@ internal sealed class ExplorerHost : Control
     /// </summary>
     bool OnDefaultCommand()
     {
+        if (OpenShortcutFolder()) return true; // a shortcut to a folder opens it here, whatever opens folders (ExplorerHost.Links.cs)
         if (!OpenFoldersInPlace && !ExplorerReplacement.IsEnabled()) return false; // also when turned on elsewhere (Setup)
         var selected = GetSelectedPaths(2, SIGDN.DesktopAbsoluteParsing);
         if (selected.Count != 1) return false;
@@ -620,7 +913,16 @@ internal sealed class ExplorerHost : Control
     void TrySelectPending()
     {
         string? path = _selectAfterNavigate;
-        if (path == null || ++_selectAttempts > 30) { _selectTimer.Stop(); _selectAfterNavigate = null; _renameAfterSelect = false; return; }
+        byte[]? itemId = _selectItemAfterNavigate;
+        if ((path == null && itemId == null) || ++_selectAttempts > 30)
+        {
+            if (itemId != null && _selectionFromNavigation) { _selectionFromNavigation = false; _lastSelectionCount = -1; } // never selected
+            _selectTimer.Stop();
+            _selectAfterNavigate = null;
+            _selectItemAfterNavigate = _selectItemIn = null;
+            _renameAfterSelect = false;
+            return;
+        }
         // A rename box closes when the view gets the focus after it opens, so the view gets it first, a tick earlier.
         if (_renameAfterSelect && _selectAttempts == 1) { FocusView(); return; }
         var view = GetView<IShellView>(ShellNative.IID_IShellView);
@@ -628,23 +930,167 @@ internal sealed class ExplorerHost : Control
         IntPtr pidl = IntPtr.Zero;
         try
         {
-            if (SHParseDisplayName(path, IntPtr.Zero, out pidl, 0, out _) != ShellNative.S_OK || pidl == IntPtr.Zero) { _selectAfterNavigate = null; _renameAfterSelect = false; return; }
-            IntPtr child = ShellNative.ILFindLastID(pidl);
+            IntPtr child;
+            if (path != null)
+            {
+                if (SHParseDisplayName(path, IntPtr.Zero, out pidl, 0, out _) != ShellNative.S_OK || pidl == IntPtr.Zero) { _selectAfterNavigate = null; _renameAfterSelect = false; return; }
+                child = ShellNative.ILFindLastID(pidl);
+            }
+            else
+            {
+                // The item's own ID inside the folder (Back, Up): found in virtual folders and libraries too.
+                pidl = Marshal.AllocCoTaskMem(itemId!.Length);
+                Marshal.Copy(itemId, 0, pidl, itemId.Length);
+                child = pidl;
+            }
             uint flags = (_renameAfterSelect ? ShellNative.SVSI_EDIT : ShellNative.SVSI_SELECT)
                 | ShellNative.SVSI_DESELECTOTHERS | ShellNative.SVSI_ENSUREVISIBLE | ShellNative.SVSI_FOCUSED;
-            if (view.SelectItem(child, flags) == ShellNative.S_OK)
+            // A path outside the folder shown (a library shows its locations' items as its own) is found by its path among
+            // the view's items: there the view's SelectItem says S_OK for the folder's own ID and selects nothing.
+            bool inView = path == null || string.Equals(Path.TrimEndingDirectorySeparator(Path.GetDirectoryName(path) ?? ""),
+                Path.TrimEndingDirectorySeparator(CurrentPath ?? ""), StringComparison.OrdinalIgnoreCase);
+            if (inView ? view.SelectItem(child, flags) == ShellNative.S_OK : SelectInViewByPath(path!, flags))
             {
                 _selectTimer.Stop();
                 _selectAfterNavigate = null;
+                _selectItemAfterNavigate = _selectItemIn = null;
+                if (path == null) // Back's, Forward's or Up's item: selected by the navigation, not by the user
+                {
+                    _selectionFromNavigation = true;
+                    // Its ID as the view holds it now (the history's copy may differ in bytes): what the poll compares.
+                    _navSelectionId = SelectedItemId() ?? itemId;
+                    _lastSelectionCount = -1; // read again and told to the window, also when the view had already selected it
+                }
                 if (_renameAfterSelect) _renameAfterSelect = false;
-                else FocusView();
+                // Back's or Up's item takes the focus only while the keys are still in this view: not when the view is
+                // hidden (a search, another tab) or the user has gone on to the address bar, the navigation pane...
+                else if (path != null || Visible && (ContainsFocus || IsFormsActiveControl())) FocusView();
             }
         }
         finally
         {
-            if (pidl != IntPtr.Zero) ShellNative.ILFree(pidl);
+            if (pidl != IntPtr.Zero)
+            {
+                if (path != null) ShellNative.ILFree(pidl);
+                else Marshal.FreeCoTaskMem(pidl);
+            }
             Marshal.ReleaseComObject(view);
         }
+    }
+
+    /// <summary>
+    /// Whether the form's own record of where the keys go ends at this host (also while the app is in the background).
+    /// Follows the chain of ActiveControls down from the form: the nearest container alone (the split) keeps naming this
+    /// host after the focus has gone to the address bar or the navigation pane, which sit outside it.
+    /// </summary>
+    bool IsFormsActiveControl()
+    {
+        Control? active = FindForm()?.ActiveControl;
+        for (int depth = 0; depth < 32 && active != null && active != this && active is ContainerControl cc; depth++)
+        {
+            var next = cc.ActiveControl;
+            if (next == null || next == active) break;
+            active = next;
+        }
+        return active == this;
+    }
+
+    /// <summary>
+    /// The selected item's ID inside the folder (the focused one when it is selected, else the first selected), kept in
+    /// the history so Back selects it again; null when nothing is selected.
+    /// </summary>
+    byte[]? SelectedItemId()
+    {
+        var fv = GetView<IFolderView2>(ShellNative.IID_IFolderView2);
+        if (fv == null) return null;
+        try
+        {
+            if (fv.GetFocusedItem(out int focused) == ShellNative.S_OK && SelectedItemAt(fv, focused) is { } item) return item;
+            // GetSelectedItem's documentation doesn't say whether the start index itself counts: both ways are tried.
+            foreach (int start in (ReadOnlySpan<int>)[0, -1])
+                if (fv.GetSelectedItem(start, out int index) == ShellNative.S_OK && SelectedItemAt(fv, index) is { } first) return first;
+            return null;
+        }
+        catch (COMException) { return null; }
+        finally { Marshal.ReleaseComObject(fv); }
+    }
+
+    /// <summary>The ID of the view's item at <paramref name="index"/> when it is selected, else null.</summary>
+    static byte[]? SelectedItemAt(IFolderView2 fv, int index)
+    {
+        if (index < 0 || fv.Item(index, out var pidl) != ShellNative.S_OK || pidl == IntPtr.Zero) return null;
+        try
+        {
+            return fv.GetSelectionState(pidl, out uint state) == ShellNative.S_OK && (state & ShellNative.SVSI_SELECT) != 0
+                ? ShellNative.CopyPidl(pidl) : null;
+        }
+        finally { Marshal.FreeCoTaskMem(pidl); }
+    }
+
+    /// <summary>A display name of an ID list kept as bytes.</summary>
+    static string? NameOf(byte[] idList, SIGDN kind)
+    {
+        IntPtr p = Marshal.AllocCoTaskMem(idList.Length);
+        try
+        {
+            Marshal.Copy(idList, 0, p, idList.Length);
+            return ShellNative.NameOf(p, kind);
+        }
+        finally { Marshal.FreeCoTaskMem(p); }
+    }
+
+    /// <summary>The attributes in <paramref name="mask"/> of an ID list kept as bytes (0 when it can't be asked).</summary>
+    static uint AttributesOf(byte[] idList, uint mask)
+    {
+        IntPtr p = Marshal.AllocCoTaskMem(idList.Length);
+        IShellItem? item = null;
+        try
+        {
+            Marshal.Copy(idList, 0, p, idList.Length);
+            var iid = ShellNative.IID_IShellItem;
+            if (ShellNative.SHCreateItemFromIDList(p, ref iid, out item) != ShellNative.S_OK || item == null) return 0;
+            return item.GetAttributes(mask, out uint attrs) < 0 ? 0 : attrs & mask;
+        }
+        catch (COMException) { return 0; }
+        finally
+        {
+            if (item != null) Marshal.ReleaseComObject(item);
+            Marshal.FreeCoTaskMem(p);
+        }
+    }
+
+    /// <summary>
+    /// The archive the location is in or is (a zip or other archive file opened as a folder), by the attributes of the
+    /// location and the folders above it: a stream is a file, so a real folder named "site.zip" never counts. Only
+    /// asked when a part of the location's name looks like an archive, so ordinary folders cost nothing.
+    /// </summary>
+    static string? ArchiveAbove(byte[] location, string? parsingName)
+    {
+        if (CommandBarRules.ArchiveContaining(parsingName, archiveFolders: true) == null) return null;
+        for (byte[]? at = location; at != null && !IdList.IsEmpty(at); at = IdList.Parent(at))
+            if ((AttributesOf(at, ShellSelection.SfgaoStream) & ShellSelection.SfgaoStream) != 0)
+                return NameOf(at, SIGDN.FileSysPath) ?? NameOf(at, SIGDN.DesktopAbsoluteParsing);
+        return null;
+    }
+
+    /// <summary>Whether the one selected item is a file (a zip counts: a folder and a stream), not a plain folder. From the attributes the view holds.</summary>
+    public bool SelectedItemIsFile()
+    {
+        var fv = GetView<IFolderView2>(ShellNative.IID_IFolderView2);
+        if (fv == null) return false;
+        try
+        {
+            if (fv.GetSelection(false, out var items) != ShellNative.S_OK || items == null) return false;
+            try
+            {
+                if (items.GetCount(out uint n) != ShellNative.S_OK || n != 1) return false;
+                if (items.GetAttributes(ShellNative.SIATTRIBFLAGS_AND, ShellSelection.SfgaoFolder | ShellSelection.SfgaoStream, out uint attrs) < 0) return false;
+                return (attrs & ShellSelection.SfgaoStream) != 0 || (attrs & ShellSelection.SfgaoFolder) == 0;
+            }
+            finally { Marshal.ReleaseComObject(items); }
+        }
+        catch (COMException) { return false; }
+        finally { Marshal.ReleaseComObject(fv); }
     }
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
@@ -652,17 +1098,197 @@ internal sealed class ExplorerHost : Control
 
     // ---- commands ----------------------------------------------------------------------------
 
-    /// <summary>Creates "New folder" (or "New folder (2)"...) in <paramref name="folder"/>, selects it and starts renaming, like Explorer.</summary>
-    public void CreateNewFolder(string folder)
+    /// <summary>
+    /// Creates a new folder where the view is, selects it and starts renaming, like Explorer: by the view's own New
+    /// folder command when it can (Windows' name in the user's language, Ctrl+Z undoes it, libraries too). Otherwise
+    /// "New folder" (or "New folder (2)"...) in <paramref name="folder"/> (a library's save folder), by Windows' file
+    /// operation so it can still be undone, and only when that fails made directly.
+    /// </summary>
+    public void CreateNewFolder(string? folder)
     {
+        DropItemSelect(); // Back's or Up's late select would end the rename box
+        // Where the folder lands on disk: a library makes it in its save folder.
+        folder ??= CurrentParsingName is { } name ? ShellDragDrop.FileSystemFolder(name) : null;
+        _newFolderWatch?.Dispose(); // an earlier one still waiting: this folder is the one to rename
+        _newFolderWatch = folder != null ? new NewFolderWatch(this, folder, CurrentParsingName) : null;
+        if (NewFolderInView(out int refused))
+        {
+            // Hosted here, the view makes the folder but leaves it unselected and not renaming: done as Explorer does,
+            // once the watch sees which folder it made.
+            _newFolderWatch?.CommandDone();
+            return;
+        }
+        EndNewFolderWatch();
+        if (refused == HResultAccessDenied) // said as when making it directly fails, below; a cancel says nothing
+        {
+            NavigationFailed?.Invoke("Can't create a folder here: " + new Win32Exception(5 /* ERROR_ACCESS_DENIED */).Message);
+            return;
+        }
+        if (refused != 0 || folder == null) return;
         string path = Path.Combine(folder, "New folder");
         for (int n = 2; Directory.Exists(path) || File.Exists(path); n++) path = Path.Combine(folder, $"New folder ({n})");
-        try { Directory.CreateDirectory(path); }
-        catch (Exception ex) { NavigationFailed?.Invoke("Can't create a folder here: " + ex.Message); return; }
+        if (!NewFolderWithUndo(folder, Path.GetFileName(path)))
+        {
+            try { Directory.CreateDirectory(path); }
+            catch (Exception ex) { NavigationFailed?.Invoke("Can't create a folder here: " + ex.Message); return; }
+        }
+        SelectAndRename(path);
+    }
+
+    /// <summary>Selects a new item here once the view shows it, scrolled into view, with its name in edit mode.</summary>
+    void SelectAndRename(string path)
+    {
         _selectAfterNavigate = path;
+        _selectItemAfterNavigate = _selectItemIn = null;
         _renameAfterSelect = true;
         _selectAttempts = 0;
         _selectTimer.Start();
+    }
+
+    /// <summary>Stops the New folder command's watch, if any (also when the host's window goes).</summary>
+    void EndNewFolderWatch()
+    {
+        _newFolderWatch?.Dispose();
+        _newFolderWatch = null;
+    }
+
+    /// <summary>
+    /// In a library the view's items are the library's own, so the ID of a folder's path on disk isn't found among them:
+    /// the item whose path it is is looked up in the view instead, newest items first (they come last).
+    /// </summary>
+    bool SelectInViewByPath(string path, uint flags)
+    {
+        var fv = GetView<IFolderView2>(ShellNative.IID_IFolderView2);
+        if (fv == null) return false;
+        try
+        {
+            if (fv.ItemCount(0x2 /* SVGIO_ALLVIEW */, out int count) != ShellNative.S_OK) return false;
+            var iid = ShellNative.IID_IShellItem;
+            for (int i = count - 1; i >= 0 && i >= count - 5000; i--)
+            {
+                if (fv.GetItem(i, ref iid, out var ptr) != ShellNative.S_OK || ptr == IntPtr.Zero) continue;
+                object? obj = null;
+                try
+                {
+                    obj = Marshal.GetObjectForIUnknown(ptr);
+                    if (obj is IShellItem item && string.Equals(ShellNative.NameOf(item, SIGDN.FileSysPath), path, StringComparison.OrdinalIgnoreCase))
+                        return fv.SelectItem(i, flags) == ShellNative.S_OK;
+                }
+                finally
+                {
+                    if (obj != null) Marshal.ReleaseComObject(obj);
+                    Marshal.Release(ptr);
+                }
+            }
+            return false;
+        }
+        catch (COMException) { return false; }
+        finally { Marshal.ReleaseComObject(fv); }
+    }
+
+    /// <summary>
+    /// Finds the folder the view's New folder command makes in a folder on disk (Windows' own name, in the user's
+    /// language), then selects it and starts its rename while the view still shows the same location. A watcher on the
+    /// folder, started before the command, tells at once; where it can't be started or tells nothing (a share or drive
+    /// without change notifications), the folder's one subfolder made since the command is looked for, off the UI
+    /// thread, a second after the command has run. Lives on the UI thread; ended by the host (another New folder, the
+    /// window going) or once found or not.
+    /// </summary>
+    sealed class NewFolderWatch : IDisposable
+    {
+        readonly ExplorerHost _host;
+        readonly string _folder;
+        readonly string? _location;           // the view's location when the command ran
+        readonly DateTime _since = DateTime.UtcNow.AddSeconds(-2); // FAT's 2-second times, a share's clock a little off
+        readonly FileSystemWatcher? _watcher;
+        readonly System.Windows.Forms.Timer _wait = new() { Interval = 1000 };
+        int _finished;                        // 1 once found, looked for or ended (any thread)
+        bool _disposed;                       // UI thread
+
+        public NewFolderWatch(ExplorerHost host, string folder, string? location)
+        {
+            _host = host;
+            _folder = folder;
+            _location = location;
+            _wait.Tick += (_, _) => { try { LookForIt(); } catch (Exception) { } }; // never out of a timer
+            FileSystemWatcher? w = null;
+            try
+            {
+                w = new FileSystemWatcher(folder) { NotifyFilter = NotifyFilters.DirectoryName, IncludeSubdirectories = false };
+                w.Created += (_, e) => { try { Found(e.FullPath); } catch (Exception) { } }; // never out of the watcher's callback
+                w.EnableRaisingEvents = true;
+                _watcher = w;
+            }
+            catch (Exception) { w?.Dispose(); } // not watchable (a zip, a share that refuses): looked for after the command
+        }
+
+        /// <summary>The view's command has run (it makes the folder before it returns): looked for in a second unless told by then.</summary>
+        public void CommandDone()
+        {
+            if (!_disposed && Volatile.Read(ref _finished) == 0) _wait.Start();
+        }
+
+        void LookForIt()
+        {
+            _wait.Stop();
+            if (_disposed || Volatile.Read(ref _finished) != 0) return;
+            string folder = _folder;
+            DateTime since = _since;
+            Task.Run(() => NewestFolder(folder, since)).ContinueWith(t => Found(t.IsCompletedSuccessfully ? t.Result : null), TaskScheduler.Default);
+        }
+
+        /// <summary>
+        /// The one subfolder of <paramref name="folder"/> made since <paramref name="since"/> (and not later than a little
+        /// after now); null when there is none or more than one. A folder another program made meanwhile, or one carrying
+        /// a creation time in the future (copied with its times, a clock ahead), is then never taken for the new one: its
+        /// rename is simply not started. Off the UI thread.
+        /// </summary>
+        static string? NewestFolder(string folder, DateTime since)
+        {
+            try
+            {
+                DateTime until = DateTime.UtcNow.AddSeconds(2);
+                string? found = null;
+                foreach (var d in new DirectoryInfo(folder).EnumerateDirectories())
+                {
+                    DateTime made = d.CreationTimeUtc;
+                    if (made < since || made > until) continue;
+                    if (found != null) return null; // two: which one the command made can't be told
+                    found = d.FullName;
+                }
+                return found;
+            }
+            catch (Exception) { return null; }
+        }
+
+        /// <summary>The folder made (null: none found), handed to the UI thread once. Any thread.</summary>
+        void Found(string? path)
+        {
+            if (Interlocked.Exchange(ref _finished, 1) != 0) return;
+            try { _host.BeginInvoke(() => Done(path)); }
+            catch (Exception) { } // the window is gone: the host ends the watch as it goes (EndNewFolderWatch)
+        }
+
+        void Done(string? path)
+        {
+            if (_disposed) return; // ended by the host meanwhile (another New folder, a closed tab)
+            if (_host._newFolderWatch == this) _host._newFolderWatch = null;
+            Dispose();
+            // Only while the user is still where the command left them: the same location, shown, with the keys in the
+            // view (the command gave it the focus). Gone to the search box, the address bar or another tab: left alone.
+            if (path != null && !_host.IsDisposed && _host.Visible && (_host.ContainsFocus || _host.IsFormsActiveControl())
+                && string.Equals(_host.CurrentParsingName, _location, StringComparison.OrdinalIgnoreCase))
+                _host.SelectAndRename(path);
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            Interlocked.Exchange(ref _finished, 1);
+            _wait.Dispose();
+            _watcher?.Dispose();
+        }
     }
 
     /// <summary>Starts in-place rename of the selected item.</summary>
@@ -725,18 +1351,6 @@ internal sealed class ExplorerHost : Control
     }
 
     static readonly Guid FMTID_Storage = new("B725F130-47EF-101A-A5F1-02608C9EEBAC");
-
-    public void SortBy(ExplorerSortColumn column, bool descending)
-    {
-        uint pid = column switch
-        {
-            ExplorerSortColumn.DateModified => 14,
-            ExplorerSortColumn.Type => 4,
-            ExplorerSortColumn.Size => 12,
-            _ => 10, // System.ItemNameDisplay
-        };
-        SetSort(FMTID_Storage, pid, descending ? -1 : 1);
-    }
 
     static readonly Guid FMTID_ItemDate = new("F7DB74B4-4287-4103-AFBA-F1B13DCD75CF");
 
@@ -838,7 +1452,8 @@ internal sealed class ExplorerHost : Control
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         if (FocusInView(out bool inRename) && inRename && IsRenameKey(keyData)) return false;
-        if (keyData is Keys.Escape) return base.ProcessCmdKey(ref msg, keyData);
+        // Escape, and Ctrl+N (the view's own opens a File Explorer window): the window's, as with the keys in other places.
+        if (keyData is Keys.Escape or (Keys.Control | Keys.N)) return base.ProcessCmdKey(ref msg, keyData);
         var view = GetView<IShellView>(ShellNative.IID_IShellView);
         if (view != null)
         {
@@ -874,6 +1489,11 @@ internal sealed class ExplorerHost : Control
         public int OnNavigationPending(IntPtr pidlFolder)
         {
             host._thisPcPending = string.Equals(ShellNative.NameOf(pidlFolder, SIGDN.DesktopAbsoluteParsing), ThisPcParsingName, StringComparison.OrdinalIgnoreCase);
+            // No select until the new folder has opened: its view may already be the current one before it completes,
+            // and an item ID from the folder being left would pick a same-named item there. Completion restarts it.
+            host._selectTimer.Stop();
+            // The folder being left still shows: what is selected in it goes into Back with it.
+            try { host._leavingItem = host.SelectedItemId(); } catch (Exception) { host._leavingItem = null; }
             return ShellNative.S_OK;
         }
         public int OnViewCreated(IntPtr psv)
@@ -913,7 +1533,10 @@ internal sealed class ExplorerHost : Control
                 if (uChange == ShellNative.CDBOSC_SETFOCUS && host.IsHandleCreated && !host.IsDisposed)
                     host.BeginInvoke(host.SyncActiveControl); // not inside the view's own focus change
                 else if (uChange == ShellNative.CDBOSC_SELCHANGE)
+                {
                     host._selectionReported = true; // the next poll reads a big selection again; the view calls on the UI thread
+                    host._selectionVersion++;       // and the status bar adds the selection up again
+                }
             }
             catch (Exception) { }
             return ShellNative.S_OK;

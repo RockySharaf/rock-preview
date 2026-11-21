@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Xml;
 using System.Xml.Linq;
+using Anything.Core.Content.Extract;
 using Anything.Preview.Util;
 
 namespace Anything.Preview;
@@ -40,8 +41,16 @@ internal static class OfficePreview
         var e = Entry(z, name);
         if (e == null) return null;
         using var s = e.Open();
-        return XDocument.Load(s, LoadOptions.None);
+        return LoadPart(s);
     }
+
+    /// <summary>
+    /// A part's XML read through the indexer's guards (nesting past 256 levels, tags too long, too many names throw
+    /// InvalidDataException): XElement.Value and OdfText walk a tree once per level, and a crafted part nested tens of
+    /// thousands deep would overflow the stack, which ends the app. A refused part fails its renderer like a broken one.
+    /// No character cap, as before: large shared strings or a long document still load.
+    /// </summary>
+    private static XDocument LoadPart(Stream s) => OfficeXml.LoadTree(s);
 
     private static byte[]? ReadEntry(ZipArchive z, string name, long max = 64 << 20)
     {
@@ -171,7 +180,7 @@ internal static class OfficePreview
     internal static List<string> ReadSharedStrings(Stream s)
     {
         var list = new List<string>();
-        var doc = XDocument.Load(s);
+        var doc = LoadPart(s);
         if (doc.Root == null) return list;
         foreach (var si in doc.Root.Elements(S + "si"))
         {
@@ -221,7 +230,7 @@ internal static class OfficePreview
             int maxCol = 0;
             bool truncated = false;
             using (var s = se.Open())
-            using (var xr = XmlReader.Create(s, new XmlReaderSettings { IgnoreWhitespace = true, DtdProcessing = DtdProcessing.Prohibit }))
+            using (var xr = OfficeXml.Create(s, ignoreWhitespace: true))
             {
                 int curRow = 0, nextCol = 0;
                 xr.MoveToContent();
@@ -399,7 +408,7 @@ internal static class OfficePreview
                 blocks.Add(new DocBlock($"Slide {num}", DocBlockStyle.Heading2));
                 using (var s = e.Open())
                 {
-                    var x = XDocument.Load(s);
+                    var x = LoadPart(s);
                     foreach (var p in x.Descendants(A + "p"))
                     {
                         string t = string.Concat(p.Descendants(A + "t").Select(t => t.Value));
@@ -549,16 +558,18 @@ internal static class OfficePreview
                     st = lvl <= 1 ? DocBlockStyle.Heading1 : lvl == 2 ? DocBlockStyle.Heading2 : DocBlockStyle.Heading3;
                 }
                 else if (el.Parent?.Name == OText + "list-item") st = DocBlockStyle.ListItem;
-                blocks.Add(new DocBlock(OdfText(el), st));
+                var sb = new StringBuilder();
+                OdfText(el, sb, 0);
+                blocks.Add(new DocBlock(sb.ToString(), st));
             }
             if (blocks.Count == 0) return null;
             return new PreviewResult(path, PreviewKind.Document, "OpenDocument") { FormatName = "OpenDocument text", Document = blocks };
         }
     }
 
-    private static string OdfText(XElement el)
+    /// <summary>A paragraph's text; elements deeper than the XML guard allows (it refuses such parts anyway) are left out.</summary>
+    private static void OdfText(XElement el, StringBuilder sb, int depth)
     {
-        var sb = new StringBuilder();
         foreach (var n in el.Nodes())
         {
             if (n is XText t) sb.Append(t.Value);
@@ -568,10 +579,9 @@ internal static class OfficePreview
                 if (e.Name == OText + "s") sb.Append(' ', int.TryParse((string?)e.Attribute(OText + "c"), out int c) ? Math.Clamp(c, 1, MaxSpaces) : 1);
                 else if (e.Name == OText + "tab") sb.Append('\t');
                 else if (e.Name == OText + "line-break") sb.Append('\n');
-                else sb.Append(OdfText(e));
+                else if (depth < OfficeXml.MaxDepth) OdfText(e, sb, depth + 1);
             }
         }
-        return sb.ToString();
     }
 
     // ------------------------------------------------------------------ CSV / TSV

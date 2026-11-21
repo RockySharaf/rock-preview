@@ -70,6 +70,7 @@ internal sealed partial class MainForm : Form
     {
         _app = app;
         _ui = TaskScheduler.FromCurrentSynchronizationContext();
+        FilterBackForward();
         var s = app.Settings;
         _tab = tab ?? new FolderTab();
         _adopted = tab is not null;
@@ -84,8 +85,11 @@ internal sealed partial class MainForm : Form
                 (_filterIndex, _sort, _desc) = (source._filterIndex, source._sort, source._desc);
             }
             else TakeContentState(tab, source);
+            // As Explorer's: a step down and right of it on its monitor, and maximized when it is.
             var b = source.WindowState == FormWindowState.Normal ? source.Bounds : source.RestoreBounds;
-            _initialBounds = new Rectangle(b.X + 24, b.Y + 24, b.Width, b.Height);
+            _initialBounds = NewWindowBounds.Cascade(b, Screen.FromControl(source).WorkingArea, NewWindowBounds.CascadeStep);
+            _initialMaximized = source.WindowState == FormWindowState.Maximized
+                || source.WindowState == FormWindowState.Minimized && source.IsHandleCreated && Interop.Native.RestoresToMaximized(source.Handle);
             TopMost = source.TopMost;
         }
         else
@@ -97,6 +101,12 @@ internal sealed partial class MainForm : Form
             {
                 _initialBounds = s.WindowBounds;
                 _initialMaximized = s.Maximized;
+                // Opened later with no window to come from (Win+E, the hotkey): on the monitor it was opened on, its size kept.
+                // The app's first window opens where it was left.
+                var launch = Screen.FromPoint(Cursor.Position);
+                var saved = Screen.FromRectangle(s.WindowBounds);
+                if (app.MadeAWindow && !launch.Equals(saved))
+                    _initialBounds = NewWindowBounds.MoveOnto(s.WindowBounds, saved.WorkingArea, launch.WorkingArea);
             }
             else
             {
@@ -126,6 +136,7 @@ internal sealed partial class MainForm : Form
         BuildUpdateBar();
         BuildLeftOutBar();
         BuildFolderBar();
+        BuildElevatedDropBar();
         BuildThumbnailsHint();
         BuildList();
         BuildStatusBar();
@@ -135,6 +146,7 @@ internal sealed partial class MainForm : Form
         BackColor = ExplorerTheme.Content;
         Controls.Add(_body);
         Controls.Add(_infoBar);
+        Controls.Add(_elevatedBar);
         Controls.Add(_folderBar);
         Controls.Add(_leftOutBar);
         Controls.Add(_updateBar);
@@ -190,6 +202,7 @@ internal sealed partial class MainForm : Form
         _searchField = new SearchField(_search) { Dock = DockStyle.Right, Width = 300 };
         _searchField.ClearClicked += CloseSearch;
         _searchField.ScopeClicked += ToggleSearchScope;
+        WireSearchHistory();
         _addressGap.BackColor = ExplorerTheme.Chrome;
 
         _filter.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -351,6 +364,7 @@ internal sealed partial class MainForm : Form
             if (e.Button == MouseButtons.Left && _list.HitTest(e.Location).Item is not null) OpenSelected();
         };
         _list.ItemDrag += (_, _) => DragSelection(_list);
+        _list.RenameClick += OnListRenameClick;
         ShellDragDrop.AcceptDrops(_list, screen => DropFolderAt(_list, screen));
         _list.HeaderContextMenu += ShowHeaderMenu;
         _list.ItemContextMenu += ShowItemMenu;
@@ -400,6 +414,8 @@ internal sealed partial class MainForm : Form
         };
         _grid.IsSelected = i => _list.IsItemSelected(i);
         _grid.FocusedIndex = FocusedIndex;
+        _grid.SelectedCount = () => _list.SelectedIndices.Count;
+        _grid.RenameClick += OnGridRenameClick;
         _grid.ItemClicked += (i, mods) => SelectFromGrid(i, (mods & Keys.Shift) != 0, (mods & Keys.Control) != 0, toggle: true);
         _grid.Navigate += (i, shift, ctrl) => SelectFromGrid(i, shift, ctrl, toggle: false);
         _grid.ItemActivated += _ => OpenSelected();
@@ -446,11 +462,9 @@ internal sealed partial class MainForm : Form
             folder = _resultIndex.GetFullPath(_ids[index]);
         else if (_zapActive && _zapRoots.Count == 1) folder = _zapRoots[0];
         else folder = SearchFolder;
-        // Files dragged from here onto their own folder (or onto themselves) would only be copied next to themselves.
-        if (folder != null && _draggingOut is { } own && own.All(f => Setup.SamePath(f, folder)
-                || Path.GetDirectoryName(f.TrimEnd('\\')) is { } parent && Setup.SamePath(parent, folder)))
-            return null;
-        return folder;
+        // Files dragged from here onto their own folder (or onto themselves) would only be copied next to themselves,
+        // and a folder can't go inside itself: the same rule as the address bar's.
+        return folder != null && _draggingOut is { } own && DropRules.Refused(own, folder) ? null : folder;
     }
 
     string? PathOf(int id)
@@ -638,6 +652,7 @@ internal sealed partial class MainForm : Form
         base.OnHandleCreated(e);
         ExplorerTheme.ApplyFrame(this);
         RemoveTitleBar();
+        StartClipboardListener();
     }
 
     protected override void OnLoad(EventArgs e)
@@ -664,6 +679,7 @@ internal sealed partial class MainForm : Form
             RunSearch(SearchReason.NewQuery);
         }
         UpdateStatus();
+        ShowElevatedDropHintOnce();
         // Like File Explorer, start in the file view (Ctrl+E / Ctrl+F go to the search box); Alt+X starts in the search box.
         if (_adopted) BeginInvoke(FocusTabContent);
         else if (_browsing && !_searchFirst) BeginInvoke(() => _explorer.FocusView());
@@ -1138,6 +1154,7 @@ internal sealed partial class MainForm : Form
             // A new sort order moves the selected file: the grid follows it, as the list does; else back to the top.
             if (reason == SearchReason.Resort) _grid.EnsureVisible(newFocus >= 0 ? newFocus : 0);
         }
+        KeepRenameBoxOnItsRow(); // a box open over a result goes with it to its new row
         UpdateStatus();
         QueuePreview();
         UpdateFolderBar(); // a search inside a folder the index doesn't have says so, and so does the empty text
@@ -1218,10 +1235,8 @@ internal sealed partial class MainForm : Form
             if (es > 0)
             {
                 text += $"    {es:N0} item{(es == 1 ? "" : "s")} selected";
-                if (es == 1 && _explorer.SelectedPath is { } sp && File.Exists(sp))
-                {
-                    try { text += "  " + FileOps.FormatByteSize(new FileInfo(sp).Length); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                }
+                // What the selected files add up to, from the sizes the view holds (no disk); none with a folder among them.
+                if (_explorer.SelectedFilesSize() is { } bytes) text += "  " + FileOps.FormatByteSize(bytes);
             }
             _statusLeft.Text = text;
             UpdateStatusRight();

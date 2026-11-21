@@ -24,6 +24,15 @@ public sealed class SearchEngine : ISearchEngine
     /// <summary>Index size from which searches use the presorted order (tests lower it).</summary>
     internal int SortCacheThreshold { get; set; } = 200_000;
 
+    /// <summary>
+    /// Most results a new sort key sorts directly instead of building the presorted order of every entry for it (tests
+    /// lower it). More than this, and the order is built, so that later searches under that key only filter it.
+    /// </summary>
+    internal int DirectSortLimit { get; set; } = 50_000;
+
+    /// <summary>The key the presorted order is kept for, if any (tests).</summary>
+    internal SortKey? PresortedKey { get { lock (_orderGate) return _order?.Key; } }
+
     /// <summary>Clock used for relative dates (today, last2weeks, ...). Tests inject a fixed "now".</summary>
     internal Func<DateTime> Clock { get; set; } = () => DateTime.Now;
 
@@ -88,18 +97,29 @@ public sealed class SearchEngine : ISearchEngine
                 // Large index: filter a persistent presorted order instead of sorting the results.
                 lock (_orderGate)
                 {
-                    var cache = _order?.Key == sort ? _order : new SortOrderCache(sort);
-                    cache.Refresh(index, ctx, cancellationToken);
-                    _order = cache;
-                    int[] found;
-                    if (matcher is AllMatcher && !ctx.Dupe) found = cache.All(descending);
-                    else
+                    int[]? found = null;
+                    if (matcher is not AllMatcher || ctx.Dupe)
                     {
                         found = Scan(index, matcher, ctx, cancellationToken);
                         if (ctx.Dupe) found = DupeFilter(index, found);
                         cancellationToken.ThrowIfCancellationRequested();
-                        found = cache.Order(found, descending);
+                        if (_order?.Key != sort && found.Length < index.LiveCount / 4 && found.Length <= DirectSortLimit)
+                        {
+                            // A new sort key and a small result (a click on another column header): building the order
+                            // of every entry takes seconds on millions, sorting the few results doesn't. Sorted ascending
+                            // and turned round, as the presorted order is, so both ways agree with it exactly. A big result
+                            // (a whole folder scope, ext:jpg) builds the order instead: sorting it again on every keystroke
+                            // and refresh would cost more than building the order once.
+                            ResultSorter.Sort(index, ctx, found, sort, descending: false, cancellationToken);
+                            if (descending) Array.Reverse(found);
+                            if (options.FoldersFirst) found = FoldersFirst(index, found);
+                            return Content.Search.ContentSearch.Results(found, matcher, ctx, sw, cancellationToken);
+                        }
                     }
+                    var cache = _order?.Key == sort ? _order : new SortOrderCache(sort);
+                    cache.Refresh(index, ctx, cancellationToken);
+                    _order = cache;
+                    found = found is null ? cache.All(descending) : cache.Order(found, descending);
                     if (options.FoldersFirst) found = FoldersFirst(index, found);
                     return Content.Search.ContentSearch.Results(found, matcher, ctx, sw, cancellationToken);
                 }

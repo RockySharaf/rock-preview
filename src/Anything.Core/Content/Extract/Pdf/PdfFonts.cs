@@ -171,12 +171,27 @@ internal sealed class PdfCMap
         return v;
     }
 
+    /// <summary>
+    /// Most characters one code's text keeps (a ligature or a decomposed letter takes a few). A bfrange copies its
+    /// destination once per code, so a destination of megabytes over 256 codes would hold gigabytes.
+    /// </summary>
+    public const int MaxGlyphChars = 64;
+
+    /// <summary>A code's text cut to <see cref="MaxGlyphChars"/>, never between the halves of a surrogate pair.</summary>
+    public static string CapGlyph(string text)
+    {
+        if (text.Length <= MaxGlyphChars) return text;
+        int n = MaxGlyphChars;
+        if (char.IsHighSurrogate(text[n - 1])) n--;
+        return text[..n];
+    }
+
     /// <summary>A bf destination: UTF-16BE bytes (a lone byte as itself, UCS-4 when it looks so) or a glyph name.</summary>
     static string? Destination(PdfObject o)
     {
         switch (o)
         {
-            case PdfName n: return PdfGlyphNames.ToUnicode(n.Value);
+            case PdfName n: return PdfGlyphNames.ToUnicode(n.Value) is { } named ? CapGlyph(named) : null;
             case PdfString s:
                 var b = s.Bytes;
                 if (b.Length == 0) return null;
@@ -186,7 +201,8 @@ internal sealed class PdfCMap
                     int cp = (b[2] << 8) | b[3];
                     return ((char)cp).ToString();
                 }
-                return Encoding.BigEndianUnicode.GetString(b, 0, b.Length & ~1);
+                // Only one character more than is kept gets decoded (so a cut pair is seen): the rest would be cut anyway.
+                return CapGlyph(Encoding.BigEndianUnicode.GetString(b, 0, Math.Min(b.Length, 2 * MaxGlyphChars + 2) & ~1));
             default: return null;
         }
     }

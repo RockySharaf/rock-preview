@@ -44,6 +44,24 @@ internal sealed class PictureParts(ExtractBudget budget)
     public bool Partial { get; set; }
 
     /// <summary>
+    /// Most structures read inside one another (a TIFF's Photoshop resources holding an EXIF block is three): readers that
+    /// hand a block to each other never recurse on file data without bound, so a crafted nest can't overflow the stack.
+    /// </summary>
+    public const int MaxNesting = 3;
+    int _nesting;
+
+    /// <summary>Enters one nested structure; false (the picture is partial) when it would go deeper than <see cref="MaxNesting"/>.</summary>
+    public bool Enter()
+    {
+        if (_nesting >= MaxNesting) { Partial = true; return false; }
+        _nesting++;
+        return true;
+    }
+
+    /// <summary>Leaves the structure <see cref="Enter"/> entered.</summary>
+    public void Leave() => _nesting--;
+
+    /// <summary>
     /// Runs one unit, keeping its damage to itself: a format fault skips the unit (marking the picture partial); limits,
     /// cancellation and I/O errors go on up.
     /// </summary>

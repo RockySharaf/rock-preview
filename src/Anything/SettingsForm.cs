@@ -23,6 +23,7 @@ internal sealed partial class SettingsForm : Form
 
     // General
     readonly ToggleSwitch _startWithWindows = new(), _runInBackground = new(), _showTray = new(), _replaceExplorer = new(), _openInTabs = new(), _checkUpdates = new(), _autoUpdate = new();
+    readonly ToggleSwitch _rememberSearches = new();
     // Appearance
     readonly ToggleSwitch _filtersBar = new(), _statusBar = new();
     SettingCard? _fontCard;
@@ -280,6 +281,7 @@ internal sealed partial class SettingsForm : Form
         cards.Add(Card("Open folders in tabs", store
             ? "A folder opened from the taskbar button's list, or a command line, opens as a new tab in the window you used last. Off: each opens in a new window."
             : "A folder opened from Windows, or Win+E, opens as a new tab in the window you used last. Off: each opens in a new window.", _openInTabs));
+        cards.Add(SearchHistoryCard());
         if (!store)
         {
             cards.Add(Card("Tell me when a new version is out",
@@ -305,6 +307,47 @@ internal sealed partial class SettingsForm : Form
         row.Controls.Add(_autoUpdateAt);
         row.Controls.Add(_autoUpdate);
         return row;
+    }
+
+    /// <summary>Remember searches, with a button that forgets them now.</summary>
+    SettingCard SearchHistoryCard()
+    {
+        var rows = new RowList();
+        _clearSearches = CardButton("Clear", ClearSearchHistory);
+        _clearSearches.AccessibleName = "Clear search history";
+        rows.Controls.Add(new SubRow("Clear search history", _clearSearches, detail: "")); // the words the list's own last line uses
+        // The address bar's typed addresses (its right-click menu's Delete history), here too so the keyboard reaches it.
+        _clearAddresses = CardButton("Clear", ClearTypedAddresses);
+        _clearAddresses.AccessibleName = "Clear typed addresses";
+        rows.Controls.Add(new SubRow("Clear typed addresses", _clearAddresses,
+            detail: "File Explorer's own typed addresses are kept"));
+        UpdateClearSearches();
+        return Card("Remember searches",
+            "Keep your last 20 searches: pressing Enter or opening a result remembers one. The arrow at the end of the search box, or Alt+Down, lists them.",
+            _rememberSearches, rows);
+    }
+
+    Button? _clearSearches, _clearAddresses;
+
+    void ClearTypedAddresses()
+    {
+        _app.Settings.TypedAddresses.Clear();
+        _app.Settings.Save();
+        UpdateClearSearches();
+    }
+
+    /// <summary>Clear is there to press only while searches are remembered and there are some, so pressing it shows it worked.</summary>
+    void UpdateClearSearches()
+    {
+        if (_clearSearches is { IsDisposed: false } b) b.Enabled = _app.Settings.RememberSearches && _app.Settings.SearchHistory.Count > 0;
+        if (_clearAddresses is { IsDisposed: false } a) a.Enabled = _app.Settings.TypedAddresses.Items.Count > 0;
+    }
+
+    void ClearSearchHistory()
+    {
+        if (_app.Settings.SearchHistory.Clear()) _app.Settings.Save();
+        MainForm.SearchHistoryChanged(_app);
+        UpdateClearSearches();
     }
 
     PageStack AppearancePage()
@@ -898,6 +941,7 @@ internal sealed partial class SettingsForm : Form
         _showTray.Checked = s.ShowTrayIcon;
         _replaceExplorer.Checked = s.UseInsteadOfExplorer;
         _openInTabs.Checked = s.OpenFoldersInTabs;
+        _rememberSearches.Checked = s.RememberSearches;
         _checkUpdates.Checked = s.CheckForUpdates;
         _autoUpdate.Checked = s.AutoUpdate;
         _autoUpdateAt.Value = DateTime.Today + s.AutoUpdateAt;
@@ -987,6 +1031,17 @@ internal sealed partial class SettingsForm : Form
         };
         _recentFromJournal.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.Index.RecentChangesFromJournal = _recentFromJournal.Checked; IndexChanged(); };
         _runHistory.CheckedChanged += (_, _) => { if (_loading) return; _app.Settings.RunHistoryEnabled = _runHistory.Checked; _app.Settings.Save(); };
+        Activated += (_, _) => UpdateClearSearches(); // searched in a window while this was open
+        _rememberSearches.CheckedChanged += (_, _) =>
+        {
+            if (_loading) return;
+            var s = _app.Settings;
+            s.RememberSearches = _rememberSearches.Checked;
+            if (!s.RememberSearches) s.SearchHistory.Clear(); // off: the saved searches go too
+            s.Save();
+            MainForm.SearchHistoryChanged(_app);
+            UpdateClearSearches();
+        };
         _hotkeyWin.CheckedChanged += (_, _) => { if (_loading) return; _hotkey.SetWin(_hotkeyWin.Checked); ApplyHotkey(); };
         _everydayOnly.CheckedChanged += (_, _) => EverydayChanged();
         foreach (var (_, on) in _everydayKinds) on.CheckedChanged += (_, _) => EverydayChanged();

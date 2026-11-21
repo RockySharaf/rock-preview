@@ -127,12 +127,16 @@ internal sealed partial class AppSettings
     public int ScopeChipUses { get; set; }
     /// <summary>Thumbnails has been used, so its button no longer pulses.</summary>
     public bool ThumbnailsHintDone { get; set; }
+    /// <summary>The bar saying that, run as administrator, files can't be dragged in from other programs was shown (once).</summary>
+    public bool ElevatedDropHintShown { get; set; }
     /// <summary>Explorer's navigation pane (Quick access, This PC, drives) in the browse view.</summary>
     public bool ExplorerNavPane { get; set; } = true;
     /// <summary>Navigation pane width in 96-DPI pixels.</summary>
     public int NavPaneWidth { get; set; } = 176;
     /// <summary>Last browsed location (parsing name), used by Browse &gt; Last Folder.</summary>
     public string LastLocation { get; set; } = "";
+    /// <summary>Addresses typed in the address bar that opened, newest first: its drop-down and suggestions offer them.</summary>
+    public AddressHistory TypedAddresses { get; } = new();
 
     /// <summary>Preview pane beside the results (View &gt; Preview, Alt+P).</summary>
     public bool PreviewVisible { get; set; } = true;
@@ -163,6 +167,10 @@ internal sealed partial class AppSettings
     public int TourSeen { get; set; }
     /// <summary>Count the files opened from the results (Run Count, Date Run), kept in "Run History.csv" like Everything's.</summary>
     public bool RunHistoryEnabled { get; set; } = true;
+    /// <summary>Keep the last searches for the list under the search box (Settings › General). Off, none are saved.</summary>
+    public bool RememberSearches { get; set; } = true;
+    /// <summary>The searches remembered, newest first (each its own key, since a search can hold any character).</summary>
+    public SearchHistory SearchHistory { get; } = new();
 
     // New versions
     /// <summary>Ask GitHub at most once a day whether a newer Rock Preview is out (Options &gt; General, Setup).</summary>
@@ -275,10 +283,12 @@ internal sealed partial class AppSettings
         // Settings saved before the hint have no key. Results left as thumbnails say thumbnails were used; nothing else
         // does, so everyone else still gets the hint, upgrading or not.
         s.ThumbnailsHintDone = Bool("thumbnails_hint_done", Int("thumbnail_size", 0) > 0);
+        s.ElevatedDropHintShown = Bool("elevated_drop_hint_shown", false);
         s.ExplorerNavPane = Bool("explorer_nav_pane", true);
         s.NavPaneWidth = Math.Clamp(Int("nav_pane_width", 176), 120, 1200);
         if (s.NavPaneWidth == 250) s.NavPaneWidth = 176; // the old default; Explorer's pane is 176 (220px at 125%)
         s.LastLocation = Str("last_location", "");
+        s.TypedAddresses.Load(List("typed_addresses", []));
         s.PreviewWidth = Math.Clamp(Int("preview_width", 460), 150, 4000);
         float share = Float("preview_share", 0);
         s.PreviewShare = share is > 0.05f and < 0.95f ? share : 0;
@@ -294,6 +304,9 @@ internal sealed partial class AppSettings
         s.WelcomeShown = Bool("welcome_shown", false);
         s.TourSeen = Math.Max(0, Int("tour_seen", 0));
         s.RunHistoryEnabled = Bool("run_history_enabled", true);
+        s.RememberSearches = Bool("remember_searches", true);
+        if (s.RememberSearches)
+            s.SearchHistory.LoadSettings(k => v.TryGetValue(k, out var x) ? x : null);
         s.CheckForUpdates = Bool("check_for_updates", true);
         s.AutoUpdate = Bool("auto_update", true);
         if (TimeSpan.TryParseExact(Str("auto_update_at", ""), @"hh\:mm", CultureInfo.InvariantCulture, out var at) && at < TimeSpan.FromDays(1)) s.AutoUpdateAt = at;
@@ -396,9 +409,11 @@ internal sealed partial class AppSettings
         W("thumbnails_hint_count", ThumbnailsHintCount);
         W("scope_chip_uses", ScopeChipUses);
         B("thumbnails_hint_done", ThumbnailsHintDone);
+        B("elevated_drop_hint_shown", ElevatedDropHintShown);
         B("explorer_nav_pane", ExplorerNavPane);
         W("nav_pane_width", NavPaneWidth);
         W("last_location", Clean(LastLocation));
+        W("typed_addresses", string.Join('|', TypedAddresses.Items));
         W("preview_width", PreviewWidth);
         if (PreviewShare > 0) W("preview_share", PreviewShare);
         W("thumbnail_size", ThumbnailSize);
@@ -414,6 +429,8 @@ internal sealed partial class AppSettings
         B("welcome_shown", WelcomeShown);
         W("tour_seen", TourSeen);
         B("run_history_enabled", RunHistoryEnabled);
+        B("remember_searches", RememberSearches);
+        foreach (var (key, value) in SearchHistory.ToSettings(RememberSearches)) W(key, Clean(value));
         B("check_for_updates", CheckForUpdates);
         B("auto_update", AutoUpdate);
         W("auto_update_at", AutoUpdateAt.ToString(@"hh\:mm", CultureInfo.InvariantCulture));

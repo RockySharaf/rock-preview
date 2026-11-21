@@ -61,6 +61,12 @@ internal sealed class ThumbnailGrid : Control
     public Func<int, bool> IsSelected { get; set; } = _ => false;
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public Func<int> FocusedIndex { get; set; } = () => -1;
+    /// <summary>How many results are selected (a slow click renames only the one selected item).</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public Func<int> SelectedCount { get; set; } = () => 0;
+    /// <summary>Whether a path is cut, waiting to be pasted: its thumbnail is drawn at half strength, as in Explorer.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public Func<string, bool> IsCut { get; set; } = _ => false;
 
     /// <summary>Click on an item (index, modifier keys at the time of the click).</summary>
     public event Action<int, Keys>? ItemClicked;
@@ -72,6 +78,13 @@ internal sealed class ThumbnailGrid : Control
     public event Action<int>? ZoomRequested;
     public event KeyEventHandler? ForwardKeyDown;
     public event KeyPressEventHandler? ForwardKeyPress;
+    /// <summary>
+    /// A click on the only selected thumbnail, in a grid that already had the focus, with no double-click after it: the
+    /// item and where it was clicked (client). Whoever handles it checks the click was on the name.
+    /// </summary>
+    public event Action<int, Point>? RenameClick;
+    /// <summary>The user scrolled the grid (wheel or scroll bar): a rename box over it ends.</summary>
+    public event Action? Scrolling;
 
     public ThumbnailGrid()
     {
@@ -80,7 +93,13 @@ internal sealed class ThumbnailGrid : Control
         TabStop = true;
         _scroll = new GridScrollBar(this) { Dock = DockStyle.Right };
         Controls.Add(_scroll);
-        _scroll.ValueChanged += (_, _) => { if (!_syncing) SetOffset((long)_scroll.Value * _unit, fromBar: true); };
+        _scroll.ValueChanged += (_, _) =>
+        {
+            if (_syncing) return;
+            StopRenameClick(); // the thumbnail clicked moves from under the pointer
+            Scrolling?.Invoke();
+            SetOffset((long)_scroll.Value * _unit, fromBar: true);
+        };
     }
 
     /// <summary>The grid's scroll bar: the wheel or a touchpad over it scrolls the grid as it does over the thumbnails.</summary>
@@ -112,7 +131,7 @@ internal sealed class ThumbnailGrid : Control
     {
         _count = count;
         CancelPending();
-        if (reset) { _anchor = -1; _offset = 0; _wheelPixels = 0; _ensurePending = -1; }
+        if (reset) { _anchor = -1; _offset = 0; _wheelPixels = 0; _ensurePending = -1; _hot = -1; StopRenameClick(); }
         long before = _offset;
         UpdateScroll();
         // More or fewer results with the view where it was: the item it keeps at the top stays the same one, but
@@ -158,7 +177,9 @@ internal sealed class ThumbnailGrid : Control
         _offset = offset;
         if (!fromBar) SyncBar();
         Remember();
-        if (moved) Invalidate();
+        if (!moved) return;
+        Invalidate();
+        if (_hot >= 0) RefreshHot(); // the thumbnails moved under a pointer that didn't
     }
 
     void SyncBar()
@@ -250,6 +271,13 @@ internal sealed class ThumbnailGrid : Control
     /// <summary>The item at <paramref name="p"/> (client coordinates), or -1.</summary>
     public int IndexAt(Point p) => HitTest(p);
 
+    /// <summary>Where item <paramref name="index"/>'s name is drawn under its thumbnail (client coordinates).</summary>
+    public Rectangle CaptionRect(int index)
+    {
+        var cell = CellRect(index);
+        return new Rectangle(cell.X + 4, cell.Y + Pad + _thumbSize + 4, cell.Width - 8, TextHeight);
+    }
+
     int HitTest(Point p)
     {
         var c = Cell;
@@ -284,6 +312,7 @@ internal sealed class ThumbnailGrid : Control
         var visiblePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var selBack = Color.FromArgb(90, SystemColors.Highlight);
         using var selBrush = new SolidBrush(selBack);
+        using var hoverBrush = new SolidBrush(ExplorerTheme.Hover);
         using var frame = new Pen(Color.FromArgb(70, ForeColor));
         using var focusPen = new Pen(SystemColors.Highlight, 1.5f);
 
@@ -293,6 +322,7 @@ internal sealed class ThumbnailGrid : Control
             if (!cell.IntersectsWith(e.ClipRectangle)) continue;
             var inner = Rectangle.Inflate(cell, -3, -3);
             if (IsSelected(i)) g.FillRectangle(selBrush, inner);
+            else if (i == _hot) g.FillRectangle(hoverBrush, inner); // under the pointer, as in Explorer
             if (i == focused && Focused) g.DrawRectangle(focusPen, inner);
 
             var box = new Rectangle(cell.X + Pad, cell.Y + Pad, _thumbSize, _thumbSize);
@@ -300,7 +330,7 @@ internal sealed class ThumbnailGrid : Control
             if (path is not null)
             {
                 visiblePaths.Add(path);
-                if (_thumbs.TryGetValue(path, out var bmp)) DrawFitted(g, bmp, box);
+                if (_thumbs.TryGetValue(path, out var bmp)) DrawFitted(g, bmp, box, IsCut(path));
                 else
                 {
                     g.DrawRectangle(frame, Rectangle.Inflate(box, -box.Width / 6, -box.Height / 6));
@@ -318,11 +348,15 @@ internal sealed class ThumbnailGrid : Control
             if (!visiblePaths.Contains(p)) { cts.Cancel(); _pending.Remove(p); }
     }
 
-    static void DrawFitted(Graphics g, Bitmap bmp, Rectangle box)
+    static void DrawFitted(Graphics g, Bitmap bmp, Rectangle box, bool faded = false)
     {
         float scale = Math.Min(1f, Math.Min((float)box.Width / bmp.Width, (float)box.Height / bmp.Height));
         int w = Math.Max(1, (int)(bmp.Width * scale)), h = Math.Max(1, (int)(bmp.Height * scale));
-        g.DrawImage(bmp, box.X + (box.Width - w) / 2, box.Y + (box.Height - h) / 2, w, h);
+        var dest = new Rectangle(box.X + (box.Width - w) / 2, box.Y + (box.Height - h) / 2, w, h);
+        if (!faded) { g.DrawImage(bmp, dest); return; }
+        using var half = new System.Drawing.Imaging.ImageAttributes();
+        half.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = 0.5f }); // a cut item, until it is pasted
+        g.DrawImage(bmp, dest, 0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel, half);
     }
 
     // ---- thumbnail loading -------------------------------------------------------------------
@@ -387,7 +421,7 @@ internal sealed class ThumbnailGrid : Control
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) ClearThumbs();
+        if (disposing) { ClearThumbs(); StopRenameClick(); }
         base.Dispose(disposing);
     }
 
@@ -396,12 +430,18 @@ internal sealed class ThumbnailGrid : Control
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
+        bool hadFocus = Focused;
         Focus();
+        StopRenameClick();
+        SetHot(-1);
         int i = HitTest(e.Location);
         _downIndex = i;
         _downAt = e.Location;
         _downKeys = ModifierKeys;
         _clickOnRelease = false;
+        // The only selected thumbnail clicked again, in a grid that had the focus: released without a drag or a
+        // double-click, it renames, as in Explorer. The second press of a double-click (Clicks 2) never does: it opens.
+        _renameIndex = e.Button == MouseButtons.Left && e.Clicks == 1 && hadFocus && i >= 0 && _downKeys == Keys.None && IsSelected(i) && SelectedCount() == 1 ? i : -1;
         if (i < 0) return;
         if (e.Button == MouseButtons.Left)
         {
@@ -422,22 +462,80 @@ internal sealed class ThumbnailGrid : Control
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        SetHot(e.Button == MouseButtons.None ? HitTest(e.Location) : -1); // no highlight while a button is held
         if (e.Button != MouseButtons.Left || _downIndex < 0) return;
         var d = SystemInformation.DragSize;
         if (Math.Abs(e.X - _downAt.X) > d.Width || Math.Abs(e.Y - _downAt.Y) > d.Height)
         {
             _downIndex = -1;
             _clickOnRelease = false;
+            _renameIndex = -1;
             ItemDrag?.Invoke();
         }
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        SetHot(-1);
+    }
+
+    // ---- Explorer's hover highlight ----------------------------------------------------------------
+
+    int _hot = -1;
+
+    /// <summary>Moves the highlight, repainting only the thumbnail it leaves and the one it goes to.</summary>
+    void SetHot(int index)
+    {
+        if (index == _hot) return;
+        if (_hot >= 0 && _hot < _count) Invalidate(CellRect(_hot));
+        _hot = index;
+        if (index >= 0) Invalidate(CellRect(index));
+    }
+
+    void RefreshHot()
+    {
+        var p = PointToClient(Cursor.Position);
+        SetHot(MouseButtons == MouseButtons.None && ClientRectangle.Contains(p) ? HitTest(p) : -1);
+    }
+
+    // ---- a slow second click renames, as in Explorer ------------------------------------------------
+
+    int _renameIndex = -1;
+    Point _renameAt;
+    System.Windows.Forms.Timer? _renameTimer;
+
+    void StartRenameTimer(int index, Point at)
+    {
+        StopRenameClick();
+        _renameAt = at;
+        _renameTimer = new System.Windows.Forms.Timer { Interval = SystemInformation.DoubleClickTime };
+        _renameTimer.Tick += (_, _) =>
+        {
+            StopRenameClick();
+            if (Focused && index < _count && IsSelected(index) && SelectedCount() == 1) RenameClick?.Invoke(index, _renameAt);
+        };
+        _renameTimer.Start();
+    }
+
+    void StopRenameClick()
+    {
+        _renameTimer?.Dispose();
+        _renameTimer = null;
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
-        if (e.Button == MouseButtons.Right && HitTest(e.Location) >= 0) ItemContextMenu?.Invoke(PointToScreen(e.Location));
+        if (e.Button == MouseButtons.Right && HitTest(e.Location) >= 0)
+        {
+            SetHot(-1); // no highlight while the menu is open
+            ItemContextMenu?.Invoke(PointToScreen(e.Location));
+        }
         // The keys held as it was pressed: Ctrl let go a moment before the button is still a Ctrl+click.
         if (e.Button == MouseButtons.Left && _clickOnRelease && _downIndex >= 0) ClickItem(_downIndex, _downKeys);
+        if (e.Button == MouseButtons.Left && _renameIndex >= 0 && HitTest(e.Location) == _renameIndex) StartRenameTimer(_renameIndex, _downAt);
+        _renameIndex = -1;
         _clickOnRelease = false;
         _downIndex = -1;
     }
@@ -452,6 +550,7 @@ internal sealed class ThumbnailGrid : Control
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
         base.OnMouseDoubleClick(e);
+        StopRenameClick(); // a double-click opens
         int i = HitTest(e.Location);
         if (e.Button == MouseButtons.Left && i >= 0) ItemActivated?.Invoke(i);
     }
@@ -469,6 +568,8 @@ internal sealed class ThumbnailGrid : Control
 
     void ScrollByWheel(int delta)
     {
+        StopRenameClick();
+        Scrolling?.Invoke();
         // A change of direction starts afresh, so a leftover never moves the grid, or zooms, the old way.
         if ((ModifierKeys & Keys.Control) != 0)
         {
@@ -501,6 +602,7 @@ internal sealed class ThumbnailGrid : Control
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
+        StopRenameClick();
         int cols = Columns, cur = Math.Max(0, FocusedIndex());
         int target = e.KeyCode switch
         {
@@ -545,5 +647,5 @@ internal sealed class ThumbnailGrid : Control
     }
 
     protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
-    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); StopRenameClick(); Invalidate(); }
 }

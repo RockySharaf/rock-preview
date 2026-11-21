@@ -38,6 +38,18 @@ public class SortTests
     }
 
     [Fact]
+    public void Name_sort_orders_numbers_by_value()
+    {
+        var t = new TreeBuilder();
+        foreach (var n in new[] { "IMG_100.jpg", "img_10.jpg", "IMG_2.jpg", "IMG_1.jpg", "IMG_02.jpg", "IMG.jpg", "IMG_A.jpg" })
+            t.File(@"W:\p\" + n, 1);
+        var ids = _engine.Search(t.Index, "img", new SearchOptions(), SortKey.Name, false, default).Ids;
+        Assert.Equal(["IMG.jpg", "IMG_1.jpg", "IMG_2.jpg", "IMG_02.jpg", "img_10.jpg", "IMG_100.jpg", "IMG_A.jpg"], ids.Select(t.Index.Name));
+        var desc = _engine.Search(t.Index, "img", new SearchOptions(), SortKey.Name, true, default).Ids;
+        Assert.Equal(ids.Reverse(), desc);
+    }
+
+    [Fact]
     public void Ties_are_deterministic()
     {
         var t = new TreeBuilder();
@@ -70,7 +82,7 @@ public class SortTests
                 {
                     SortKey.Size => t.Index.Size(ids[i - 1]).CompareTo(t.Index.Size(ids[i])),
                     SortKey.Extension => string.Compare(t.Index.Extension(ids[i - 1]), t.Index.Extension(ids[i]), StringComparison.OrdinalIgnoreCase),
-                    _ => string.Compare(t.Index.Name(ids[i - 1]), t.Index.Name(ids[i]), StringComparison.OrdinalIgnoreCase),
+                    _ => NameOrder.Compare(t.Index.Name(ids[i - 1]), t.Index.Name(ids[i])),
                 };
                 Assert.True(c <= 0, $"{key} out of order at {i}");
             }
@@ -117,6 +129,24 @@ public class HighlightTests
         Assert.Equal([(5, 4)], H("case:song", "Song song"));
         Assert.Equal([(0, 3)], H("ww:foo", "foo foobar"));
         Assert.Equal([(0, 3)], H("foo", "foo foobar", new SearchOptions { MatchWholeWord = true }));
+    }
+
+    [Fact]
+    public void Whole_word_highlights_follow_the_same_edges_as_matching()
+    {
+        var ww = new SearchOptions { MatchWholeWord = true };
+        Assert.Equal([(7, 4)], H(".pdf", "invoice.pdf", ww));
+        Assert.Equal([(6, 6)], H("_final", "report_final.docx", ww));
+        Assert.Equal([(3, 5)], H("-2024", "inv-2024.pdf", ww));
+        Assert.Equal([(4, 3)], H("(1)", "scan(1).png", ww));
+        Assert.Equal([(0, 2)], H("会议", "会议记录2024.docx", ww));
+        Assert.Empty(H("cat", "concatenate.txt", ww));
+        Assert.Equal([(3, 9)], H(@"projects\", @"C:\Projects\app.cs", ww));
+        Assert.Empty(H("של", "שלום.txt", ww));
+        Assert.Empty(H("من", "منزل.txt", ww));
+        Assert.Equal([(0, 4)], H("スーパー", "スーパー2024.pdf", ww));
+        Assert.Equal([(0, 2)], H("회의", "회의록2024.docx", ww));
+        Assert.Equal([(0, 6)], H("สวัสดี", "สวัสดีครับ.txt", ww));
     }
 
     [Fact]

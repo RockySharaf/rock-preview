@@ -81,6 +81,8 @@ internal sealed class ResultListView : ListView
     {
         _marquee = null;
         _rightDownInEmpty = false;
+        _hot = -1;
+        StopRenameClick();
         StopMarqueeScroll();
         _layer?.Dispose();
         _layer = null;
@@ -625,6 +627,114 @@ internal sealed class ResultListView : ListView
     bool _rightDownInEmpty;
     Point _rightDownAt;
 
+    // ---- Explorer's hover highlight ----------------------------------------------------------------
+
+    const int WM_MOUSELEAVE = 0x2A3, WM_KEYDOWN = 0x100, WM_MBUTTONDOWN = 0x207, MK_LBUTTON = 0x1, MK_RBUTTON = 0x2, MK_MBUTTON = 0x10;
+    const int TME_LEAVE = 0x2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct TRACKMOUSEEVENT { public int cbSize; public int dwFlags; public IntPtr hwndTrack; public int dwHoverTime; }
+
+    [DllImport("user32.dll")]
+    static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT tme);
+
+    int _hot = -1;
+    int _hotTop = -1; // the top row when the hot row was found: scrolled by the keyboard, it's found again
+
+    /// <summary>The row under the pointer, drawn with Explorer's hover highlight; -1 for none (not over a row, a button held, a menu open).</summary>
+    public int HotIndex => _hot;
+
+    /// <summary>The row whose box is under <paramref name="p"/> (client), or -1 (the headers, the margin, the gaps between rows).</summary>
+    int HotAt(Point p) => IsHandleCreated && p.Y >= RowsTop && !IsEmptySpace(p) ? IndexAtY(p.Y) : -1;
+
+    /// <summary>Moves the highlight, repainting only the row it leaves and the row it goes to.</summary>
+    void SetHot(int index)
+    {
+        if (index == _hot) return;
+        InvalidateRow(_hot);
+        _hot = index;
+        if (index < 0 || !IsHandleCreated) return;
+        _hotTop = TopRow;
+        InvalidateRow(index);
+        // Told when the pointer leaves, also for the list's own child windows (the header, a rename box).
+        var tme = new TRACKMOUSEEVENT { cbSize = Marshal.SizeOf<TRACKMOUSEEVENT>(), dwFlags = TME_LEAVE, hwndTrack = Handle };
+        TrackMouseEvent(ref tme);
+    }
+
+    void InvalidateRow(int index)
+    {
+        if (index < 0 || index >= VirtualListSize || !IsHandleCreated) return;
+        Invalidate(new Rectangle(0, RowTop(index), ClientSize.Width, Pitch));
+    }
+
+    /// <summary>The rows moved under a pointer that didn't (scrolled): the row under it now is the hot one.</summary>
+    void RefreshHot()
+    {
+        if (!IsHandleCreated) return;
+        var p = PointToClient(Cursor.Position);
+        SetHot(_marquee == null && MouseButtons == MouseButtons.None && ClientRectangle.Contains(p) ? HotAt(p) : -1);
+        _hotTop = TopRow;
+    }
+
+    protected override void OnItemDrag(ItemDragEventArgs e)
+    {
+        _dragged = true;
+        StopRenameClick();
+        SetHot(-1); // no highlight while files are dragged out
+        base.OnItemDrag(e);
+    }
+
+    // ---- a slow second click renames, as in Explorer ------------------------------------------------
+
+    /// <summary>
+    /// A click on the name of the only selected row, in a list that already had the focus, with no double-click after it:
+    /// the row and where it was clicked (client). Whoever handles it checks the click was on the name.
+    /// </summary>
+    public event Action<int, Point>? RenameClick;
+
+    (int Index, Point At)? _renameClick;
+    System.Windows.Forms.Timer? _renameTimer;
+    bool _dragged;
+
+    /// <summary>A press the list handles itself: it may be the first half of a slow click that renames.</summary>
+    void PressRow(ref Message m)
+    {
+        StopRenameClick();
+        var p = PointOf(m.LParam);
+        int index = p.Y >= RowsTop ? IndexAtY(p.Y) : -1;
+        bool candidate = ((int)(long)m.WParam & (MK_CONTROL | MK_SHIFT)) == 0 && Focused && index >= 0 && index < VirtualListSize
+                         && IsItemSelected(index) && SelectedIndices.Count == 1;
+        _dragged = false;
+        base.WndProc(ref m); // the list may wait here for the release, or for a drag (which runs to its end here)
+        if (!candidate || _dragged || !IsHandleCreated) return;
+        _renameClick = (index, p);
+        if ((MouseButtons & MouseButtons.Left) == 0) StartRenameTimer(); // released already, while the list waited
+    }
+
+    void StartRenameTimer()
+    {
+        if (_renameClick == null || _renameTimer != null) return;
+        _renameTimer = new System.Windows.Forms.Timer { Interval = SystemInformation.DoubleClickTime };
+        _renameTimer.Tick += (_, _) =>
+        {
+            var click = _renameClick;
+            StopRenameClick();
+            if (click is { } c && Focused && c.Index < VirtualListSize && IsItemSelected(c.Index) && SelectedIndices.Count == 1)
+                RenameClick?.Invoke(c.Index, c.At);
+        };
+        _renameTimer.Start();
+    }
+
+    void StopRenameClick()
+    {
+        _renameClick = null;
+        _renameTimer?.Dispose();
+        _renameTimer = null;
+    }
+
+    /// <summary>The user scrolled the rows (wheel or scroll bar): a rename box over them ends.</summary>
+    public event Action? Scrolling;
+
     /// <summary>
     /// While a rectangle is held, keys don't reach the window (Esc there would close the search or the window) or move
     /// the list under it: Esc ends the rectangle, the rest wait for the release.
@@ -647,8 +757,35 @@ internal sealed class ResultListView : ListView
         if (ShellContextMenu.HandleMenuMessage(ref m)) return;
         switch (m.Msg)
         {
+            case WM_MOUSEMOVE:
+                // No highlight while a button is held (a rectangle, a press, a drag about to start), as in Explorer.
+                SetHot(_marquee == null && ((int)(long)m.WParam & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) == 0 ? HotAt(PointOf(m.LParam)) : -1);
+                break;
+            case WM_MOUSELEAVE:
+                SetHot(-1);
+                break;
+            case WM_LBUTTONDBLCLK or WM_RBUTTONDOWN or WM_MBUTTONDOWN or WM_KEYDOWN:
+                StopRenameClick(); // a double-click opens, and keys or another button mean it wasn't a slow click
+                break;
+            case WM_MOUSEWHEEL or WM_VSCROLL or WM_HSCROLL when _marquee == null:
+                StopRenameClick(); // the row clicked has moved from under the pointer
+                Scrolling?.Invoke();
+                base.WndProc(ref m);
+                RefreshHot();
+                return;
+        }
+        switch (m.Msg)
+        {
             case WM_LBUTTONDOWN when _marquee == null && StartsMarquee(PointOf(m.LParam), out int pressedRow):
+                StopRenameClick();
                 BeginMarquee(PointOf(m.LParam), (int)(long)m.WParam & (MK_CONTROL | MK_SHIFT), pressedRow);
+                return;
+            case WM_LBUTTONDOWN when _marquee == null:
+                PressRow(ref m);
+                return;
+            case WM_LBUTTONUP when _marquee == null && _renameClick != null:
+                base.WndProc(ref m);
+                StartRenameTimer();
                 return;
             case WM_LBUTTONDBLCLK when _marquee == null && IsEmptySpace(PointOf(m.LParam)):
                 return; // nothing there to open (not the row beside the gap)
@@ -688,6 +825,8 @@ internal sealed class ResultListView : ListView
         {
             long lp = m.LParam.ToInt64();
             Point pt = lp == -1 ? new Point(-1, -1) : new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
+            SetHot(-1); // no highlight while the menu is open
+            StopRenameClick();
             if (m.WParam == HeaderHandle && HeaderHandle != IntPtr.Zero) HeaderContextMenu?.Invoke(pt);
             else ItemContextMenu?.Invoke(pt);
             return;
@@ -697,6 +836,8 @@ internal sealed class ResultListView : ListView
             _lastTopRow = top;
             BeginInvoke(() => TopRowChanged?.Invoke()); // after this paint: what it does may change the columns
         }
+        if (m.Msg == 0x000F /* WM_PAINT */ && _hot >= 0 && IsHandleCreated && TopRow != _hotTop)
+            BeginInvoke(RefreshHot); // scrolled by the keyboard under a pointer that stayed put
         if (m.Msg == 0x000F /* WM_PAINT */ && _emptyText.Length > 0 && VirtualListSize == 0 && GetUpdateRect(Handle, out var dirty, false))
         {
             base.WndProc(ref m);
@@ -715,6 +856,7 @@ internal sealed class ResultListView : ListView
     protected override void OnLostFocus(EventArgs e)
     {
         base.OnLostFocus(e);
+        StopRenameClick();
         Invalidate();
     }
 }

@@ -16,6 +16,13 @@ internal static class Photoshop8Bim
     /// <summary>Reads the blocks of an image resource section (the source holds just that section).</summary>
     public static void Read(IByteSource s, ExtractSink sink, ExtractBudget budget, PictureParts parts, long allowance = long.MaxValue)
     {
+        if (!parts.Enter()) return;
+        try { ReadNested(s, sink, budget, parts, allowance); }
+        finally { parts.Leave(); }
+    }
+
+    static void ReadNested(IByteSource s, ExtractSink sink, ExtractBudget budget, PictureParts parts, long allowance)
+    {
         long pos = 0, start = s.BytesRead;
         long Left() => allowance - (s.BytesRead - start);
         bool Fits(long bytes)

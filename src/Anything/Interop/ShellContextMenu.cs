@@ -306,6 +306,65 @@ internal sealed class ShellContextMenu
         }
     }
 
+    [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr hMenu);
+    [DllImport("user32.dll")] static extern uint GetMenuItemID(IntPtr hMenu, int nPos);
+    [DllImport("user32.dll")] static extern uint GetMenuState(IntPtr hMenu, uint uId, uint uFlags);
+    const uint MF_BYPOSITION_STATE = 0x0400, MF_GRAYED = 0x0001, MF_DISABLED = 0x0002;
+
+    /// <summary>
+    /// Runs a command of a folder view's background menu (what a right-click on its empty space shows) by its verb, as
+    /// if it were chosen there: "undo" and "redo" are the shell's own undo list, shared by every view in the process, so
+    /// this works while the view is hidden behind the search results. <paramref name="view"/> is the view's IShellView.
+    /// True when the command ran, or was there but greyed (nothing to undo); false when the menu doesn't list it.
+    /// </summary>
+    public static bool InvokeBackgroundVerb(IWin32Window owner, object? view, string verb)
+    {
+        if (view is not Anything.Explorer.IShellView shellView) return false;
+        IntPtr menuPtr = IntPtr.Zero, hmenu = IntPtr.Zero;
+        object? menuObj = null;
+        try
+        {
+            Guid iid = IID_IContextMenu;
+            if (shellView.GetItemObject(0 /* SVGIO_BACKGROUND */, ref iid, out menuPtr) != 0 || menuPtr == IntPtr.Zero) return false;
+            menuObj = Marshal.GetObjectForIUnknown(menuPtr);
+            var menu = (IContextMenu)menuObj;
+            hmenu = Native.CreatePopupMenu();
+            if (menu.QueryContextMenu(hmenu, 0, FirstShellId, LastShellId, Native.CMF_NORMAL | Native.CMF_EXPLORE) < 0) return false;
+            var info = new CMINVOKECOMMANDINFOEX
+            {
+                cbSize = Marshal.SizeOf<CMINVOKECOMMANDINFOEX>(),
+                fMask = Native.CMIC_MASK_UNICODE,
+                hwnd = owner.Handle,
+                nShow = 1, // SW_SHOWNORMAL
+            };
+            // The command as the menu lists it (its id), which every menu understands; only top-level items, where the
+            // background menu puts Undo and Redo.
+            int count = GetMenuItemCount(hmenu);
+            for (int pos = 0; pos < count; pos++)
+            {
+                uint id = GetMenuItemID(hmenu, pos);
+                if (id == uint.MaxValue || id < FirstShellId || id > LastShellId) continue; // a submenu or a separator
+                if (!string.Equals(GetVerb(menu, id - FirstShellId), verb, StringComparison.OrdinalIgnoreCase)) continue;
+                if ((GetMenuState(hmenu, (uint)pos, MF_BYPOSITION_STATE) & (MF_GRAYED | MF_DISABLED)) != 0) return true;
+                info.lpVerb = info.lpVerbW = (IntPtr)(id - FirstShellId);
+                return menu.InvokeCommand(ref info) >= 0;
+            }
+            // Not listed (the shell lists Undo and Redo only while there is something to undo or redo): nothing is run.
+            // Passing the verb string to the whole menu instead would hand it to every third-party handler in it.
+            return false;
+        }
+        catch (Exception ex) when (ex is COMException or InvalidCastException or ArgumentException)
+        {
+            return false;
+        }
+        finally
+        {
+            if (hmenu != IntPtr.Zero) Native.DestroyMenu(hmenu);
+            if (menuObj is not null) Marshal.ReleaseComObject(menuObj);
+            if (menuPtr != IntPtr.Zero) Marshal.Release(menuPtr);
+        }
+    }
+
     static readonly Guid CLSID_NewMenu = new("D969A300-E7FF-11d0-A93B-00A0C90F2719");
 
     [DllImport("user32.dll")] static extern IntPtr GetSubMenu(IntPtr hMenu, int nPos);

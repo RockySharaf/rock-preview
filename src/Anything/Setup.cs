@@ -201,7 +201,7 @@ internal static partial class Setup
         var older = OlderCopies(o); // before this install's Settings › Apps entry takes the place of theirs
 
         status("Closing Rock Preview...");
-        CloseRunning(exe, o.Quiet, anyFolder: true, again: "install again");
+        CloseRunning(exe, o.Quiet, anyFolder: true, again: "install again", status: status);
 
         status("Copying Rock Preview...");
         Directory.CreateDirectory(folder);
@@ -943,7 +943,7 @@ internal static partial class Setup
     /// not when its window goes (it still saves the index then, and holds the single-instance mutex). <paramref
     /// name="again"/> ends the message when a copy runs in another account ("install again", "uninstall again").
     /// </summary>
-    static void CloseRunning(string exe, bool force, bool anyFolder, int exceptPid = 0, string again = "uninstall again")
+    static void CloseRunning(string exe, bool force, bool anyFolder, int exceptPid = 0, string again = "uninstall again", Action<string>? status = null)
     {
         int self = Environment.ProcessId;
         var seen = new Dictionary<int, Process>();
@@ -976,15 +976,46 @@ internal static partial class Setup
         if (Program.RunningInstanceId(demo: true) is int demo && running.Any(p => p.Id == demo))
             Program.ForwardToRunning(["--demo", "-exit"], demo: true);
         var sw = Stopwatch.StartNew();
+        var total = Stopwatch.StartNew();
+        bool told = false;
         while (sw.ElapsedMilliseconds < 60_000)
         {
             Thread.Sleep(250);
             running = Running();
             if (running.Count == 0) return;
+            // A copy whose windows have gone but that waits for a copy or move it started in its folder view to finish
+            // is waited for as long as that takes: ending it would cut the files short. The status says why it takes
+            // long; a quiet run (nobody to see it) still ends after FinishingLimit, so a deployment can't wait for ever.
+            if (running.Any(FinishingFileOperations))
+            {
+                if (force && total.Elapsed > FinishingLimit)
+                {
+                    Log(new TimeoutException($"Rock Preview was still finishing file operations after {FinishingLimit.TotalHours:0} hours: it is ended."));
+                    break;
+                }
+                if (!told) { status?.Invoke("Waiting for a copy or move started in Rock Preview to finish..."); told = true; }
+                sw.Restart();
+            }
         }
         StopForOtherSessions(running);
         if (!force) throw new InvalidOperationException("Rock Preview is still running. Close it and try again.");
         foreach (var p in running) { try { p.Kill(); p.WaitForExit(5000); } catch (Exception) { } }
+    }
+
+    /// <summary>How long a quiet run waits for a closing copy that is still finishing file operations before ending it.</summary>
+    static readonly TimeSpan FinishingLimit = TimeSpan.FromHours(4);
+
+    /// <summary>Whether the copy <paramref name="p"/> says it is waiting for the shell's file operations before it ends (ShellProcessReference).</summary>
+    static bool FinishingFileOperations(Process p)
+    {
+        try
+        {
+            if (!EventWaitHandle.TryOpenExisting(Interop.ShellProcessReference.FinishingEventPrefix + p.Id, out var signal)) return false;
+            signal.Dispose();
+            return true;
+        }
+        catch (UnauthorizedAccessException) { return true; } // it is there, but this account may not open it
+        catch (Exception) { return false; }
     }
 
     static int? SessionOf(Process p)

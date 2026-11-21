@@ -20,6 +20,7 @@ internal sealed class BreadcrumbBar : Control
     const float TextPixels = 14f, GlyphPixels = 12f;   // Segoe UI Variable Text 10.5pt, chevrons 9pt
     const char ChevronRightGlyph = '\uE76C', ChevronDownGlyph = '\uE70D', ChevronLeftGlyph = '\uE76B';
     const int MaxMenuItems = 1000, MenuQuickWaitMs = 150, MenuTimeoutMs = 3000;
+    const int HistoryRight = 4;                        // the typed-address arrow's gap from the field's right end
     // Explorer's XAML text is greyscale anti-aliased with unhinted advances. Segments are laid out with GDI+
     // typographic widths (within a pixel of Explorer's; GDI's hinted widths run 2-4px wider per label) but drawn
     // with greyscale GDI, whose stroke weight matches Explorer's where GDI+ renders ~20% lighter.
@@ -28,7 +29,7 @@ internal sealed class BreadcrumbBar : Control
     const TextFormatFlags TextFlags = TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter
                                       | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.Left;
 
-    enum PartKind { None, Icon, Root, Overflow, Text, Chevron, Empty }
+    enum PartKind { None, Icon, Root, Overflow, Text, Chevron, Empty, History }
     readonly record struct Part(PartKind Kind, int Index = -1);
 
     /// <summary>One level of the path. Icon is the system image list index (-1 = none).</summary>
@@ -53,10 +54,12 @@ internal sealed class BreadcrumbBar : Control
     Part _hover, _pressed, _menuPart, _swallow;
     long _swallowTicks;
     bool _editing;
+    int _dropIndex = -1;                // segment files are being dragged over (-1 = none)
     int _dpi;
     Font _font, _glyphFont;
     Font? _boldMenuFont;
     ContextMenuStrip? _menu;
+    ContextMenuStrip? _barMenu;         // right-click: Edit address, Delete history
     ToolStripRenderer? _menuRenderer;
     int _menuRequest;
     bool _reopening;
@@ -65,6 +68,16 @@ internal sealed class BreadcrumbBar : Control
 
     /// <summary>Raised when the user picks a location. Argument: parsing name ("C:\Users", "::{20D04FE0-...}").</summary>
     public event Action<string>? NavigateRequested;
+
+    /// <summary>An address from the typed-address drop-down was chosen: opened as if typed again.</summary>
+    public event Action<string>? HistoryChosen;
+
+    /// <summary>The right-click menu's Delete history.</summary>
+    public event Action? DeleteHistoryRequested;
+
+    /// <summary>The addresses the drop-down at the right end offers, newest first (set by the host).</summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Func<IReadOnlyList<string>>? HistoryProvider { get; set; }
 
     public BreadcrumbBar(TextBox editBox)
     {
@@ -106,6 +119,10 @@ internal sealed class BreadcrumbBar : Control
     /// <summary>True while the address TextBox is shown instead of the segments.</summary>
     public bool Editing => _editing;
 
+    /// <summary>The window that had the keyboard when typing an address began (Escape gives it back), or zero.</summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public IntPtr FocusBeforeEdit { get; private set; }
+
     /// <summary>Renderer for the chevron and overflow drop-downs (null = WinForms default).</summary>
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public ToolStripRenderer? MenuRenderer
@@ -136,6 +153,7 @@ internal sealed class BreadcrumbBar : Control
         _root = root;
         _widths = null;
         _hover = _pressed = default;
+        _dropIndex = -1;                    // a drag still over the bar highlights the new segment on its next move
         LayoutCrumbs();
         Invalidate();
     }
@@ -144,8 +162,10 @@ internal sealed class BreadcrumbBar : Control
     public void BeginEdit()
     {
         CloseMenu();
+        if (!_editing) FocusBeforeEdit = Native.GetFocus();
         _editing = true;
         _hover = _pressed = default;
+        _dropIndex = -1;
         ApplyEditColors();
         _edit.Text = EditText;
         LayoutEdit();
@@ -154,6 +174,48 @@ internal sealed class BreadcrumbBar : Control
         _edit.Focus();
         _edit.SelectAll();
         Invalidate();
+    }
+
+    /// <summary>
+    /// The folder of the segment under a screen point (its name or its chevron), for dropping files on it as in File
+    /// Explorer; null on the icon, the root or overflow button, empty space, outside the bar, or while typing.
+    /// </summary>
+    public string? FolderAt(Point screen) => SegmentAt(screen) is int i ? _crumbs[i].Target : null;
+
+    /// <summary>Highlights the segment under a screen point while files are dragged over it (none there: no highlight).</summary>
+    public void ShowDropHighlight(Point screen) => SetDropIndex(SegmentAt(screen) ?? -1);
+
+    /// <summary>Takes the drag's highlight away (the drag left, was dropped, or can't drop there).</summary>
+    public void ClearDropHighlight() => SetDropIndex(-1);
+
+    int? SegmentAt(Point screen)
+    {
+        if (_editing || !IsHandleCreated) return null;
+        var part = HitTest(PointToClient(screen));
+        return part.Kind is PartKind.Text or PartKind.Chevron && part.Index >= 0 && part.Index < _crumbs.Count ? part.Index : null;
+    }
+
+    void SetDropIndex(int index)
+    {
+        if (index == _dropIndex) return;     // repainted only when the highlighted segment changes
+        InvalidateSegment(_dropIndex);
+        _dropIndex = index;
+        InvalidateSegment(index);
+        // The pointer moves without mouse messages during a drag, so the hover from before it is stale: the next real
+        // move sets it again.
+        if (index < 0 && _hover != default)
+        {
+            _hover = default;
+            Invalidate();
+        }
+    }
+
+    void InvalidateSegment(int index)
+    {
+        if (index < 0 || index >= _textRects.Length) return;
+        var r = Rectangle.Union(_textRects[index], _chevRects[index]);
+        r.Inflate(1, 1);
+        Invalidate(r);
     }
 
     /// <summary>Hides the TextBox and shows the segments again.</summary>
@@ -431,7 +493,7 @@ internal sealed class BreadcrumbBar : Control
         if (_menuPart != default) { _menuPart = default; Invalidate(); }
     }
 
-    void ShowMenu(ToolStripItem[] items, Rectangle anchor)
+    void ShowMenu(ToolStripItem[] items, Rectangle anchor, int minWidth = 0)
     {
         var menu = EnsureMenu();
         if (menu.Visible)
@@ -446,6 +508,7 @@ internal sealed class BreadcrumbBar : Control
         var bar = RectangleToScreen(ClientRectangle);
         int room = Math.Max(screen.Bottom - bar.Bottom, bar.Top - screen.Top) - D(8);
         menu.MaximumSize = new Size(0, Math.Max(D(120), room));
+        menu.MinimumSize = new Size(minWidth, 0); // the typed addresses span the bar; the folder lists fit their names
         // StyleDropDown pads every row as the menu opens and each change re-lays out the whole menu, which is
         // quadratic for a 1000-folder list. Applying the same padding here, while layout is suspended, makes
         // those assignments no-ops.
@@ -526,6 +589,45 @@ internal sealed class BreadcrumbBar : Control
         ShowMenu([.. items], _slotRect);
     }
 
+    /// <summary>
+    /// The addresses typed before, under the whole bar, as File Explorer's arrow at the right end (and F4, Alt+Down)
+    /// drop them; choosing one opens it. Text only: no icons, so nothing asks the disk while the list opens.
+    /// </summary>
+    public void OpenHistory()
+    {
+        CloseMenu();
+        if (_editing) AddressAutoComplete.CloseSuggestions(_edit); // one list at a time: not the suggestions under this one
+        IReadOnlyList<string> history;
+        try { history = HistoryProvider?.Invoke() ?? []; }
+        catch (Exception) { history = []; }
+        _menuPart = new Part(PartKind.History);
+        var items = new List<ToolStripItem>(history.Count);
+        foreach (var address in history)
+        {
+            var item = new ToolStripMenuItem(address.Replace("&", "&&"));
+            item.Click += (_, _) => HistoryChosen?.Invoke(address);
+            items.Add(item);
+        }
+        if (items.Count == 0) items.Add(Disabled("No addresses typed yet"));
+        Invalidate();
+        ShowMenu([.. items], new Rectangle(0, 0, Width, Height), minWidth: Width);
+    }
+
+    /// <summary>Right-click on the bar: Edit address, and Delete history (Rock Preview's typed addresses).</summary>
+    void OpenBarMenu(Point client)
+    {
+        CloseMenu();
+        if (_barMenu == null)
+        {
+            _barMenu = new ContextMenuStrip();
+            if (_menuRenderer != null) _barMenu.Renderer = _menuRenderer;
+            ExplorerTheme.StyleDropDown(_barMenu);
+            _barMenu.Items.Add(new ToolStripMenuItem("Edit address", null, (_, _) => BeginEdit()));
+            _barMenu.Items.Add(new ToolStripMenuItem("Delete history", null, (_, _) => DeleteHistoryRequested?.Invoke()));
+        }
+        _barMenu.Show(this, client);
+    }
+
     // ---- layout -------------------------------------------------------------------------------
 
     int D(int logical) => (int)Math.Round(logical * _dpi / 96.0);
@@ -585,7 +687,17 @@ internal sealed class BreadcrumbBar : Control
     void LayoutEdit()
     {
         int left = D(EditLeft);
-        _edit.SetBounds(left, (Height - _edit.Height) / 2, Math.Max(0, Width - left - D(EditRight)), _edit.Height);
+        _edit.SetBounds(left, (Height - _edit.Height) / 2, Math.Max(0, HistoryRect.Left - left - D(EditRight)), _edit.Height);
+    }
+
+    /// <summary>The typed-address arrow at the right end of the field, shown while typing too, as in Explorer.</summary>
+    Rectangle HistoryRect
+    {
+        get
+        {
+            int h = D(ButtonHeight), w = D(ChevronWidth);
+            return new Rectangle(Math.Max(0, Width - D(HistoryRight) - w), (Height - h) / 2, w, h);
+        }
     }
 
     void MeasureCrumbs()
@@ -613,7 +725,7 @@ internal sealed class BreadcrumbBar : Control
 
         int h = D(ButtonHeight), top = (Height - h) / 2;
         int pad = D(TextLeft) + D(TextRight), chev = D(ChevronWidth), slot = D(SlotWidth);
-        int x = D(SlotLeft), limit = Math.Max(x, Width - D(MinEmpty));
+        int x = D(SlotLeft), limit = Math.Max(x, HistoryRect.Left - D(MinEmpty));
         int Need(int i) => widths[i] + pad + chev;
 
         int total = 0;
@@ -646,6 +758,7 @@ internal sealed class BreadcrumbBar : Control
     Rectangle PartBounds(Part part) => part.Kind switch
     {
         PartKind.Root or PartKind.Overflow => _slotRect,
+        PartKind.History => HistoryRect,
         PartKind.Text when part.Index >= 0 && part.Index < _textRects.Length => _textRects[part.Index],
         PartKind.Chevron when part.Index >= 0 && part.Index < _chevRects.Length => _chevRects[part.Index],
         _ => Rectangle.Empty,
@@ -656,6 +769,7 @@ internal sealed class BreadcrumbBar : Control
     {
         if (!ClientRectangle.Contains(p)) return default;
         static bool InX(Rectangle r, int x) => r.Width > 0 && x >= r.Left && x < r.Right;
+        if (InX(HistoryRect, p.X)) return new Part(PartKind.History);
         if (InX(_slotRect, p.X)) return new Part(_overflow ? PartKind.Overflow : PartKind.Root);
         for (int i = _first; i < _crumbs.Count; i++)
         {
@@ -670,7 +784,11 @@ internal sealed class BreadcrumbBar : Control
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        var hover = _editing ? default : HitTest(e.Location);
+        // A real mouse message means no drag is over the bar (the dragging program holds the mouse), so a drop highlight
+        // left by a drag that ended without saying so (its program closed mid-drag) goes now.
+        ClearDropHighlight();
+        var hover = HitTest(e.Location);
+        if (_editing && hover.Kind != PartKind.History) hover = default; // while typing, only the arrow is a button
         if (hover == _hover) return;
         _hover = hover;
         Invalidate();
@@ -679,6 +797,7 @@ internal sealed class BreadcrumbBar : Control
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
+        ClearDropHighlight();
         if (_hover == default) return;
         _hover = default;
         Invalidate();
@@ -687,12 +806,18 @@ internal sealed class BreadcrumbBar : Control
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
+        ClearDropHighlight();
         if (e.Button != MouseButtons.Left) return;
-        if (_editing) { _edit.Focus(); return; }
         var part = HitTest(e.Location);
         bool swallow = part == _swallow && Environment.TickCount64 - _swallowTicks < 500;
         _swallow = default;
         if (swallow) return;
+        if (part.Kind == PartKind.History)
+        {
+            OpenHistory();
+            return;
+        }
+        if (_editing) { _edit.Focus(); return; }
         switch (part.Kind)
         {
             case PartKind.Chevron:
@@ -718,6 +843,11 @@ internal sealed class BreadcrumbBar : Control
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (e.Button == MouseButtons.Right && !_editing && _pressed.Kind == PartKind.None)
+        {
+            OpenBarMenu(e.Location);
+            return;
+        }
         if (_pressed.Kind != PartKind.Text) return;
         var pressed = _pressed;
         _pressed = default;
@@ -753,6 +883,9 @@ internal sealed class BreadcrumbBar : Control
 
     Color? StateFill(Part part)
     {
+        // Files dragged over a segment: the whole segment (name and chevron) takes the hover fill, and nothing else.
+        if (_dropIndex >= 0)
+            return part.Kind is PartKind.Text or PartKind.Chevron && part.Index == _dropIndex ? HoverFill : null;
         if (_menuPart == part) return PressedFill;
         if (_pressed == part) return _hover == part ? PressedFill : HoverFill;
         return _hover == part && _pressed.Kind == PartKind.None && _menuPart.Kind == PartKind.None ? HoverFill : null;
@@ -789,6 +922,7 @@ internal sealed class BreadcrumbBar : Control
         g.SmoothingMode = SmoothingMode.None;
 
         DrawLocationIcon(g);
+        DrawHistoryArrow(g);
         if (_editing) return;
 
         g.TextRenderingHint = DrawHint;     // TextRenderer maps it to greyscale GDI font quality
@@ -847,6 +981,23 @@ internal sealed class BreadcrumbBar : Control
             TextRenderer.DrawText(g, _crumbs[i].Name, _font, textBounds, text, TextFlags);
             DrawGlyph(g, _menuPart == chevPart ? ChevronDownGlyph : ChevronRightGlyph, cr, chevron);
         }
+    }
+
+    /// <summary>The typed-address arrow: a down chevron, filled while hovered or while its list is open.</summary>
+    void DrawHistoryArrow(Graphics g)
+    {
+        var r = HistoryRect;
+        if (r.Left < D(SlotLeft)) return; // no room beside the icon
+        var part = new Part(PartKind.History);
+        if (StateFill(part) is Color c)
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var path = FillPath(r);
+            using var brush = new SolidBrush(c);
+            g.FillPath(brush, path);
+            g.SmoothingMode = SmoothingMode.None;
+        }
+        DrawGlyph(g, ChevronDownGlyph, r, ChevronColor);
     }
 
     /// <summary>Rounded outline that covers exactly the pixels of <paramref name="r"/> (GDI+ pixel centres are integers).</summary>
@@ -930,6 +1081,7 @@ internal sealed class BreadcrumbBar : Control
         {
             _menuCts?.Cancel();
             _menu?.Dispose();
+            _barMenu?.Dispose();
             _boldMenuFont?.Dispose();
             foreach (var bmp in _icons.Values) bmp?.Dispose();
             _icons.Clear();
@@ -991,6 +1143,7 @@ internal sealed class BreadcrumbBar : Control
         [DllImport("shell32.dll")] public static extern int SHGetDesktopFolder(out IntPtr ppshf);
         [DllImport("shell32.dll")] public static extern IntPtr ILCombine(IntPtr pidl1, IntPtr pidl2);
         [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
+        [DllImport("user32.dll")] public static extern IntPtr GetFocus();
         [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)] public static extern int StrCmpLogicalW(string psz1, string psz2);
     }
 }

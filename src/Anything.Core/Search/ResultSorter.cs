@@ -7,7 +7,7 @@ internal static class ResultSorter
     {
         public long K1;
         public long K2;
-        public ulong P0, P1, P2; // first 12 chars of the name, upper-cased, 16 bits each
+        public ulong P0, P1, P2; // first 12 chars of the name in name order (NameOrder.Prefix)
         public int Id;
     }
 
@@ -22,23 +22,11 @@ internal static class ResultSorter
             if (c == 0) c = a.P2.CompareTo(b.P2);
             if (c == 0 && a.Id != b.Id)
             {
-                string na = index.Name(a.Id), nb = index.Name(b.Id);
-                c = string.Compare(na, nb, StringComparison.OrdinalIgnoreCase);
-                if (c == 0) c = string.CompareOrdinal(na, nb);
+                c = NameOrder.CompareWithTieBreak(index.Name(a.Id), index.Name(b.Id));
             }
             if (c != 0) return descending ? -c : c;
             return a.Id.CompareTo(b.Id); // deterministic tie-break, same in both directions
         }
-    }
-
-    /// <summary>Four chars starting at <paramref name="from"/>, upper-cased (invariant), packed for a cheap pre-compare.
-    /// Any deterministic key works: ties fall through to the full ordinal-ignore-case compare.</summary>
-    static ulong Prefix(string s, int from)
-    {
-        ulong k = 0;
-        for (int i = from; i < from + 4; i++)
-            k = (k << 16) | (i < s.Length ? char.ToUpperInvariant(s[i]) : 0u);
-        return k;
     }
 
     public static void Sort(FileIndex index, SearchContext ctx, int[] ids, SortKey sort, bool descending, CancellationToken ct)
@@ -59,12 +47,8 @@ internal static class ResultSorter
             long group = index.IsDirectory(id) ? 0 : 1;
             ref var it = ref items[i];
             it.Id = id;
-            it.P0 = Prefix(name, 0);
-            if (name.Length > 4)
-            {
-                it.P1 = Prefix(name, 4);
-                if (name.Length > 8) it.P2 = Prefix(name, 8);
-            }
+            // The prefix keys must agree with the full name comparison, or ties broken by name would disagree with it.
+            NameOrder.Prefix(name, out it.P0, out it.P1, out it.P2);
             switch (sort)
             {
                 case SortKey.Name: it.K1 = group; break;

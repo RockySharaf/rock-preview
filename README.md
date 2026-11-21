@@ -38,8 +38,9 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
   navigation pane, so context menus, drag and drop, rename, thumbnails and shell extensions all just work. It can
   replace File Explorer too: folders, This PC and Win+E open in it.
 - **Drag and drop with any app**: drag files to Outlook, mail, chat and upload pages, or drop Outlook's mails and
-  attachments, and files from anywhere, on a folder. Dropping copies; hold **Shift** to move (**Ctrl** copies, **Alt**
-  makes a shortcut, as in Windows). Drag pinned folders in the navigation pane up or down to reorder them.
+  attachments, and files from anywhere, on a folder, in the address bar too. Dropping copies; hold **Shift** to move
+  (**Ctrl** copies, **Alt** makes a shortcut, as in Windows). Drag pinned folders in the navigation pane up or down to
+  reorder them.
 - **👁️ Preview anything**: select a file and see it, without opening another app.
 - **🔎 Search inside files**: the words in PDFs, Office documents, emails and design files, and pictures' details, on
   your own folders and, if you switch it on, your network drives.
@@ -64,6 +65,9 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
   switches, also while folders are selected (it then shows their name) or every file in a folder shows. Select
   folders first to search only inside them ("images"). Everything stays chosen until you open another folder.
 - Results start newest first, **folders before files**, matching **whole words** ("port" finds port, not report).
+  A word that starts or ends with punctuation needs no word break there: `.pdf` finds every PDF and `c:\projects\ .cs`
+  the .cs files under that folder. In Chinese, Japanese, Korean or Thai, written without spaces, any part of a name
+  matches.
   **Settings › Defaults** changes any of it, with the other match options, and every open tab follows; Sort and
   Search options still change one tab on its own.
 - **Search options**, on the command bar while you search, sets where to look, the kind of file (Audio, Compressed,
@@ -83,7 +87,23 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
   the space after the last column) or on a row that isn't selected, away from its icon and text, and drag. A blue box
   selects every row it touches; hold **Ctrl** to add rows to the selection or take selected ones out, and drag past the
   top or bottom to scroll the list along, faster the further out you go.
-- Sort by any column, highlight matches, bookmarks for saved searches, export results to CSV / TXT.
+- Sort by any column, highlight matches, bookmarks for saved searches, export results to CSV / TXT. Names sort with
+  their numbers in number order, as in File Explorer: IMG_2 before IMG_10.
+- Work with results as in File Explorer. The row or thumbnail under the pointer lights up. **`F2`** (or a slow second
+  click on the selected item's name) renames it in place: **Enter** keeps the name, **Esc** leaves it, **Tab** /
+  **Shift+Tab** keep it and go on to the next / previous item, and **`F2`** again selects the whole name, then the
+  extension. Characters a name can't hold (`\ / : * ? " < > |`) are refused as you type, and changing an extension
+  asks first; a name that's taken, and anything else Windows has to ask, gets Windows' own question. **Delete** moves
+  the selection to the Recycle Bin and **Shift+Delete** deletes it for good, asking only as the Recycle Bin's
+  properties say, as in File Explorer. **`Ctrl+Z`** undoes the last file operation (a rename, a delete to the Recycle
+  Bin, a move) with Windows' own undo, as in File Explorer, and **`Ctrl+Y`** redoes it; in the search box **`Ctrl+Z`**
+  still undoes typing. When there is nothing to undo, or no tab still open in the window has shown a folder, the status bar
+  says *Nothing to undo* (or *Nothing to redo*). Cut items look faded, and **Paste** turns on as soon as files are on the
+  clipboard. **`Ctrl+Shift+C`** (**Copy as path**, also in the **⋯** menu) copies the selected items' full paths, each
+  in quotes on its own line, in the folder view too.
+- The search box remembers your last 20 searches: pressing **Enter** or opening a result remembers one. The arrow at
+  the end of the box, or **`Alt+↓`**, lists them; choose one to search it again. **Delete** or the **×** on a row
+  forgets one, **Clear search history** all of them. Turn it off in **Settings › General › Remember searches**.
 - `rockpreview-cli` for scripting searches from the command line.
 
 ### Information about each file
@@ -153,9 +173,33 @@ documents; the first pass takes about 2 minutes in the background"):
   drives scroll below it; its header folds it away, and the line under it drags to make it taller or shorter (each
   part scrolls on its own). It shows only the folders you pinned, not the ones Windows adds as frequent. Right-click
   Home, Gallery, OneDrive, Network or Linux to take it out; **Settings › Defaults** brings it back. Opening a folder
-  doesn't unfold the tree down to it (File Explorer's *Expand to open folder*, in **Settings › Defaults**).
+  doesn't unfold the tree down to it (File Explorer's *Expand to open folder*, in **Settings › Defaults**). Cloud
+  drives File Explorer shows there (Dropbox, Google Drive, iCloud Drive, a work OneDrive) and your linked phone come
+  after OneDrive, as in File Explorer.
+- **Up** selects the folder you came from; **Back** and **Forward** select the item that was selected when you left,
+  and their tooltips name where they go. A folder they select that way doesn't narrow a search: it still looks in the
+  open folder until you change the selection. Press **Back** to close a search and **Forward** brings its results back.
+- Right-click a folder, in the file view or the navigation pane, for **Open in new tab**, or middle-click it in the
+  navigation pane: it opens in a new tab behind the one you're on. Double-click a shortcut to a folder and it opens in
+  the same tab (**Back** returns).
+- The command bar's **View** marks the folder's layout, and **`Ctrl+Shift+1`** … **`Ctrl+Shift+8`** switch it, Extra
+  large icons to Content, as in File Explorer. **Sort** lists the folder's own columns (Date deleted in the Recycle
+  Bin, Album in a music folder), with the current one and its direction checked; **More...** picks other columns.
+  **Extract all** shows for a selected ZIP (and 7z, RAR, TAR and the other archives this Windows opens) and inside
+  one, and runs Windows' own extraction.
+- With several files selected, the status bar shows their total size, without opening or downloading any.
+- **New folder** (`Ctrl+Shift+N`) gets Windows' own name in your language, is ready to rename, and can be undone; it
+  works in libraries too.
+- The address bar remembers the folders you type. The arrow at its right end (or **`Alt+↓`** while typing, or **`F4`**
+  again) lists them, then File Explorer's own typed addresses; they are suggested as you type too. Right-click the bar
+  for **Delete history** (also in **Settings › General**).
+- Folders you browse in Rock Preview count toward File Explorer's **Frequent folders** and its jump list too.
 - Right-click the taskbar button for the 15 folders and files you opened lately, the newest at the bottom.
-- Close the last tab and the next time Rock Preview opens (`Alt+X`, the tray) it starts at This PC, its drives showing.
+- Close the last tab and the next time Rock Preview opens (`Alt+X`, the tray) it starts where File Explorer's *Open
+  File Explorer to* says (Home, This PC, Downloads or OneDrive).
+- Close Rock Preview while a copy, move or delete it started is still running and that finishes first: the program
+  ends once it's done, and an update waits for it.
+- Running as administrator, Windows doesn't let other apps drop files on Rock Preview; a bar says so the first time.
 - The address bar runs what isn't a place in the open folder, as File Explorer's does: `cmd`, `powershell`, `wt`,
   `notepad notes.txt`; a web address opens in the browser.
 - Right-click a file: **Open**, then **Open file location** (in search results), then **Open with**.
@@ -167,7 +211,7 @@ documents; the first pass takes about 2 minutes in the background"):
 ### Tabs
 Like Windows 11 File Explorer, one window holds several folders and searches as tabs along the top:
 
-- **`Ctrl+T`** or **+** opens a tab at Home; **`Ctrl+W`**, the tab's **×** or a middle click closes it (closing the
+- **`Ctrl+T`** or **+** opens a tab where File Explorer's *Open File Explorer to* says (Home unless you changed it); **`Ctrl+W`**, the tab's **×** or a middle click closes it (closing the
   last tab closes the window). **`Ctrl+Tab`** / **`Ctrl+Shift+Tab`** move between tabs, and tabs can be dragged into
   another order.
 - Each tab keeps its own folder, Back/Forward history, search, results, sort and Thumbnails view. Switching is instant:
@@ -178,6 +222,9 @@ Like Windows 11 File Explorer, one window holds several folders and searches as 
   moves as it is: its folder, Back/Forward, selection and scroll position, search and results, without loading again.
 - Right-click a tab to duplicate it, open its folder in a new window, move the tab itself to a new window, or close
   the others. Right-click folders in the search results to open them in new tabs.
+- **`Ctrl+N`** opens a new window on the current tab's folder (the folder being searched, while results show),
+  maximised when this one is, otherwise a little below and to the right of it. A minimised window that comes back
+  (`Alt+X`, the tray, Win+E) comes back maximised if it was.
 - Folders opened from Windows (when Rock Preview replaces File Explorer) and **Win+E** open as a new tab in
   the window you used last. **Settings › General › Open folders in tabs** turns that off for a new window each time.
 - Drag files onto a tab and hold them there: the tab opens, to drop them in its folder. Let go on the tab itself and
@@ -195,6 +242,7 @@ Like Windows 11 File Explorer, one window holds several folders and searches as 
 | Other | Archives (ZIP, 7z, RAR…), fonts, executables, certificates, and a hex view for anything else |
 
 Office and other installed shell preview handlers are hosted in place; embedded thumbnails are used where a format has one.
+Videos and songs are opened only when you press **Play**, so the one selected can still be deleted, renamed or moved.
 
 ### Thumbnails
 Press **Thumbnails** (or `Ctrl+Shift+X`) to see files as pictures:
@@ -273,7 +321,7 @@ click from the app's **Settings › About › Uninstall** (or from Windows' **Se
 start with Windows and the instant-indexing service go, folders and Win+E go back to File Explorer, and your settings and
 search index stay unless you tick *Also delete my Rock Preview settings and search index*. Windows may also ask
 for permission (to remove the service, or an install for everyone). If another account on this PC still uses it in place
-of File Explorer, or its settings can't be checked, it says so and removes nothing until that account turns it off (a
+of File Explorer (signed in or not), or its settings can't be checked, it says so and removes nothing until that account turns it off (a
 local account that was deleted from this PC doesn't count; for an account Windows can't name that your organization
 has confirmed is gone, an administrator can delete its profile instead). In a portable copy run while Rock Preview is
 also installed, Uninstall removes the installed copy and leaves what the portable copy set up for itself,
@@ -339,12 +387,18 @@ The [Microsoft Store version](#microsoft-store-version-coming-soon) doesn't do a
 | `Ctrl+W` | Close the tab (the last one closes the window) |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
 | `Ctrl+F` / `Ctrl+E` | Search |
-| `Ctrl+L`, `Alt+D`, `F4` | Type a path in the address bar |
-| `Alt+←` / `Alt+→` / `Alt+↑` | Back / Forward / Up |
+| `Ctrl+L`, `Alt+D`, `F4` | Type a path in the address bar (`F4` or `Alt+↓` while typing lists the addresses typed before) |
+| `Alt+↓` in the search box | Earlier searches |
+| `Alt+←` / `Alt+→` / `Alt+↑` | Back / Forward / Up (the mouse's Back and Forward buttons too) |
 | `Alt+P` | Show or hide the preview pane |
 | `Ctrl+Shift+X` | Thumbnails: the search results, or every file in the folder and its subfolders |
 | `Ctrl+Shift+Z` | Every file in the folder and its subfolders, as a list |
 | `Ctrl+Shift+N` | New folder |
+| `F2` | Rename (in place, for one search result; `Tab` goes on to the next) |
+| `Delete` / `Shift+Delete` | Move to the Recycle Bin / delete for good |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo the last file operation (in the search box, `Ctrl+Z` undoes typing) |
+| `Ctrl+Shift+C` | Copy as path: the selected items' full paths, in quotes |
+| `Ctrl+Shift+1` … `Ctrl+Shift+8` | Folder layout: Extra large, Large, Medium, Small icons, List, Details, Tiles, Content (in search results `1` `2` `3` are thumbnail sizes, `6` Details) |
 | `Alt+Enter` | Properties |
 | `Ctrl+P` | Print the selected files |
 | `F5` | Refresh |
@@ -352,7 +406,7 @@ The [Microsoft Store version](#microsoft-store-version-coming-soon) doesn't do a
 | `Ctrl+1` … `Ctrl+8`, `Ctrl+9` | Sort by Name, Path, Size, Extension, Type, Date Modified, Date Created, Attributes; Date Recently Changed |
 | `Ctrl+D` | Bookmark the current search |
 | `Ctrl+,` | Settings (also the gear on the command bar; its arrow has the rest of Explorer's **⋯** menu) |
-| `Ctrl+N` | New window |
+| `Ctrl+N` | New window, on the current folder |
 | `Esc` | Clear the search / back to the folder |
 | `F1` | Search syntax help |
 
@@ -392,7 +446,8 @@ Press `F1` in the app for the complete reference.
 ```text
 RockPreview.exe [search text]        open with a search
 RockPreview.exe -path "D:\Projects"  open a folder
-RockPreview.exe -explorer [-path X]  a new tab in the window used last, like File Explorer (at X, or Home)
+RockPreview.exe -explorer [-path X]  a new tab in the window used last, like File Explorer (at X, or where it opens)
+RockPreview.exe /select,"D:\a.pdf"   open the item's folder with it selected (also -select <path>)
 RockPreview.exe -admin               restart elevated (instant NTFS index)
 RockPreview.exe -startup             start in the background
 RockPreview.exe -exit                close the running instance

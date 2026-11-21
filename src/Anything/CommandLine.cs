@@ -6,6 +6,8 @@ internal sealed class CommandLine
     public string? Search { get; set; }
     /// <summary>-path / -browse: open this folder in the Explorer view.</summary>
     public string? Path { get; set; }
+    /// <summary>-select / File Explorer's /select,: open this item's folder with the item selected (wins over Path).</summary>
+    public string? Select { get; set; }
     public bool Startup { get; set; }
     public bool NewWindow { get; set; }
     public bool Admin { get; set; }
@@ -25,6 +27,11 @@ internal sealed class CommandLine
         for (int i = 0; i < args.Count; i++)
         {
             string a = args[i];
+            if (Anything.Core.ItemSelection.TryRead(args, ref i, out var select))
+            {
+                if (select is not null) c.Select = FullPath(select);
+                continue;
+            }
             string key = a.TrimStart('-', '/').ToLowerInvariant();
             if (a.Length == 0 || (a[0] != '-' && a[0] != '/'))
             {
@@ -64,6 +71,7 @@ internal sealed class CommandLine
         if (Demo) l.Add("--demo");
         if (Search is not null) { l.Add("-search"); l.Add(Search); }
         if (Path is not null) { l.Add("-path"); l.Add(Path); }
+        if (Select is not null) { l.Add("-select"); l.Add(Select); }
         if (Startup) l.Add("-startup");
         if (NewWindow) l.Add("-newwindow");
         if (Explorer) l.Add("-explorer");
@@ -77,6 +85,17 @@ internal sealed class CommandLine
     /// argument arrives as C:" — turn it back into C:\.
     /// </summary>
     static string RepairQuotedPath(string path) => path.EndsWith('"') ? path[..^1].TrimEnd() + "\\" : path;
+
+    /// <summary>
+    /// A relative path ("file.txt") belongs to the folder this process was started in, which the running copy it is
+    /// forwarded to doesn't know: made full here. "shell:" names and the like are left as they are.
+    /// </summary>
+    static string FullPath(string path)
+    {
+        if (System.IO.Path.IsPathRooted(path) || path.Contains(':')) return path;
+        try { return System.IO.Path.GetFullPath(path); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.IO.PathTooLongException) { return path; }
+    }
 
     public static string Quote(IEnumerable<string> args) => string.Join(' ', args.Select(QuoteOne));
 

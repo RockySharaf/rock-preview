@@ -39,7 +39,7 @@ internal sealed class InputDialog : DialogBase
 {
     readonly TextBox _text = new() { Dock = DockStyle.Top, Margin = new Padding(0) };
 
-    InputDialog(string title, string prompt, string value, int selectLength) : base(title)
+    InputDialog(string title, string prompt, string value, int selectLength, bool fileName) : base(title)
     {
         SuspendLayout();
         var body = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 12, 12, 4) };
@@ -47,6 +47,7 @@ internal sealed class InputDialog : DialogBase
         body.Controls.Add(_text);
         body.Controls.Add(label);
         _text.Text = value;
+        if (fileName) FileNameFilter.Attach(_text); // characters a name can't hold are refused as typed, as in Explorer
         Controls.Add(body);
         Controls.Add(Buttons);
         AddButton("Cancel", DialogResult.Cancel);
@@ -61,9 +62,9 @@ internal sealed class InputDialog : DialogBase
         };
     }
 
-    public static string? Show(IWin32Window owner, string title, string prompt, string value, int selectLength)
+    public static string? Show(IWin32Window owner, string title, string prompt, string value, int selectLength, bool fileName = false)
     {
-        using var d = new InputDialog(title, prompt, value, selectLength);
+        using var d = new InputDialog(title, prompt, value, selectLength, fileName);
         return d.ShowDialog(owner) == DialogResult.OK ? d._text.Text : null;
     }
 }
@@ -243,6 +244,36 @@ internal sealed class SearchSyntaxForm : Form
 
         Search menu toggles (Ctrl+I case, Ctrl+B whole word, Ctrl+U path, Ctrl+M diacritics, Ctrl+R regex,
         Match inside files) apply to the whole search; modifiers override them per term.
+
+        KEYS
+          Alt+Down                   In the search box: earlier
+                                     searches (Delete forgets the
+                                     highlighted one)
+          F2                         Rename; one search result is
+                                     renamed in place (Enter keeps the
+                                     name, Esc leaves it, Tab goes on
+                                     to the next item, F2 again selects
+                                     all, then the extension)
+          Delete  Shift+Delete       To the Recycle Bin / delete for
+                                     good (Windows asks as the Recycle
+                                     Bin says)
+          Ctrl+Shift+C               Copy as path: each selected item's
+                                     full path in quotes, one per line
+          Ctrl+Z  Ctrl+Y             Undo / redo the last file
+                                     operation (in the search box,
+                                     Ctrl+Z undoes typing)
+          F4  Alt+D  Ctrl+L          Type an address; F4 or Alt+Down
+                                     while typing lists the addresses
+                                     typed before
+          Alt+Left  Alt+Right  Alt+Up
+                                     Back / Forward / Up
+          Ctrl+N                     A new window on the current folder
+          Ctrl+Shift+N               New folder
+          Ctrl+Shift+1 .. 8          Folder layout: extra large, large,
+                                     medium, small icons, list,
+                                     details, tiles, content; in search
+                                     results 1, 2, 3 are thumbnail
+                                     sizes and 6 is details
         """;
 
     SearchSyntaxForm()

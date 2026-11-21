@@ -286,6 +286,7 @@ internal sealed partial class NavigationTree : Control
                 if (!hasHome) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, null, QuickAccessFilter(flags), QuickAccessGuid);
                 if (!Hidden("gallery")) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, "gallery", IntPtr.Zero, GalleryGuid);
                 if (!Hidden("onedrive")) AddRoot(flags, NSTCROOTSTYLE.VISIBLE, "onedrive", IntPtr.Zero, "shell:OneDrive");
+                AddProviderRoots(flags); // other cloud storage and a linked phone, as Explorer lists them after OneDrive
                 _group0 = _roots.Skip(first).Select(r => ShellNative.NameOf(r, SIGDN.NormalDisplay) ?? "").ToArray();
                 if (hasHome) AddRoot(flags, NSTCROOTSTYLE.HIDDEN | NSTCROOTSTYLE.EXPANDED, null, QuickAccessFilter(flags), QuickAccessGuid);
             }
@@ -1119,6 +1120,17 @@ internal sealed partial class NavigationTree : Control
         // S_FALSE / E_NOTIMPL = "not handled": the tree does its default (select, expand, menus, rename...).
         public int OnItemClick(IntPtr psi, NSTCEHITTEST nstceHitTest, NSTCECLICKTYPE nstceClickType)
         {
+            // A middle-click on a row opens it in a new tab, as in File Explorer: handled here, so the tree doesn't select
+            // the row and the tab showing stays where it is. On empty space or a chevron it is the tree's as before.
+            var middle = Anything.Core.FolderTabs.ForPaneClick((uint)nstceClickType, (uint)nstceHitTest);
+            if (middle != Anything.Core.MiddleClick.None)
+            {
+                if (middle == Anything.Core.MiddleClick.OpenInNewTab)
+                {
+                    try { host.OpenInNewTab(TabLocationOf(psi)); } catch (Exception) { }
+                }
+                return NavTreeNative.S_OK;
+            }
             host._lastInputTicks = Environment.TickCount64;
             host._lastInputWasKey = false;
             try { host.OnTreeItemClick(NameOfItem(psi), nstceHitTest, nstceClickType); } catch (Exception) { }
@@ -1178,7 +1190,8 @@ internal sealed partial class NavigationTree : Control
 
         public int OnAfterContextMenu(IntPtr psi, IntPtr pcmIn, ref Guid riid, out IntPtr ppv)
         {
-            // A root that can be taken out gets "Remove from navigation pane"; any other item keeps pcmIn unchanged.
+            // A folder gets "Open in new tab", a root that can be taken out "Remove from navigation pane"; any other item
+            // keeps pcmIn unchanged.
             ppv = IntPtr.Zero;
             try { ppv = host.WrapRootMenu(psi, pcmIn, ref riid); } catch (Exception) { }
             return ppv != IntPtr.Zero ? NavTreeNative.S_OK : NavTreeNative.E_NOTIMPL;

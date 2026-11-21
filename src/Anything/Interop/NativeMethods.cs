@@ -155,6 +155,44 @@ internal static class Native
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool ImageList_Draw(IntPtr himl, int i, IntPtr hdcDst, int x, int y, uint fStyle);
 
+    /// <summary>IMAGELISTDRAWPARAMS (CommCtrl.h, with the _WIN32_IE >= 0x0501 fields).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct IMAGELISTDRAWPARAMS
+    {
+        public int cbSize;
+        public IntPtr himl;
+        public int i;
+        public IntPtr hdcDst;
+        public int x, y, cx, cy, xBitmap, yBitmap;
+        public uint rgbBk, rgbFg, fStyle, dwRop, fState, Frame, crEffect;
+    }
+
+    public const uint ILS_ALPHA = 0x00000008, CLR_NONE = 0xFFFFFFFF, CLR_DEFAULT = 0xFF000000;
+
+    [DllImport("comctl32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ImageList_DrawIndirect(ref IMAGELISTDRAWPARAMS pimldp);
+
+    /// <summary>Draws an image list's icon at <paramref name="alpha"/> (0-255) of its strength: a cut item's, as Explorer dims it.</summary>
+    public static bool ImageList_DrawFaded(IntPtr himl, int i, IntPtr hdc, int x, int y, byte alpha)
+    {
+        var p = new IMAGELISTDRAWPARAMS
+        {
+            cbSize = Marshal.SizeOf<IMAGELISTDRAWPARAMS>(),
+            himl = himl,
+            i = i,
+            hdcDst = hdc,
+            x = x,
+            y = y,
+            rgbBk = CLR_NONE,
+            rgbFg = CLR_DEFAULT,
+            fStyle = ILD_TRANSPARENT,
+            fState = ILS_ALPHA,
+            Frame = alpha,
+        };
+        return ImageList_DrawIndirect(ref p);
+    }
+
     [DllImport("comctl32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool ImageList_GetIconSize(IntPtr himl, out int cx, out int cy);
@@ -184,6 +222,51 @@ internal static class Native
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
+
+    /// <summary>The window's thread isn't answering messages (Windows' "Not responding").</summary>
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsHungAppWindow(IntPtr hwnd);
+
+    // WINDOWPLACEMENT (WinUser.h): UINT length, flags, showCmd; POINT ptMinPosition, ptMaxPosition; RECT rcNormalPosition.
+    [StructLayout(LayoutKind.Sequential)]
+    struct WINDOWPLACEMENT
+    {
+        public int length;
+        public uint flags, showCmd;
+        public POINT ptMinPosition, ptMaxPosition;
+        public int left, top, right, bottom;
+    }
+
+    const uint WPF_RESTORETOMAXIMIZED = 0x0002;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT lpwndpl);
+
+    /// <summary>A minimized window that comes back maximized when restored.</summary>
+    public static bool RestoresToMaximized(IntPtr hwnd)
+    {
+        var wp = new WINDOWPLACEMENT { length = Marshal.SizeOf<WINDOWPLACEMENT>() };
+        return GetWindowPlacement(hwnd, ref wp) && (wp.flags & WPF_RESTORETOMAXIMIZED) != 0;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    public const int SW_RESTORE = 9;
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

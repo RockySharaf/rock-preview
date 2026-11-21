@@ -105,6 +105,50 @@ public class SearchEngineTests : SearchTestBase
     }
 
     [Fact]
+    public void Whole_word_needs_a_boundary_only_where_the_term_starts_or_ends_with_a_letter_or_digit()
+    {
+        const string Invoice = @"E:\invoice.pdf", Final = @"E:\report_final.docx", Inv = @"E:\inv-2024.pdf", Copy = @"E:\scan(1).png";
+        const string Concat = @"E:\concatenate.txt", Cat = @"E:\cat.txt", Meeting = @"E:\会议记录2024.docx", Excel = @"E:\Excelファイル.xlsx";
+        foreach (var f in new[] { Invoice, Final, Inv, Copy, Concat, Cat, Meeting, Excel }) Tree.File(f, 1);
+        var ww = new SearchOptions { MatchWholeWord = true };
+
+        AssertFinds(".pdf", ww, Invoice, Inv);
+        AssertFinds("_final", ww, Final);
+        AssertFinds("-2024", ww, Inv);
+        AssertFinds("(1)", ww, Copy);
+        AssertFinds("会议", ww, Meeting);
+        AssertFinds("excel", ww, Excel);
+        AssertFinds(@"e:\ .pdf", ww, Invoice, Inv); // the F1 help's "c:\projects\ .cs" pattern
+        // A term that starts and ends with a letter still needs boundaries on both sides.
+        AssertFinds("cat", ww, Cat);
+        AssertFinds("voice", ww);
+        AssertFinds("2024", ww, Inv, Meeting); // Chinese runs straight into the digits, with no space
+        AssertFinds("inv", ww, Inv);
+    }
+
+    [Fact]
+    public void Whole_word_needs_no_boundary_only_in_scripts_written_without_spaces()
+    {
+        const string HebrewWord = @"E:\של.txt", HebrewLonger = @"E:\שלום.txt", ArabicWord = @"E:\من.txt", ArabicLonger = @"E:\منزل.txt";
+        const string Super = @"E:\スーパー2024.pdf", Market = @"E:\スーパーmarket.png", Coffee = @"E:\コーヒー1.jpg";
+        const string Thai = @"E:\สวัสดีครับ.txt", Korean = @"E:\회의록2024.docx", Chinese = @"E:\会议记录.docx";
+        foreach (var f in new[] { HebrewWord, HebrewLonger, ArabicWord, ArabicLonger, Super, Market, Coffee, Thai, Korean, Chinese }) Tree.File(f, 1);
+        var ww = new SearchOptions { MatchWholeWord = true };
+
+        // Hebrew and Arabic are written with spaces: a term inside a longer word is not a whole word.
+        AssertFinds("של", ww, HebrewWord);
+        AssertFinds("من", ww, ArabicWord);
+        AssertFinds("של", HebrewWord, HebrewLonger);
+        // Japanese (with the long-vowel mark at the edge), Chinese, Thai and Korean need no boundary.
+        AssertFinds("スーパー", ww, Super, Market);
+        AssertFinds("コーヒー", ww, Coffee);
+        AssertFinds("记录", ww, Chinese);
+        AssertFinds("สวัสดี", ww, Thai);
+        AssertFinds("회의", ww, Korean);
+        AssertFinds("market", ww, Market);
+    }
+
+    [Fact]
     public void Regex_terms_and_errors()
     {
         AssertFinds("regex:^song", Song, SongTwo);
@@ -452,7 +496,8 @@ public class SearchEngineTests : SearchTestBase
 
         // The query itself keeps the window's options.
         AssertFinds("song", strict with { Filter = @"""c:\music\""" }, Song);
-        AssertFinds(@"""C:\Docs\""", new SearchOptions { MatchWholeWord = true });
+        // Whole words need no boundary after a trailing backslash, so a typed folder finds what is in it.
+        AssertFinds(@"""C:\Docs\""", new SearchOptions { MatchWholeWord = true }, @"C:\Docs\Archive", Report, Notes, OldZip, Notes2);
         AssertFinds(@"""c:\DOCS\""", new SearchOptions { MatchCase = true });
         AssertFinds(@"""C:\Docs\""", new SearchOptions { MatchCase = true }, @"C:\Docs\Archive", Report, Notes, OldZip, Notes2);
     }

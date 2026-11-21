@@ -295,7 +295,7 @@ internal sealed partial class AnythingApp : ApplicationContext
     {
         if (_exiting) return;
         if (cmd.Exit) { ExitApp(); return; }
-        if (cmd.Startup && cmd.Search is null && cmd.Path is null && !cmd.NewWindow && !cmd.Explorer)
+        if (cmd.Startup && cmd.Search is null && cmd.Path is null && cmd.Select is null && !cmd.NewWindow && !cmd.Explorer)
         {
             if (initial) return; // start hidden in the tray
         }
@@ -309,23 +309,25 @@ internal sealed partial class AnythingApp : ApplicationContext
                 ShowWindow(recent);
                 return;
             }
-            var ew = CreateWindow(_windows.Count > 0 ? _lastActive : null);
+            // Placed from a window on screen; with none (all closed into the background), on the monitor it was opened on.
+            var ew = CreateWindow(RecentWindow());
             ew.OpenAsExplorer(cmd.Path);
             ShowWindow(ew);
             return;
         }
         MainForm w = cmd.NewWindow && _windows.Count > 0 && !initial
-            ? CreateWindow(_lastActive)
+            ? CreateWindow(RecentWindow())
             : _lastActive ?? _windows.LastOrDefault() ?? CreateWindow(null);
-        if (cmd.Path is null) FreshIfClosed(w);
+        if (cmd.Path is null && cmd.Select is null) FreshIfClosed(w);
         if (cmd.Search is not null) w.SetSearch(cmd.Search);
         ShowWindow(w);
-        if (cmd.Path is not null) w.BrowseTo(cmd.Path);
+        if (cmd.Select is not null) w.ShowItem(cmd.Select); // -select / explorer's /select,: the folder with the item selected
+        else if (cmd.Path is not null) w.BrowseTo(cmd.Path);
     }
 
     /// <summary>
-    /// A window whose last tab was closed (nothing left open in it) comes back as a new one opens: one tab at This PC, its
-    /// drives showing. Closed with its own ×, or hidden by the hotkey, it comes back as it was.
+    /// A window whose last tab was closed (nothing left open in it) comes back as a new one opens: one tab where File
+    /// Explorer opens ("Open File Explorer to"). Closed with its own ×, or hidden by the hotkey, it comes back as it was.
     /// </summary>
     static void FreshIfClosed(MainForm w)
     {
@@ -337,10 +339,14 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// <summary>The window used last among those on screen (a window closed into the background doesn't count).</summary>
     MainForm? RecentWindow() => _lastActive is { Visible: true, IsDisposed: false } w ? w : _windows.LastOrDefault(x => x.Visible);
 
+    /// <summary>A window was made already in this run: the next one isn't the app starting (it opens on the monitor it was opened on).</summary>
+    public bool MadeAWindow { get; private set; }
+
     /// <summary>A new window, like <paramref name="source"/>; with <paramref name="tab"/>, for that tab from <paramref name="source"/> (not shown yet).</summary>
     public MainForm CreateWindow(MainForm? source, MainForm.FolderTab? tab = null)
     {
         var w = new MainForm(this, source, tab);
+        MadeAWindow = true;
         _windows.Add(w);
         w.Activated += (_, _) => _lastActive = w;
         w.FormClosed += (_, _) =>
@@ -353,17 +359,39 @@ internal sealed partial class AnythingApp : ApplicationContext
         return w;
     }
 
-    public void NewWindow(MainForm? source) => ShowWindow(CreateWindow(source));
+    /// <summary>A new window (Ctrl+N), on the folder of <paramref name="source"/>'s active tab, as Explorer's Ctrl+N.</summary>
+    public void NewWindow(MainForm? source)
+    {
+        if (source is { IsDisposed: false }) source.OpenInNewWindow();
+        else ShowWindow(CreateWindow(null));
+    }
 
     public void ShowWindow(MainForm w)
     {
         if (!w.Visible) w.Show();
-        if (w.WindowState == FormWindowState.Minimized) w.WindowState = FormWindowState.Normal;
+        // SW_RESTORE, not WindowState = Normal: a window minimized from maximized comes back maximized, as Explorer's do.
+        if (Native.IsIconic(w.Handle)) Native.ShowWindow(w.Handle, Native.SW_RESTORE);
         w.Activate();
-        Native.SetForegroundWindow(w.Handle);
+        BringToFront(w.Handle);
         w.FocusSearch(selectAll: true);
         _lastActive = w;
         ShowWelcomeOnce();
+    }
+
+    /// <summary>
+    /// Puts a window in front. Windows can refuse when the request came from the background (a second launch, Win+E):
+    /// then, for that call only, the app shares input with the window in front, which lets it take the foreground.
+    /// </summary>
+    static void BringToFront(IntPtr hwnd)
+    {
+        if (Native.SetForegroundWindow(hwnd) || Native.GetForegroundWindow() == hwnd) return;
+        IntPtr fg = Native.GetForegroundWindow();
+        // Sharing input with a window that isn't responding would hang this app's windows until it answers.
+        if (fg == IntPtr.Zero || Native.IsHungAppWindow(fg)) return;
+        uint front = Native.GetWindowThreadProcessId(fg, out _), self = Native.GetCurrentThreadId();
+        if (front == 0 || front == self || !Native.AttachThreadInput(self, front, true)) return;
+        try { Native.SetForegroundWindow(hwnd); }
+        finally { Native.AttachThreadInput(self, front, false); }
     }
 
     /// <summary>The last window, in front with its search box focused; <paramref name="everything"/> (Alt+X) = ready to search everything.</summary>
@@ -502,7 +530,7 @@ internal sealed partial class AnythingApp : ApplicationContext
             var show = new ToolStripMenuItem("&Search Rock Preview...", null, (_, _) => ShowSearchWindow(everything: true)) { ShortcutKeyDisplayString = ActiveHotkey };
             show.Font = new Font(show.Font, FontStyle.Bold);
             menu.Items.Add(show);
-            menu.Items.Add(new ToolStripMenuItem("&New Search Window", null, (_, _) => NewWindow(_lastActive)));
+            menu.Items.Add(new ToolStripMenuItem("&New Search Window", null, (_, _) => ShowWindow(CreateWindow(_lastActive)))); // the search box focused, as before Ctrl+N's folder window
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("&Settings...", null, (_, _) => ShowSettings(null)));
             menu.Items.Add(new ToolStripMenuItem("", null, (_, _) => { if (CanUpdateInApp) UpdateNow(); else OpenReleasePage(); }) { Name = "update", Visible = false });
@@ -775,6 +803,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         if (!UpdatesItself || _exiting || NewVersion is null || UpdateProgress is not null) return;
         if (UpdateError is not null && _autoUpdateTried == NewVersion) return; // it didn't work for this version: Update now in the bar
         if (_windows.Any(w => w.Visible)) return; // in use: when its windows are closed, or tonight
+        if (ShellProcessReference.Busy) return; // a copy from the folder view still going: the next hourly look tries again
         _autoUpdateTried = NewVersion;
         UpdateNow(background: true, unattended: true);
     }
@@ -841,6 +870,7 @@ internal sealed partial class AnythingApp : ApplicationContext
             return;
         }
         if (Settings.LastScheduledUpdate >= slot) return;
+        if (ShellProcessReference.Busy) return; // a copy from the folder view still going (overnight): the next minute's look tries again
         _nightlyBusy = true;
         try
         {
@@ -1176,7 +1206,7 @@ internal sealed partial class AnythingApp : ApplicationContext
             ShowWindow(recent);
             return;
         }
-        var w = CreateWindow(_windows.Count > 0 ? _lastActive : null);
+        var w = CreateWindow(RecentWindow());
         w.OpenAsExplorer(root);
         ShowWindow(w);
     }

@@ -60,11 +60,16 @@ internal sealed partial class MainForm
         {
             g.SetClip(cell, System.Drawing.Drawing2D.CombineMode.Intersect);
             using (var bg = new SolidBrush(_list.BackColor)) g.FillRectangle(bg, cell);
-            if (!selected) return;
-            bool focusedRow = _list.Focused && _list.FocusCuesShown && _list.FocusedItem?.Index == index;
-            var (back, border, _) = SelectionColors(_list.Focused, focusedRow);
             var box = new Rectangle(row.Left + _list.RowMargin, row.Top + _list.RowGapTop, Math.Max(1, row.Width - _list.RowMargin),
                 Math.Max(1, row.Height - _list.RowGapTop - _list.RowGapBottom));
+            if (!selected)
+            {
+                // The row under the pointer, as in Explorer (a selected one keeps its selected look).
+                if (index == _list.HotIndex) using (var hover = new SolidBrush(ExplorerTheme.Hover)) g.FillRectangle(hover, box);
+                return;
+            }
+            bool focusedRow = _list.Focused && _list.FocusCuesShown && _list.FocusedItem?.Index == index;
+            var (back, border, _) = SelectionColors(_list.Focused, focusedRow);
             using (var fill = new SolidBrush(back)) g.FillRectangle(fill, box);
             using (var pen = new Pen(border)) g.DrawRectangle(pen, box.X, box.Y, box.Width - 1, box.Height - 1);
         }
@@ -145,7 +150,13 @@ internal sealed partial class MainForm
             if (row.Icon >= 0 && ShellInfo.SmallImageList != IntPtr.Zero && cell.Width > isz.Width + pad)
             {
                 IntPtr hdc = g.GetHdc();
-                try { Native.ImageList_Draw(ShellInfo.SmallImageList, row.Icon, hdc, textLeft, cell.Top + (cell.Height - isz.Height) / 2, Native.ILD_TRANSPARENT); }
+                try
+                {
+                    int iconTop = cell.Top + (cell.Height - isz.Height) / 2;
+                    // A cut item's icon at half strength until it is pasted, as in Explorer.
+                    if (!IsCut(row) || !Native.ImageList_DrawFaded(ShellInfo.SmallImageList, row.Icon, hdc, textLeft, iconTop, 128))
+                        Native.ImageList_Draw(ShellInfo.SmallImageList, row.Icon, hdc, textLeft, iconTop, Native.ILD_TRANSPARENT);
+                }
                 finally { g.ReleaseHdc(hdc); }
             }
             textLeft += isz.Width + pad;

@@ -70,6 +70,7 @@ static class Program
 
             ApplicationConfiguration.Initialize();
             Application.OleRequired(); // drag and drop: Windows' folder view and navigation pane register their drop targets as they start
+            ShellProcessReference.Register(); // a copy started in the folder view runs on in this process: exit waits for it
             AppSettings.MigrateFromAnything(cmd.Demo); // the app used to be called "Anything"
             // Theme must be chosen before any window exists; the full settings load happens in AnythingApp.Create.
             Application.SetColorMode(AppSettings.ColorModeFor(AppSettings.Load(AppSettings.DefaultPath(cmd.Demo)).Theme));
@@ -100,18 +101,23 @@ static class Program
     /// it is being unloaded, and by then Windows has ended the process's other threads: AMD's graphics driver
     /// (atidxx64.dll) then reads freed memory and the app crashes as it closes, and Windows' crash report holds the
     /// program file for a minute (an update in that minute couldn't replace it). The app has nothing left to do at that
-    /// point: pinned folders still being put in order are waited for (that thread is the only one exit waits for).
+    /// point: pinned folders still being put in order are waited for, and so is the shell's work in the process (a copy,
+    /// move or delete started in the folder view, which would otherwise stop mid-file).
     /// </summary>
     static void EndWithoutUnloading()
     {
+        // The app has closed: an error from a late callback run while this waits is logged, never shown (a box out of
+        // nowhere after the app has gone would look like a crash, and its window would keep the wait going).
+        Volatile.Write(ref s_exiting, 1);
         Explorer.QuickAccessPins.WaitForMoves(TimeSpan.FromSeconds(30));
+        ShellProcessReference.WaitForShellWork();
         TerminateProcess(GetCurrentProcess(), 0);
     }
 
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process, uint exitCode);
 
-    static int s_reporting;
+    static int s_reporting, s_exiting;
 
     /// <summary>Logs to %LOCALAPPDATA%\Rock Preview\error.log and tells the user; UI-thread errors are survivable.</summary>
     static void ReportError(Exception ex, bool fatal)
@@ -123,6 +129,7 @@ static class Program
             File.AppendAllText(Path.Combine(dir, "error.log"), $"[{DateTime.Now:O}] {(fatal ? "FATAL " : "")}{ex}\r\n\r\n");
         }
         catch { }
+        if (Volatile.Read(ref s_exiting) != 0) return;
         if (Interlocked.Exchange(ref s_reporting, 1) != 0) return;
         try
         {

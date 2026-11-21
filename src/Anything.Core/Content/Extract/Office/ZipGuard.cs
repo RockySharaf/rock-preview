@@ -526,19 +526,35 @@ internal static class OfficeXml
     /// <summary>
     /// A reader over a part, DTDs prohibited, no resolver, comments and processing instructions ignored; the bytes pass an
     /// <see cref="XmlShape"/> first, so nesting and tag length are capped in every walk over the part, and its names are
-    /// capped by a <see cref="CappedNameTable"/>.
+    /// capped by a <see cref="CappedNameTable"/>. With <paramref name="ignoreWhitespace"/>, whitespace between elements isn't
+    /// reported (as XDocument.Load leaves it out of a tree by default; the preview's renderers load parts this way).
+    /// <paramref name="maxCharacters"/> caps the characters read from the part (0 = no cap); the indexer keeps the default.
     /// </summary>
-    public static XmlReader Create(Stream stream) => XmlReader.Create(new XmlShapeStream(stream), new XmlReaderSettings
+    public static XmlReader Create(Stream stream, bool ignoreWhitespace = false, long maxCharacters = 64L << 20) => XmlReader.Create(new XmlShapeStream(stream), new XmlReaderSettings
     {
         DtdProcessing = DtdProcessing.Prohibit,
         XmlResolver = null,
-        MaxCharactersInDocument = 64L << 20,
+        MaxCharactersInDocument = maxCharacters,
         IgnoreComments = true,
         IgnoreProcessingInstructions = true,
+        IgnoreWhitespace = ignoreWhitespace,
         CheckCharacters = false,
         CloseInput = true,
         NameTable = new CappedNameTable(),
     });
+
+    /// <summary>
+    /// A whole part loaded as a tree for the preview's renderers, through the same structural guards as <see cref="Create"/>
+    /// (nesting, tag length, names, DTDs; a refused part throws InvalidDataException), whitespace between elements left out
+    /// as XDocument.Load leaves it. No character cap: a real workbook's shared strings or a long document can be far past
+    /// the indexer's 64M, and the preview loaded them whole before. XElement.Value and the renderers' own walks recurse once
+    /// per level, so every tree the preview builds must come through here.
+    /// </summary>
+    public static System.Xml.Linq.XDocument LoadTree(Stream stream)
+    {
+        using var r = Create(stream, ignoreWhitespace: true, maxCharacters: 0);
+        return System.Xml.Linq.XDocument.Load(r, System.Xml.Linq.LoadOptions.None);
+    }
 
     /// <summary>Text, CDATA and whitespace nodes: the ones whose characters are content inside a text element.</summary>
     public static bool IsText(XmlNodeType type) => type is XmlNodeType.Text or XmlNodeType.CDATA or XmlNodeType.Whitespace or XmlNodeType.SignificantWhitespace;

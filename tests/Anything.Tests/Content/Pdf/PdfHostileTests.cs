@@ -274,6 +274,71 @@ public class PdfHostileTests
     }
 
     [Fact]
+    public async Task A_ToUnicode_range_with_a_destination_of_megabytes_keeps_each_glyph_short()
+    {
+        var w = W.SimpleDocument(W.Lines("Intro"));
+        // One bfrange over all 256 codes whose destination is 500,000 characters, shared by 8 simple fonts: before, each
+        // font kept a full copy per code (about 255 MB a font).
+        string destination = string.Concat(Enumerable.Repeat("0058", 499_999)) + "0041";
+        string cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap 1 begincodespacerange <00> <FF> endcodespacerange "
+            + "1 beginbfrange <00> <FF> <" + destination + "> endbfrange endcmap end end";
+        int toUnicode = w.AddStream("<< >>", Ascii(cmap), "Flate");
+        var fonts = Enumerable.Range(0, 8).Select(i => w.Add($"<< /Type /Font /Subtype /Type1 /BaseFont /Sample{i} /ToUnicode {toUnicode} 0 R >>")).ToList();
+        var content = new StringBuilder("BT /F1 12 Tf 72 700 Td (Intro) Tj ET\n");
+        for (int i = 0; i < fonts.Count; i++) content.Append($"BT /G{i} 12 Tf 72 {600 - 20 * i} Td <0102> Tj ET\n");
+        int stream = w.AddStream("<< >>", Ascii(content.ToString()));
+        string names = string.Join(' ', fonts.Select((id, i) => $"/G{i} {id} 0 R"));
+        w.Set(4, $"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R {names} >> >> /Contents {stream} 0 R >>");
+
+        var (doc, allocated) = await Bounded(w.Write());
+        Assert.Equal(DocStatus.Ok, doc.Status);
+        // Each code's text is the destination's first 64 characters with the last one moved on by the code.
+        Assert.Contains(new string('X', 63) + "Y" + new string('X', 63) + "Z", doc.Body);
+        Assert.DoesNotContain(new string('X', 65), doc.Body);
+        Assert.True(allocated < 64 << 20, $"allocated {allocated >> 20} MB");
+    }
+
+    [Fact]
+    public void A_glyph_text_cut_never_splits_a_surrogate_pair()
+    {
+        string text = new string('a', PdfCMap.MaxGlyphChars - 1) + "\U0001F600" + "tail";
+        string cut = PdfCMap.CapGlyph(text);
+        Assert.Equal(PdfCMap.MaxGlyphChars - 1, cut.Length);
+        Assert.Equal("short", PdfCMap.CapGlyph("short"));
+    }
+
+    [Fact]
+    public async Task A_choice_field_of_many_huge_values_is_cut_before_it_is_joined()
+    {
+        var w = W.SimpleDocument(W.Lines("Choices"));
+        // 256 references to one string of 4 million characters: joined whole, a string past .NET's longest (out of memory).
+        int big = w.Add("(" + new string('A', 4_000_000) + ")");
+        string refs = string.Join(' ', Enumerable.Repeat($"{big} 0 R", 256));
+        int widget = w.Add($"<< /Type /Annot /Subtype /Widget /FT /Ch /V [{refs}] /Rect [200 700 400 720] >>");
+        int single = w.Add($"<< /Type /Annot /Subtype /Widget /FT /Tx /V {big} 0 R /Rect [200 600 400 620] >>");
+        w.Set(4, $"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R /Annots [{widget} 0 R {single} 0 R] >>");
+
+        var (doc, allocated) = await Bounded(w.Write());
+        Assert.StartsWith("Choices\nAAAA", doc.Body);
+        // Two values of at most 65,536 characters each, and the line breaks between the blocks.
+        Assert.True(doc.Body.Length <= 2 * ExtractSink.MaxFieldChars * 16 + 16, $"body of {doc.Body.Length} characters");
+        Assert.True(allocated < 96 << 20, $"allocated {allocated >> 20} MB");
+    }
+
+    [Fact]
+    public async Task A_UTF16_field_value_keeps_all_of_its_characters_up_to_the_value_cap()
+    {
+        var w = W.SimpleDocument(W.Lines("Comment"));
+        // 40,000 Cyrillic characters in UTF-16 (80,000 bytes): a byte cut sized one byte a character kept only the first half.
+        string hex = "FEFF" + string.Concat(Enumerable.Repeat("0416", 40_000)) + "042F";
+        int widget = w.Add($"<< /Type /Annot /Subtype /Widget /FT /Tx /V <{hex}> /Rect [200 700 400 720] >>");
+        w.Set(4, $"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R /Annots [{widget} 0 R] >>");
+
+        var (doc, _) = await Bounded(w.Write());
+        Assert.Contains(new string('Ж', 40_000) + "Я", doc.Body);
+    }
+
+    [Fact]
     public async Task Object_streams_that_lie_about_their_contents()
     {
         var w = W.SimpleDocument(W.Lines("Body text"));

@@ -27,6 +27,13 @@ internal static class Tiff
     /// <summary>Reads a TIFF header and its IFDs into the sink, reading at most maxRead bytes (1 MB); false when the header isn't TIFF.</summary>
     public static bool Read(IByteSource s, ExtractSink sink, ExtractBudget budget, TiffMode mode, PictureParts parts, long maxRead = MaxRead)
     {
+        if (!parts.Enter()) return false;
+        try { return ReadNested(s, sink, budget, mode, parts, maxRead); }
+        finally { parts.Leave(); }
+    }
+
+    static bool ReadNested(IByteSource s, ExtractSink sink, ExtractBudget budget, TiffMode mode, PictureParts parts, long maxRead)
+    {
         Span<byte> h = stackalloc byte[16];
         int n = s.ReadFully(0, h);
         if (n < 8) return false;
@@ -75,8 +82,9 @@ internal static class Tiff
             var entries = Ifd(ifd0);
             if (entries == null) { parts.Partial = true; return; }
             var p = sink.Picture;
-            // A Photoshop resource block's resolution outranks the TIFF tags; its blocks come out of what is left.
-            if (Find(entries, 34377) is { } irb && Left > 0)
+            // A Photoshop resource block's resolution outranks the TIFF tags; its blocks come out of what is left. Only a
+            // TIFF image's: an EXIF block's would lead back to an EXIF block (resource 0x0422), a loop a crafted file nests.
+            if (mode == TiffMode.Image && Find(entries, 34377) is { } irb && Left > 0)
             {
                 long allowance = Left;
                 parts.Unit(() => Photoshop8Bim.Read(new ByteSourceSlice(s, irb.ValueAt, Size(irb)), sink, budget, parts, allowance));

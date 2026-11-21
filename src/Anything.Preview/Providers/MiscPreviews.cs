@@ -397,6 +397,10 @@ internal static class MediaPreview
             ("Artist", Shell.PKEY_Music_Artist), ("Album", Shell.PKEY_Music_AlbumTitle), ("Year", Shell.PKEY_Media_Year),
             ("Genre", Shell.PKEY_Music_Genre)).ConfigureAwait(false) ?? new();
         var thumb = await Shell.GetThumbnailAsync(path, Math.Clamp(Math.Max(target.Width, target.Height), 256, 1024), ct).ConfigureAwait(false);
+        // No thumbnail (thumbnails turned off, no thumbnailer for the format, an offline file): the file's large icon, as
+        // other files without a preview show, so the pane is never blank above the Play bar. Nothing opens the file.
+        bool icon = thumb is null;
+        if (icon) thumb = await Shell.GetIconAsync(path, 256, ct).ConfigureAwait(false);
         TimeSpan? dur = props.TryGetValue("Duration", out var d) && d.Number is ulong ticks and > 0 ? TimeSpan.FromTicks((long)ticks) : null;
         Size? frame = props.TryGetValue("Width", out var w) && w.Number is > 0 && props.TryGetValue("Height", out var h) && h.Number is > 0
             ? new Size((int)w.Number!.Value, (int)h.Number!.Value) : null;
@@ -405,6 +409,7 @@ internal static class MediaPreview
             FormatName = Shell.GetTypeName(path, false),
             Image = thumb,
             Media = new MediaInfo { IsVideo = video, Duration = dur, FrameSize = frame },
+            HasAlpha = icon,
         };
         if (dur != null) res.AddMeta("Duration", FileUtil.FormatDuration(dur.Value));
         if (frame != null) res.AddMeta("Resolution", $"{frame.Value.Width} × {frame.Value.Height}");

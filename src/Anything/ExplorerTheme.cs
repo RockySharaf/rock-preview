@@ -575,6 +575,8 @@ internal sealed class ExplorerRenderer : ToolStripRenderer
     {
         var r = e.ImageRectangle;
         if (r.Width <= 0) return;
+        // In a menu the tick sits on the middle of its row, as the text does (a check column's box starts higher).
+        if (e.Item.Owner is ToolStripDropDown) r = new Rectangle(r.X, 0, r.Width, e.Item.Height);
         ExplorerTheme.DrawGlyph(e.Graphics, ExplorerTheme.GCheck, r, S(e.Item, 12), ExplorerTheme.Text);
     }
 

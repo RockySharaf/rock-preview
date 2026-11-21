@@ -25,6 +25,7 @@ internal sealed partial class MainForm
     (int Filter, int Dpi) _searchOptionsLook = (-1, 0); // what Search options' icon was drawn for
     readonly ToolStripButton _cmdCut = new(), _cmdCopy = new(), _cmdPaste = new(), _cmdRename = new(), _cmdShare = new(),
                              _cmdDelete = new(), _cmdCloseSearch = new("Close search"), _cmdPreview = new("Preview");
+    readonly ToolStripButton _cmdExtract = new("Extract all"); // shown for an archive, as in Explorer: Windows' own Extract all
     readonly ToolStripSplitButton _thumbsButton = new("Thumbnails");
     readonly ToolStripMenuItem _zapThumbItem = new(), _zapListItem = new(), _zapDeepItem = new("Include subfolders"),
                                _zapEverydayItem = new("Everyday files only"), _zapEverydayChooseItem = new("Choose everyday files...");
@@ -76,6 +77,8 @@ internal sealed partial class MainForm
         Cmd(_cmdDelete, ExplorerIcons.Delete, ExplorerTheme.GDelete, null, "Delete (Del)", CmdDelete);
         Cmd(_cmdSort, ExplorerIcons.Sort, ExplorerTheme.GSort, "Sort", "Sort the items", null);
         Cmd(_cmdView, ExplorerIcons.View, ExplorerTheme.GView, "View", "Change the view", null);
+        Cmd(_cmdExtract, ExplorerIcons.ExtractAll, ExplorerTheme.GFolder, "Extract all", "Extract all the files in this archive", CmdExtractAll);
+        _cmdExtract.Available = false; // until an archive is selected or open (UpdateCommandStates)
         Cmd(_cmdSearchOptions, ExplorerIcons.SearchOptions, ExplorerTheme.GFilter, "Search options", "Where and how to search", null);
         Cmd(_cmdCloseSearch, ExplorerIcons.CloseSearch, ExplorerTheme.GClose, "Close search", "Close search (Esc)", CloseSearch);
         Cmd(_thumbsButton, ExplorerIcons.IconsSmall, ExplorerTheme.GGrid, "Thumbnails", "", null);
@@ -138,7 +141,7 @@ internal sealed partial class MainForm
         };
 
         _commands.Items.AddRange([_cmdNew, new ToolStripSeparator(), _cmdCut, _cmdCopy, _cmdPaste, _cmdRename, _cmdShare, _cmdDelete,
-                                  new ToolStripSeparator(), _cmdSort, _cmdView, _sepSearch, _cmdSearchOptions, _cmdClearKind, _cmdCloseSearch,
+                                  new ToolStripSeparator(), _cmdSort, _cmdView, _cmdExtract, _sepSearch, _cmdSearchOptions, _cmdClearKind, _cmdCloseSearch,
                                   new ToolStripSeparator(), _thumbsButton, _cmdEveryday, new ToolStripSeparator(), _cmdMore, _cmdPreview]);
 
         // Navigation buttons left of the address bar.
@@ -149,13 +152,13 @@ internal sealed partial class MainForm
         _nav.BackColor = ExplorerTheme.Chrome;
         Cmd(_navBack, null, ExplorerTheme.GBack, null, "Back (Alt+Left)", GoBack);
         Cmd(_navForward, null, ExplorerTheme.GForward, null, "Forward (Alt+Right)", GoForward);
-        Cmd(_navUp, null, ExplorerTheme.GUp, null, "Up to the parent folder (Alt+Up)", NavigateUp);
+        Cmd(_navUp, null, ExplorerTheme.GUp, null, "Up (Alt+Up)", NavigateUp);
         Cmd(_navRefresh, null, ExplorerTheme.GRefresh, null, "Refresh (F5)", RefreshResults);
         _nav.Items.AddRange([_navBack, _navForward, _navUp, _navRefresh]);
 
-        // Address bar: breadcrumbs; click empty space (or Ctrl+L / Alt+D / F4) to type a path.
-        _address.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
-        _address.AutoCompleteSource = AutoCompleteSource.FileSystemDirectories;
+        // Address bar: breadcrumbs; click empty space (or Ctrl+L / Alt+D / F4) to type a path. Suggestions are the
+        // folders on the disk and the addresses typed before.
+        AddressAutoComplete.Attach(_address, TypedAddressList);
         _address.AccessibleName = "Address";
         _address.KeyDown += (_, e) =>
         {
@@ -169,13 +172,29 @@ internal sealed partial class MainForm
             else if (e.KeyCode == Keys.Escape)
             {
                 e.Handled = e.SuppressKeyPress = true;
-                _breadcrumb.EndEdit();
-                SyncAddress();
-                FocusList();
+                // One that closed the suggestion list (ProcessCmdKey, OpenHistory) ends nothing else.
+                if (!_escapeForSuggestions && !AddressAutoComplete.ClosingSuggestions) CancelAddressEdit();
+            }
+            else if (e.KeyData == (Keys.Alt | Keys.Down))
+            {
+                e.Handled = e.SuppressKeyPress = true;
+                _breadcrumb.OpenHistory(); // the addresses typed before, as Explorer's Alt+Down
             }
         };
         _breadcrumb = new BreadcrumbBar(_address) { Dock = DockStyle.Fill, MenuRenderer = ToolStripManager.Renderer };
         _breadcrumb.NavigateRequested += location => OpenFolder(location);
+        _breadcrumb.HistoryProvider = TypedAddressList;
+        _breadcrumb.HistoryChosen += address =>
+        {
+            _breadcrumb.EndEdit();
+            if (OpenAddress(address)) FocusList();
+        };
+        _breadcrumb.DeleteHistoryRequested += () =>
+        {
+            _app.Settings.TypedAddresses.Clear();
+            _app.Settings.Save();
+        };
+        AcceptDropsOnAddress();
 
         // Navigation pane | files + preview.
         _navPanel.Dock = DockStyle.Fill;
@@ -346,7 +365,8 @@ internal sealed partial class MainForm
     /// </summary>
     List<string> SelectedFolders()
     {
-        if (!_browsing || _explorer.SelectedCount is 0 or > MaxScopeFolders) return [];
+        // The folder Back, Forward or Up selected by itself (the one they came from) isn't chosen: the open folder is.
+        if (!_browsing || _explorer.SelectionFromNavigation || _explorer.SelectedCount is 0 or > MaxScopeFolders) return [];
         return _explorer.GetSelectedFolders(MaxScopeFolders);
     }
 
@@ -370,16 +390,18 @@ internal sealed partial class MainForm
 
     // ---- command bar actions ------------------------------------------------------------------
 
+    /// <summary>New folder (Ctrl+Shift+N, the New menu's fallback): the view's own, as Explorer makes it. Search results: nothing.</summary>
     void CmdNewFolder()
     {
-        if (!ExplorerShown || _explorer.CurrentPath is not { } folder) return;
-        _explorer.CreateNewFolder(folder);
+        if (!ExplorerShown || !CommandBarRules.CanMakeFolderIn(_explorer.CurrentPath, _explorer.CurrentParsingName)) return;
+        _explorer.CreateNewFolder(_explorer.CurrentPath);
     }
 
-    /// <summary>Explorer's own "New" menu (Folder, Shortcut, Text Document...) under the New button.</summary>
+    /// <summary>Explorer's own "New" menu (Folder, Shortcut, Text Document...) under the New button; a library's too.</summary>
     void ShowNewMenu()
     {
-        if (!ExplorerShown || _explorer.CurrentPath is not { } folder) return;
+        if (!ExplorerShown || !CommandBarRules.CanMakeFolderIn(_explorer.CurrentPath, _explorer.CurrentParsingName)) return;
+        string folder = _explorer.CurrentPath ?? _explorer.CurrentParsingName!;
         var b = _cmdNew.Bounds;
         var pt = _commands.PointToScreen(new Point(b.Left, b.Bottom));
         object? view = _explorer.GetShellViewObject();
@@ -391,6 +413,45 @@ internal sealed partial class MainForm
         {
             if (view != null) System.Runtime.InteropServices.Marshal.ReleaseComObject(view);
         }
+    }
+
+    /// <summary>
+    /// Extract all: Windows' own wizard for the selected archive, or for the archive whose contents are open. The verb is
+    /// the shell's "extract" (zip's Compressed Folder and, on newer Windows 11, the other archive folders).
+    /// </summary>
+    void CmdExtractAll()
+    {
+        if (!ExplorerShown || ExtractTarget() is not { } target) return;
+        if (target.Selected && _explorer.InvokeVerbOnSelection("extract")) return;
+        // Another archiver may own the file type, and its menu then has no "extract": say so rather than do nothing.
+        if (!ShellContextMenu.InvokeVerb(this, [target.Path], "extract")) _statusRight.Text = "Windows can't extract this kind of file here";
+    }
+
+    /// <summary>
+    /// The archive Extract all would work on: the one selected file when it is an archive, else the archive the view is
+    /// inside. From names and the attributes the view already holds (no disk), as the command bar asks at every
+    /// selection change: a real folder named like an archive ("site.zip", "backup.tar") is not one.
+    /// </summary>
+    (string Path, bool Selected)? ExtractTarget()
+    {
+        if (_explorer.SelectedCount == 1 && _explorer.SelectedPath is { } p && CommandBarRules.CanExtract(Path.GetFileName(p), HasArchiveFolders)
+            && _explorer.SelectedItemIsFile())
+            return (p, true);
+        return _explorer.CurrentArchive is { } archive && CommandBarRules.CanExtract(Path.GetFileName(archive), HasArchiveFolders) ? (archive, false) : null;
+    }
+
+    /// <summary>Whether this Windows opens .7z, .rar, .tar and the like itself (Windows 11's archive folders), not only zips.</summary>
+    static bool HasArchiveFolders => s_archiveFolders ??= HasArchiveFolderClass();
+    static bool? s_archiveFolders;
+
+    static bool HasArchiveFolderClass()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.ClassesRoot.OpenSubKey("ArchiveFolder");
+            return key != null;
+        }
+        catch (Exception e) when (e is System.Security.SecurityException or IOException or UnauthorizedAccessException) { return false; }
     }
 
     void CmdClipboard(bool cut)
@@ -497,17 +558,18 @@ internal sealed partial class MainForm
         bool explorer = ExplorerShown;
         int sel = explorer ? _explorer.SelectedCount : _list.SelectedIndices.Count;
         _cmdCut.Enabled = _cmdCopy.Enabled = _cmdDelete.Enabled = _cmdShare.Enabled = sel > 0;
-        _cmdRename.Enabled = explorer ? sel > 0 : sel == 1;
-        bool folderOpen = explorer && _explorer.CurrentPath != null;
+        _cmdRename.Enabled = sel > 0; // several results: the focused one, as F2 and the context menu's Rename do
+        bool folderOpen = explorer && CommandBarRules.CanMakeFolderIn(_explorer.CurrentPath, _explorer.CurrentParsingName); // a library too
         _cmdNew.Enabled = folderOpen;
-        if (s_cfIdList == 0) s_cfIdList = RegisterClipboardFormat("Shell IDList Array");
-        _cmdPaste.Enabled = folderOpen && (IsClipboardFormatAvailable(15 /* CF_HDROP */) || IsClipboardFormatAvailable(s_cfIdList));
+        _cmdPaste.Enabled = folderOpen && ClipboardHasPasteableFiles(); // kept current by the clipboard listener
         bool searching = _search.TextLength > 0;
         // Search options also shows while a kind of file narrows a list that isn't a search ("every file in"), so what
         // the list leaves out can be seen and undone. Available, not Visible (see below).
         bool options = searching || _filterIndex > 0 && !explorer;
         if (_cmdSearchOptions.Available != options) _sepSearch.Available = _cmdSearchOptions.Available = options;
         if (_cmdCloseSearch.Available != searching) _cmdCloseSearch.Available = searching;
+        bool extract = explorer && ExtractTarget() != null;
+        if (_cmdExtract.Available != extract) _cmdExtract.Available = extract;
         if (_cmdClearKind.Available != (options && _filterIndex > 0))
         {
             _cmdClearKind.Available = options && _filterIndex > 0;
@@ -541,10 +603,49 @@ internal sealed partial class MainForm
         UpdateCommandStates(); // the clipboard may have changed while we were in the background
     }
 
+    /// <summary>
+    /// Files dropped on a folder in the address bar go into that folder, as in File Explorer (how people move a file up
+    /// a level); the segment lights up while the folder can take them. Not onto the folder they are already in (copying
+    /// first, that would only make "name - Copy" duplicates), nor a folder into itself: <see cref="DropRules.Refused"/>.
+    /// </summary>
+    void AcceptDropsOnAddress()
+    {
+        // The rule's answer for the drag and segment it was last worked out for: worked out again only when the pointer
+        // reaches another segment, not on every move (a drag can carry thousands of files).
+        IReadOnlyList<string>? ruleDragged = null;
+        string? ruleFolder = null;
+        bool refused = false;
+        ShellDragDrop.AcceptDrops(_breadcrumb, (screen, readDragged) =>
+        {
+            if (_breadcrumb.FolderAt(screen) is not { } folder) return null;
+            var dragged = readDragged();
+            if (dragged.Count == 0 && _draggingOut is { } own) dragged = own; // the results' own drag, if its data said nothing
+            if (!ReferenceEquals(dragged, ruleDragged) || folder != ruleFolder)
+            {
+                (ruleDragged, ruleFolder) = (dragged, folder);
+                // A library (Documents) puts files in its save folder, which is often where they already are.
+                refused = dragged.Count > 0 && DropRules.Refused(dragged, ShellDragDrop.FileSystemFolder(folder) ?? folder);
+            }
+            return refused ? null : folder;
+        },
+        dropSpot: spot =>
+        {
+            if (spot is { } screen) _breadcrumb.ShowDropHighlight(screen);
+            else _breadcrumb.ClearDropHighlight(); // the folder (or the rule) says no: no highlight
+        },
+        dragEnded: () =>
+        {
+            _breadcrumb.ClearDropHighlight();
+            (ruleDragged, ruleFolder) = (null, null); // the paths aren't kept after the drag
+        });
+    }
+
     protected override void WndProc(ref Message m)
     {
         if (HandleTitleBarMessage(ref m)) return;
+        if (HandleAppCommand(ref m)) return;
         if (ShellContextMenu.HandleMenuMessage(ref m)) return; // Explorer's New menu fills its submenu on WM_INITMENUPOPUP
+        if (HandleClipboardMessage(ref m)) return;
         base.WndProc(ref m);
     }
 
@@ -558,20 +659,32 @@ internal sealed partial class MainForm
 
     readonly Dictionary<string, Image?> _menuIcons = [];
 
+    /// <summary>
+    /// Sort, as in File Explorer: the columns the folder shows (Recycle Bin's, a music folder's...), the one sorted on and
+    /// its direction checked, and More... for the view's Choose details. The fixed four when the view can't list them.
+    /// </summary>
     void BuildSortMenu()
     {
         _cmdSort.DropDownItems.Clear();
         if (ExplorerShown)
         {
-            foreach (var (title, column) in new (string, ExplorerSortColumn)[]
-                     { ("Name", ExplorerSortColumn.Name), ("Date modified", ExplorerSortColumn.DateModified), ("Type", ExplorerSortColumn.Type), ("Size", ExplorerSortColumn.Size) })
+            var sort = _explorer.GetSortColumn();
+            var columns = _explorer.GetVisibleColumns(MaxSortColumns);
+            if (columns.Count == 0)
+                foreach (var (title, column) in new (string, ExplorerSortColumn)[]
+                         { ("Name", ExplorerSortColumn.Name), ("Date modified", ExplorerSortColumn.DateModified), ("Type", ExplorerSortColumn.Type), ("Size", ExplorerSortColumn.Size) })
+                    columns.Add((ExplorerHost.SortKeyOf(column), title));
+            foreach (var (key, name) in columns)
             {
-                var c = column;
-                _cmdSort.DropDownItems.Add(new ToolStripMenuItem(title, null, (_, _) => _explorer.SortBy(c, descending: false)));
+                var k = key;
+                bool on = sort is { } s && s.Key.fmtid == k.fmtid && s.Key.pid == k.pid;
+                _cmdSort.DropDownItems.Add(new ToolStripMenuItem(name.Replace("&", "&&"), null, (_, _) => _explorer.SortByColumn(k)) { Checked = on });
             }
             _cmdSort.DropDownItems.Add(new ToolStripSeparator());
-            _cmdSort.DropDownItems.Add(new ToolStripMenuItem("Ascending", null, (_, _) => _explorer.SetSortDirection(descending: false)));
-            _cmdSort.DropDownItems.Add(new ToolStripMenuItem("Descending", null, (_, _) => _explorer.SetSortDirection(descending: true)));
+            _cmdSort.DropDownItems.Add(new ToolStripMenuItem("Ascending", null, (_, _) => _explorer.SetSortDirection(descending: false)) { Checked = sort is { Descending: false } });
+            _cmdSort.DropDownItems.Add(new ToolStripMenuItem("Descending", null, (_, _) => _explorer.SetSortDirection(descending: true)) { Checked = sort is { Descending: true } });
+            _cmdSort.DropDownItems.Add(new ToolStripSeparator());
+            _cmdSort.DropDownItems.Add(new ToolStripMenuItem("More...", null, (_, _) => _explorer.ChooseDetails()));
             return;
         }
         foreach (var key in Enum.GetValues<SortKey>())
@@ -584,29 +697,40 @@ internal sealed partial class MainForm
         _cmdSort.DropDownItems.Add(new ToolStripMenuItem("Descending", null, (_, _) => SetSort(_sort, true)) { Checked = _desc });
     }
 
+    /// <summary>Most columns the Sort menu lists (a folder can show dozens in Details).</summary>
+    const int MaxSortColumns = 30;
+
+    /// <summary>
+    /// View: the folder's eight layouts with the one it is in checked and their keys (Ctrl+Shift+1 to 8, handled in
+    /// ProcessCmdKey); while results show, their list and thumbnail sizes with theirs (the View menu's shortcuts).
+    /// </summary>
     void BuildViewMenu()
     {
         _cmdView.DropDownItems.Clear();
+        // Ticks in their own column, as Windows 11's menus show them: drawn where the icon is, the icon hid them.
+        if (_cmdView.DropDown is ToolStripDropDownMenu viewMenu) viewMenu.ShowCheckMargin = true;
         if (ExplorerShown)
         {
-            foreach (var (title, mode, size, icon) in new (string, int, int, string)[]
-                     {
-                         ("Extra large icons", ShellNative.FVM_ICON, 256, ExplorerIcons.IconsExtraLarge), ("Large icons", ShellNative.FVM_ICON, 96, ExplorerIcons.IconsLarge),
-                         ("Medium icons", ShellNative.FVM_ICON, 48, ExplorerIcons.IconsMedium), ("Small icons", ShellNative.FVM_SMALLICON, 16, ExplorerIcons.IconsSmall),
-                         ("List", ShellNative.FVM_LIST, 16, ExplorerIcons.IconsList), ("Details", ShellNative.FVM_DETAILS, 16, ExplorerIcons.IconsDetails),
-                         ("Tiles", ShellNative.FVM_TILE, 48, ExplorerIcons.IconsTiles), ("Content", ShellNative.FVM_CONTENT, 32, ExplorerIcons.IconsContent),
-                     })
+            int current = _explorer.GetViewModeAndIconSize() is { } v ? CommandBarRules.LayoutIndex(v.Mode, v.IconSize) : -1;
+            for (int i = 0; i < ExplorerLayoutNames.Length; i++)
             {
-                int m = mode, sz = size;
-                _cmdView.DropDownItems.Add(new ToolStripMenuItem(title, MenuIcon(icon), (_, _) => _explorer.SetViewMode(m, sz)));
+                int layout = i;
+                _cmdView.DropDownItems.Add(new ToolStripMenuItem(ExplorerLayoutNames[i].Title, MenuIcon(ExplorerLayoutNames[i].Icon), (_, _) => SetExplorerLayout(layout))
+                {
+                    Checked = i == current,
+                    ShortcutKeyDisplayString = CommandBarRules.LayoutShortcut(i),
+                });
             }
         }
         else
         {
-            foreach (var (title, size) in new (string, int)[] { ("Extra large thumbnails", 256), ("Large thumbnails", 160), ("Medium thumbnails", 96), ("Details", 0) })
+            int thumb = EffectiveThumbSize;
+            foreach (var (title, size, digit) in new (string, int, int)[] { ("Extra large thumbnails", 256, 1), ("Large thumbnails", 160, 2), ("Medium thumbnails", 96, 3), ("Details", 0, 6) })
             {
                 int sz = size;
-                _cmdView.DropDownItems.Add(new ToolStripMenuItem(title, null, (_, _) => SetViewMode(sz)) { Checked = _app.Settings.ThumbnailSize == sz });
+                // A size zoomed between them (Ctrl+wheel) counts as Large, as the menu bar's View shows it (SyncMenus).
+                bool on = thumb == sz || sz == 160 && thumb > 0 && thumb is not (256 or 96);
+                _cmdView.DropDownItems.Add(new ToolStripMenuItem(title, null, (_, _) => SetViewMode(sz)) { Checked = on, ShortcutKeyDisplayString = $"Ctrl+Shift+{digit}" });
             }
         }
         _cmdView.DropDownItems.Add(new ToolStripSeparator());
@@ -614,6 +738,23 @@ internal sealed partial class MainForm
         _cmdView.DropDownItems.Add(new ToolStripMenuItem("Preview pane", MenuIcon(ExplorerIcons.DetailsPane), (_, _) => TogglePreview()) { Checked = _app.Settings.PreviewVisible });
         _cmdView.DropDownItems.Add(new ToolStripSeparator());
         _cmdView.DropDownItems.Add(new ToolStripMenuItem("Hidden items", null, (_, _) => ToggleHiddenItems()) { Checked = ExplorerOptions.ShowHidden });
+    }
+
+    /// <summary>Explorer's layouts in View menu order (<see cref="CommandBarRules.Layouts"/> holds the mode and size of each).</summary>
+    static readonly (string Title, string Icon)[] ExplorerLayoutNames =
+    [
+        ("Extra large icons", ExplorerIcons.IconsExtraLarge), ("Large icons", ExplorerIcons.IconsLarge), ("Medium icons", ExplorerIcons.IconsMedium),
+        ("Small icons", ExplorerIcons.IconsSmall), ("List", ExplorerIcons.IconsList), ("Details", ExplorerIcons.IconsDetails),
+        ("Tiles", ExplorerIcons.IconsTiles), ("Content", ExplorerIcons.IconsContent),
+    ];
+
+    /// <summary>One of Explorer's layouts for the folder view (View menu, Ctrl+Shift+1 to 8).</summary>
+    void SetExplorerLayout(int index)
+    {
+        if (index < 0 || index >= CommandBarRules.Layouts.Count) return;
+        var (mode, size) = CommandBarRules.Layouts[index];
+        _explorer.SetViewMode(mode, size);
+        QueueStatusUpdate(); // the status bar's Details / Large icons buttons
     }
 
     /// <summary>View › Hidden items: File Explorer's own setting, so both apps show the same; every tab's folder follows.</summary>
@@ -654,9 +795,9 @@ internal sealed partial class MainForm
             if (hadFocus) { if (explorer) _explorer.FocusView(); else FocusList(); }
         }
         if (explorer) { _list.Visible = false; _grid.Visible = false; }
-        _navBack.Enabled = _browsing && (_explorer.CanGoBack || !explorer); // Back also leaves a search
-        _navForward.Enabled = _browsing && _explorer.CanGoForward;
-        _navUp.Enabled = _browsing;
+        else if (_cutPathsStale) QueueClipboardRefresh(); // what is cut wasn't read while the folder view showed
+        if (!explorer) _tab.ForwardSearch = null; // results showing are a newer page than the search Back closed
+        UpdateNavButtons(explorer);
         UpdateSearchPlaceholder();
         UpdateCommandStates();
         UpdateTitle();
@@ -665,6 +806,26 @@ internal sealed partial class MainForm
         // Every way in or out of the folder view comes here, also those that clear the search box without a search.
         DropListingResults();
         UpdateFolderBar();
+    }
+
+    void UpdateNavButtons(bool explorer)
+    {
+        _navBack.Enabled = _browsing && (_explorer.CanGoBack || !explorer); // Back also leaves a search
+        _navForward.Enabled = _browsing && (_explorer.CanGoForward || explorer && ForwardSearchHere);
+        _navUp.Enabled = _browsing && _explorer.CanGoUp;
+        UpdateNavToolTips(explorer);
+    }
+
+    /// <summary>The Back, Forward and Up tooltips name where they go, as File Explorer's do ("Back to Downloads").</summary>
+    void UpdateNavToolTips(bool explorer)
+    {
+        // Back from results goes to the folder they were searched from.
+        string? back = !explorer && _browsing ? _explorer.CurrentDisplayName : _explorer.BackName;
+        _navBack.ToolTipText = _navBack.Enabled && back is { Length: > 0 } ? $"Back to {back} (Alt+Left)" : "Back (Alt+Left)";
+        string? forward = explorer && ForwardSearchHere && _tab.ForwardSearch is { } search ? $"the search for \"{search.Text}\"" : _explorer.ForwardName;
+        _navForward.ToolTipText = _navForward.Enabled && forward is { Length: > 0 } ? $"Forward to {forward} (Alt+Right)" : "Forward (Alt+Right)";
+        string? up = _explorer.ParentDisplayName;
+        _navUp.ToolTipText = _navUp.Enabled && up is { Length: > 0 } ? $"Up to {up} (Alt+Up)" : "Up (Alt+Up)";
     }
 
     void SyncAddress()
@@ -695,6 +856,9 @@ internal sealed partial class MainForm
         // too). A new tab's first folder doesn't count, so a window Alt+X opens still searches everything.
         if (tab.Navigated) tab.SearchEverywhere = false;
         tab.Navigated = true;
+        // Another folder opened: like forward history, the search Back closed is gone. Back and Forward keep it, as they
+        // keep forward history: it shows again on Forward once the view is back at the place it was closed in.
+        if (!tab.Explorer.LastNavigationWasHistory) tab.ForwardSearch = null;
         // Each folder gets a new view, with Windows' own drop target: copying is made its first choice too.
         BeginInvoke(() => { if (tab.Explorer.IsHandleCreated) ShellDragDrop.CopyFirstInside(tab.Explorer.Handle); });
         if (tab != _tab)
@@ -717,7 +881,7 @@ internal sealed partial class MainForm
         // As File Explorer does: a folder opened goes into Windows' recent items (Home, the taskbar's jump list).
         if (_explorer.CurrentPath is { Length: > 0 } opened && !_app.IsDemo)
         {
-            AddToRecent(opened);
+            AddToRecent(opened, _explorer.CurrentIdList);
             _app.QueueJumpList();
         }
         SyncAddress();
@@ -759,13 +923,28 @@ internal sealed partial class MainForm
         if (folder != null && !Path.IsPathRooted(expanded) && expanded.IndexOfAny(Path.GetInvalidPathChars()) < 0 && !expanded.Contains(':'))
         {
             string inside = Path.Combine(folder, expanded);
-            if (Directory.Exists(inside)) return OpenFolder(inside);
+            if (Directory.Exists(inside)) return RememberTyped(inside, OpenFolder(inside)); // the full path: the name means this folder only here
             if (File.Exists(inside)) return StartAddress(new AddressCommand.Run(inside, "", folder), typed, quiet: false);
         }
         if (ShellNative.CanParse(expanded) || ShellNative.CanParse(expanded + (expanded.Length == 2 && expanded[1] == ':' ? "\\" : "")))
-            return OpenFolder(typed);
+            return RememberTyped(typed, OpenFolder(typed));
         return AddressCommand.Parse(typed, folder) is { } run && StartAddress(run, typed, quiet: false);
     }
+
+    /// <summary>A typed address that opened a place goes to the top of the typed addresses (the drop-down, the suggestions).</summary>
+    bool RememberTyped(string address, bool opened)
+    {
+        if (opened && _app.Settings.TypedAddresses.Add(address)) _app.Settings.Save();
+        return opened;
+    }
+
+    /// <summary>
+    /// The typed addresses offered: Rock Preview's, then File Explorer's own (read, never written). Safe off the UI thread:
+    /// the suggestions ask for them on a thread of their own.
+    /// </summary>
+    IReadOnlyList<string> TypedAddressList()
+        // The demo (screenshots, presentations) shows its own list only, never the user's real File Explorer paths.
+        => AddressHistory.Combine(_app.Settings.TypedAddresses.Items, _app.IsDemo ? [] : AddressAutoComplete.ExplorerTypedPaths());
 
     /// <summary>Starts what the address bar was given, as the Run box would (the shell finds "cmd" or "code").</summary>
     bool StartAddress(AddressCommand.Run run, string typed, bool quiet)
@@ -789,9 +968,43 @@ internal sealed partial class MainForm
     [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     static extern void SHAddToRecentDocs(uint flags, string path);
 
-    static void AddToRecent(string path)
+    /// <summary>SHARDAPPIDINFOIDLIST (ShlObj_core.h): an item's ID list and the app it was opened in.</summary>
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    struct SHARDAPPIDINFOIDLIST
+    {
+        public IntPtr pidl;     // PCIDLIST_ABSOLUTE
+        public IntPtr pszAppID; // PCWSTR
+    }
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll", EntryPoint = "SHAddToRecentDocs")]
+    static extern void SHAddToRecentDocsWithAppId(uint flags, ref SHARDAPPIDINFOIDLIST info);
+
+    const uint SHARD_APPIDINFOIDLIST = 5;
+    /// <summary>File Explorer's AppUserModelID: what its Frequent folders and its jump list learn from.</summary>
+    const string ExplorerAppId = "Microsoft.Windows.Explorer";
+
+    static void AddToRecent(string path, byte[]? idList)
     {
         try { SHAddToRecentDocs(3 /* SHARD_PATHW */, path); } catch (Exception) { }
+        // Also as opened in File Explorer: this process has Rock Preview's own AppUserModelID, so without it the folders
+        // browsed here never reach Frequent folders on Explorer's Home and Quick access. Named by the ID list the view
+        // already has, so nothing asks the disk (a share that doesn't answer can't hold up the window).
+        if (idList is not { Length: > 0 }) return;
+        IntPtr pidl = IntPtr.Zero, appId = IntPtr.Zero;
+        try
+        {
+            pidl = System.Runtime.InteropServices.Marshal.AllocCoTaskMem(idList.Length);
+            System.Runtime.InteropServices.Marshal.Copy(idList, 0, pidl, idList.Length);
+            appId = System.Runtime.InteropServices.Marshal.StringToCoTaskMemUni(ExplorerAppId);
+            var info = new SHARDAPPIDINFOIDLIST { pidl = pidl, pszAppID = appId };
+            SHAddToRecentDocsWithAppId(SHARD_APPIDINFOIDLIST, ref info);
+        }
+        catch (Exception) { }
+        finally
+        {
+            if (pidl != IntPtr.Zero) System.Runtime.InteropServices.Marshal.FreeCoTaskMem(pidl);
+            if (appId != IntPtr.Zero) System.Runtime.InteropServices.Marshal.FreeCoTaskMem(appId);
+        }
     }
 
     /// <summary>A folder the user chose to open (address bar, breadcrumb, results, menus): shown as the folder.</summary>
@@ -807,15 +1020,41 @@ internal sealed partial class MainForm
         if (_browsing && !ExplorerShown)
         {
             if (_zapActive) ExitZap(rerun: true);
-            else CloseSearch();
+            else
+            {
+                // Kept before the box empties, so the Forward button already counts it when the folder shows.
+                if (_search.TextLength > 0)
+                {
+                    _tab.ForwardSearch = (_search.Text, _sort, _desc);
+                    _tab.ForwardSearchAt = (_explorer.CurrentParsingName, _explorer.BackCount);
+                }
+                CloseSearch();
+            }
             if (ExplorerShown) _explorer.FocusView();
             return;
         }
         _explorer.GoBack();
     }
 
+    /// <summary>The search Back closed belongs here: the view is at the folder, and the place in the history, it was closed in.</summary>
+    bool ForwardSearchHere => _tab.ForwardSearch != null && _tab.ForwardSearchAt == (_explorer.CurrentParsingName, _explorer.BackCount);
+
+    /// <summary>Forward: after Back closed a search, the search comes back first (the page Back left), as in Explorer.</summary>
     void GoForward()
     {
+        if (ExplorerShown && ForwardSearchHere && _tab.ForwardSearch is { } search)
+        {
+            _tab.ForwardSearch = null;
+            if ((_sort, _desc) != (search.Sort, search.Descending))
+            {
+                (_sort, _desc) = (search.Sort, search.Descending);
+                UpdateSortIndicator();
+                SyncMenus();
+            }
+            SetSearch(search.Text);
+            FocusTabContent();
+            return;
+        }
         LeaveResults();
         _explorer.GoForward();
     }
@@ -854,25 +1093,61 @@ internal sealed partial class MainForm
         if (!OpenFolder(HomeLocation)) BrowseTo(ThisPcLocation);
     }
 
-    /// <summary>Before the window shows: open at this folder (null = Home) instead of the last folder.</summary>
+    /// <summary>
+    /// Opens where File Explorer opens its new windows and tabs (Folder Options' "Open File Explorer to"): Home, This PC,
+    /// Downloads or OneDrive. Home when that place doesn't open (no OneDrive on this PC, say).
+    /// </summary>
+    void GoToStartPlace()
+    {
+        string? where = ExplorerStartPlace() switch
+        {
+            StartPlace.ThisPc => ThisPcLocation,
+            StartPlace.Downloads => "shell:Downloads",
+            StartPlace.OneDrive => "shell:OneDrive",
+            _ => null,
+        };
+        if (where is not null)
+        {
+            LeaveResults();
+            if (!_explorer.IsHandleCreated) _ = _explorer.Handle; // create the shell view even while hidden
+            if (_explorer.Navigate(where)) return; // not BrowseTo: a place that isn't there says nothing, Home just opens
+        }
+        GoHome();
+    }
+
+    /// <summary>File Explorer's "Open File Explorer to", read each time (it can change while the app runs); Home when it can't be read.</summary>
+    static StartPlace ExplorerStartPlace()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(StartPlaces.LaunchToKey);
+            return StartPlaces.FromLaunchTo(key?.GetValue(StartPlaces.LaunchToValue));
+        }
+        catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException)
+        {
+            return StartPlace.Home;
+        }
+    }
+
+    /// <summary>Before the window shows: open at this folder (null = where File Explorer opens) instead of the last folder.</summary>
     public void OpenAsExplorer(string? location)
     {
         _explorerStart = true;
         _explorerLocation = location;
     }
 
-    /// <summary>Opens the last folder (or Home) when the window starts, like File Explorer.</summary>
+    /// <summary>Opens the last folder (or where File Explorer opens) when the window starts, like File Explorer.</summary>
     void OpenStartLocation()
     {
         if (_explorerStart)
         {
             if (_explorerLocation is { Length: > 0 } where && BrowseTo(where)) return;
-            GoHome();
+            GoToStartPlace();
             return;
         }
         string last = _app.Settings.LastLocation;
         if (last.Length > 0 && BrowseTo(last)) return;
-        GoHome();
+        GoToStartPlace();
     }
 
     partial void SyncNavTreeCore(string location);
@@ -887,6 +1162,40 @@ internal sealed partial class MainForm
         _breadcrumb.EditText = _browsing ? _explorer.CurrentEditingName ?? "" : "";
         _breadcrumb.BeginEdit();
     }
+
+    /// <summary>
+    /// After typing an address was given up (Escape): the keyboard goes back to the window that had it when the typing
+    /// began (the folder view, the navigation pane, the results, the search box), if it is still there and shown;
+    /// otherwise to the files.
+    /// </summary>
+    void ReturnFocusFromAddress()
+    {
+        IntPtr before = _breadcrumb.FocusBeforeEdit;
+        try
+        {
+            if (before != IntPtr.Zero && before != _address.Handle && IsWindow(before) && IsChild(Handle, before)
+                && IsWindowVisible(before) && IsWindowEnabled(before))
+            {
+                if (_explorer.IsHandleCreated && (before == _explorer.Handle || IsChild(_explorer.Handle, before)))
+                {
+                    _explorer.FocusView();
+                    return;
+                }
+                if (Control.FromHandle(before) is { } control)
+                {
+                    if (control.CanFocus && control.Focus()) return;
+                }
+                else if (SetFocus(before) != IntPtr.Zero || GetFocus() == before) return; // a window of Windows' own (the navigation pane's tree)
+            }
+        }
+        catch (Exception) { } // then the files, below
+        FocusList();
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool IsWindow(IntPtr hwnd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr hwnd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr hwnd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr GetFocus();
 
     /// <summary>Folders open inside Rock Preview; files open with their default app.</summary>
     void OpenSelectedOrBrowse()
@@ -910,6 +1219,27 @@ internal sealed partial class MainForm
         string? parent = Path.GetDirectoryName(p);
         if (parent == null) { OpenFolder(paths[0]); return; }
         OpenFolder(parent, select: p);
+    }
+
+    /// <summary>
+    /// -select / File Explorer's /select,: the item's folder opens with the item selected and in view; an item that isn't
+    /// there opens the nearest folder above it that is. Looked up off the UI thread: a share that doesn't answer can't
+    /// freeze the window.
+    /// </summary>
+    public void ShowItem(string path)
+    {
+        Task.Run(() =>
+        {
+            ItemSelection.Target? target = null;
+            try { target = ItemSelection.Resolve(path, p => File.Exists(p) || Directory.Exists(p)); }
+            catch (Exception) { }
+            _app.Post(() =>
+            {
+                if (IsDisposed) return;
+                if (target is { } t) OpenFolder(t.Folder, t.Select);
+                else OpenFolder(path); // a "shell:" name opens; anything else says it can't be opened
+            });
+        });
     }
 
     // ---- search scope -------------------------------------------------------------------------

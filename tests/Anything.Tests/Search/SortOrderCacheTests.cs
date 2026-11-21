@@ -180,4 +180,44 @@ public class SortOrderCacheTests
         index.Compact();
         AssertSameAsClassic(index, engine);
     }
+
+    [Fact]
+    public void A_new_sort_key_with_few_results_sorts_them_without_rebuilding_the_order_of_every_entry()
+    {
+        // A click on another column header over a short result list must not wait for the whole index to be sorted
+        // (seconds on millions of entries, with the arrow already turned and the rows still in the old order).
+        var index = BuildIndex(7);
+        var engine = new SearchEngine { SortCacheThreshold = 0 };
+        engine.Search(index, "", new SearchOptions(), SortKey.DateModified, true, CancellationToken.None);
+        Assert.Equal(SortKey.DateModified, engine.PresortedKey);
+
+        var options = new SearchOptions { FoldersFirst = true };
+        var asc = engine.Search(index, "x10", options, SortKey.Name, false, CancellationToken.None).Ids;
+        var desc = engine.Search(index, "x10", options, SortKey.Name, true, CancellationToken.None).Ids;
+        Assert.Equal(SortKey.DateModified, engine.PresortedKey);
+        Assert.NotEmpty(asc);
+
+        // The same rows, in the same order, as once the order of every entry is built for names.
+        engine.Search(index, "", new SearchOptions(), SortKey.Name, false, CancellationToken.None);
+        Assert.Equal(SortKey.Name, engine.PresortedKey);
+        Assert.Equal(engine.Search(index, "x10", options, SortKey.Name, false, CancellationToken.None).Ids, asc);
+        Assert.Equal(engine.Search(index, "x10", options, SortKey.Name, true, CancellationToken.None).Ids, desc);
+    }
+
+    [Fact]
+    public void A_new_sort_key_with_many_results_builds_the_order_so_later_searches_only_filter_it()
+    {
+        // Sorting a big result directly on every keystroke and refresh would cost more than building the order once.
+        var index = BuildIndex(7);
+        var engine = new SearchEngine { SortCacheThreshold = 0 };
+        engine.Search(index, "", new SearchOptions(), SortKey.DateModified, true, CancellationToken.None);
+        var few = engine.Search(index, "x10", new SearchOptions(), SortKey.Name, false, CancellationToken.None).Ids;
+        Assert.NotEmpty(few);
+        Assert.Equal(SortKey.DateModified, engine.PresortedKey);
+
+        engine.DirectSortLimit = few.Length - 1; // the same result, now more than a direct sort takes
+        var built = engine.Search(index, "x10", new SearchOptions(), SortKey.Name, false, CancellationToken.None).Ids;
+        Assert.Equal(SortKey.Name, engine.PresortedKey);
+        Assert.Equal(few, built);
+    }
 }

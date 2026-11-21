@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Anything.Explorer;
 using ComTypes = System.Runtime.InteropServices.ComTypes;
 
 namespace Anything;
@@ -15,6 +16,8 @@ internal static class ShellDragDrop
     public const int DROPEFFECT_NONE = 0, DROPEFFECT_COPY = 1, DROPEFFECT_MOVE = 2, DROPEFFECT_LINK = 4;
     public const int MK_RBUTTON = 0x2, MK_SHIFT = 0x4, MK_CONTROL = 0x8, MK_ALT = 0x20;
     const int S_OK = 0;
+    const short CF_HDROP = 15;
+    const int TYMED_HGLOBAL = 1;
 
     /// <summary>Drags <paramref name="paths"/> out of the window <paramref name="source"/>; false when the shell couldn't make its data.</summary>
     public static bool DragOut(IntPtr source, IReadOnlyList<string> paths)
@@ -133,18 +136,168 @@ internal static class ShellDragDrop
 
     /// <summary>
     /// Drops on a view of the app's own (the results, the thumbnails) go to the folder <paramref name="folderAt"/> names
-    /// under the pointer (screen coordinates), or nowhere. Undone when the window goes.
+    /// under the pointer (screen coordinates), or nowhere. <paramref name="dropSpot"/>, when given, is told after each
+    /// move where the drag can drop (the pointer) or that it can't drop there (null), as the folder itself answered;
+    /// <paramref name="dragEnded"/> is told when the drag leaves the view or is dropped, so a highlight drawn for it
+    /// never stays behind. Undone when the window goes.
     /// </summary>
-    public static void AcceptDrops(Control view, Func<Point, string?> folderAt)
+    public static void AcceptDrops(Control view, Func<Point, string?> folderAt, Action<Point?>? dropSpot = null, Action? dragEnded = null)
+        => AcceptDrops(view, (pt, _) => folderAt(pt), dropSpot, dragEnded);
+
+    /// <summary>
+    /// As above, with <paramref name="folderAt"/> also given a way to read the file-system paths being dragged, from the
+    /// drag's own data so it works for drags from Explorer's view and other programs too (empty when the data has
+    /// none, as with Outlook's mails): it can then refuse a drop that would only copy files onto themselves. The paths
+    /// are read once per drag, and only when asked for.
+    /// </summary>
+    public static void AcceptDrops(Control view, Func<Point, Func<IReadOnlyList<string>>, string?> folderAt,
+        Action<Point?>? dropSpot = null, Action? dragEnded = null)
     {
         void Register()
         {
-            var target = new CopyFirstDropTarget(view.Handle, pt => folderAt(pt), key => FolderTarget((string)key), dragImage: true);
+            CopyFirstDropTarget? target = null;
+            target = new CopyFirstDropTarget(view.Handle, pt => folderAt(pt, target!.DraggedPaths), key => FolderTarget((string)key),
+                dragImage: true, spot: dropSpot, ended: dragEnded);
             RegisterDragDrop(view.Handle, target);
         }
         if (view.IsHandleCreated) Register();
         view.HandleCreated += (_, _) => Register();
         view.HandleDestroyed += (_, _) => RevokeDragDrop(view.Handle);
+    }
+
+    /// <summary>
+    /// The real folder a drop on <paramref name="folder"/> puts files in, to tell whether they would land where they
+    /// already are: its own path, or for a library (Documents, Pictures...) the folder it saves into; null when there is
+    /// none (This PC, Network, a phone).
+    /// </summary>
+    public static string? FileSystemFolder(string folder)
+    {
+        var iid = IID_IShellItem;
+        IShellItem? item = null;
+        try
+        {
+            if (ShellNative.SHCreateItemFromParsingName(folder, IntPtr.Zero, ref iid, out item) != S_OK || item == null) return null;
+            if (ShellNative.NameOf(item, SIGDN.FileSysPath) is { Length: > 0 } path) return path;
+            return folder.EndsWith(".library-ms", StringComparison.OrdinalIgnoreCase) ? LibrarySaveFolder(item) : null;
+        }
+        catch (Exception e) when (e is COMException or InvalidCastException) { return null; }
+        finally { if (item != null) Marshal.ReleaseComObject(item); }
+    }
+
+    /// <summary>The folder a library's drop target saves into (its default save location), or null.</summary>
+    static string? LibrarySaveFolder(IShellItem libraryItem)
+    {
+        var clsid = CLSID_ShellLibrary;
+        var iid = IID_IShellLibrary;
+        if (ShellNative.CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_INPROC_SERVER, ref iid, out IntPtr ptr) != S_OK || ptr == IntPtr.Zero) return null;
+        try
+        {
+            var library = (IShellLibrary)Marshal.GetObjectForIUnknown(ptr);
+            try
+            {
+                if (library.LoadLibraryFromItem(libraryItem, STGM_READ) != S_OK) return null;
+                var iidItem = IID_IShellItem;
+                if (library.GetDefaultSaveFolder(DSFT_DETECT, ref iidItem, out IShellItem? saveFolder) != S_OK || saveFolder == null) return null;
+                try { return ShellNative.NameOf(saveFolder, SIGDN.FileSysPath); }
+                finally { Marshal.ReleaseComObject(saveFolder); }
+            }
+            finally { Marshal.ReleaseComObject(library); }
+        }
+        finally { Marshal.Release(ptr); }
+    }
+
+    /// <summary>
+    /// The file-system paths in a drag's data, or none: when one item has no path (a mail, a file inside a zip, a phone's
+    /// photo) there are none, since such a drop can't be copying files onto themselves. Read from the shell's own item
+    /// list when the data has one, which makes no files; CF_HDROP is read only when it hasn't (WinForms' own data),
+    /// because asking a zip folder's data for it makes it extract the files to disk first.
+    /// </summary>
+    public static IReadOnlyList<string> DraggedPaths(IntPtr data)
+    {
+        if (data == IntPtr.Zero) return [];
+        object? obj = null;
+        try
+        {
+            obj = Marshal.GetObjectForIUnknown(data);
+            if (obj is System.Windows.Forms.IDataObject managed) return managed.GetData(DataFormats.FileDrop) as string[] ?? []; // WinForms' own, from this process
+            if (obj is not IDataObjectRaw dataObject) return [];
+            var idList = HGlobalFormat(unchecked((short)RegisterClipboardFormat("Shell IDList Array")));
+            if (dataObject.QueryGetData(ref idList) == S_OK) return ShellItemPaths(data);
+            var hdrop = HGlobalFormat(CF_HDROP);
+            if (dataObject.QueryGetData(ref hdrop) != S_OK || dataObject.GetData(ref hdrop, out var medium) != S_OK) return [];
+            try { return medium.tymed == TYMED_HGLOBAL ? DropFilePaths(medium.unionmember) : []; }
+            finally { ReleaseStgMedium(ref medium); } // frees the memory, or hands it back to the source (pUnkForRelease)
+        }
+        catch (Exception) { return []; } // a data object that won't say (E_NOTIMPL, a source that went away...) has none
+        finally { if (obj != null && Marshal.IsComObject(obj)) Marshal.ReleaseComObject(obj); }
+    }
+
+    static ComTypes.FORMATETC HGlobalFormat(short format) => new()
+    {
+        cfFormat = format,
+        dwAspect = ComTypes.DVASPECT.DVASPECT_CONTENT,
+        lindex = -1,
+        tymed = ComTypes.TYMED.TYMED_HGLOBAL,
+    };
+
+    /// <summary>Each dragged item's file-system path, from the shell's item list; none when one item has no path.</summary>
+    static IReadOnlyList<string> ShellItemPaths(IntPtr data)
+    {
+        var iid = IID_IShellItemArray;
+        if (SHCreateShellItemArrayFromDataObject(data, ref iid, out IShellItemArray? array) != S_OK || array == null) return [];
+        try
+        {
+            if (array.GetCount(out uint count) != S_OK) return [];
+            var paths = new List<string>((int)Math.Min(count, 4096u));
+            for (uint i = 0; i < count; i++)
+            {
+                if (array.GetItemAt(i, out IShellItem? item) != S_OK || item == null) return [];
+                try
+                {
+                    if (ShellNative.NameOf(item, SIGDN.FileSysPath) is not { Length: > 0 } path) return [];
+                    paths.Add(path);
+                }
+                finally { Marshal.ReleaseComObject(item); }
+            }
+            return paths;
+        }
+        finally { Marshal.ReleaseComObject(array); }
+    }
+
+    /// <summary>
+    /// The paths in a CF_HDROP block (DROPFILES, then the names one after another, each ending in a null, the list in
+    /// two), read in one pass: DragQueryFile would walk the list from the start for every name.
+    /// </summary>
+    internal static IReadOnlyList<string> DropFilePaths(IntPtr hdrop)
+    {
+        if (hdrop == IntPtr.Zero) return [];
+        long size = (long)(ulong)GlobalSize(hdrop);
+        IntPtr block = GlobalLock(hdrop);
+        if (block == IntPtr.Zero) return [];
+        try
+        {
+            const int DropFilesSize = 20; // pFiles, pt, fNC, fWide
+            if (size < DropFilesSize) return [];
+            long offset = (uint)Marshal.ReadInt32(block, 0);
+            bool wide = Marshal.ReadInt32(block, 16) != 0;
+            if (offset < DropFilesSize || offset >= size) return [];
+            var bytes = new byte[size - offset];
+            Marshal.Copy(block + (nint)offset, bytes, 0, bytes.Length);
+            var paths = new List<string>();
+            if (wide)
+            {
+                ReadOnlySpan<char> chars = MemoryMarshal.Cast<byte, char>(bytes.AsSpan(0, bytes.Length & ~1));
+                for (int end; (end = chars.IndexOf('\0')) > 0; chars = chars[(end + 1)..])
+                    paths.Add(new string(chars[..end]));
+            }
+            else
+            {
+                for (int start = 0, end; start < bytes.Length && (end = Array.IndexOf(bytes, (byte)0, start)) > start; start = end + 1)
+                    paths.Add(Marshal.PtrToStringAnsi(block + (nint)(offset + start), end - start));
+            }
+            return paths;
+        }
+        finally { GlobalUnlock(hdrop); }
     }
 
     /// <summary>
@@ -180,6 +333,11 @@ internal static class ShellDragDrop
     static readonly Guid IID_IShellItem = new("43826d1e-e718-42ee-bc55-a1e261c37bfe");
     static readonly Guid BHID_SFUIObject = new("3981e225-f559-11d3-8e3a-00c04f6837d5");
     static readonly Guid BHID_DataObject = new("b8c0bd9f-ed24-455c-83e6-d5390c4fe8c4");
+    static readonly Guid IID_IShellItemArray = new("b63ea76d-1f85-456f-a19c-48159efa858b");
+    static readonly Guid CLSID_ShellLibrary = new("d9b3211d-e57f-4426-aaef-30a806add397");
+    static readonly Guid IID_IShellLibrary = new("11a66efa-382e-451a-9234-1e0e12ef3085");
+    const uint CLSCTX_INPROC_SERVER = 0x1, STGM_READ = 0x0;
+    const int DSFT_DETECT = 1;
 
     [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     interface IShellItemBind
@@ -191,6 +349,31 @@ internal static class ShellDragDrop
     interface IShellItemArrayBind
     {
         [PreserveSig] int BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+    }
+
+    /// <summary>IDataObject as far as QueryGetData, with a medium whose pUnkForRelease stays a plain pointer for ReleaseStgMedium.</summary>
+    [ComImport, Guid("0000010e-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IDataObjectRaw
+    {
+        [PreserveSig] int GetData(ref ComTypes.FORMATETC format, out STGMEDIUM medium);
+        [PreserveSig] int GetDataHere(IntPtr format, IntPtr medium);
+        [PreserveSig] int QueryGetData(ref ComTypes.FORMATETC format);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct STGMEDIUM { public int tymed; public IntPtr unionmember; public IntPtr pUnkForRelease; }
+
+    /// <summary>IShellLibrary as far as GetDefaultSaveFolder (shobjidl_core.h).</summary>
+    [ComImport, Guid("11a66efa-382e-451a-9234-1e0e12ef3085"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellLibrary
+    {
+        [PreserveSig] int LoadLibraryFromItem(IShellItem psiLibrary, uint grfMode);
+        [PreserveSig] int LoadLibraryFromKnownFolder(ref Guid kfidLibrary, uint grfMode);
+        [PreserveSig] int AddFolder(IntPtr psiLocation);
+        [PreserveSig] int RemoveFolder(IntPtr psiLocation);
+        [PreserveSig] int GetFolders(int lff, ref Guid riid, out IntPtr ppv);
+        [PreserveSig] int ResolveFolder(IntPtr psiFolderToResolve, uint dwTimeout, ref Guid riid, out IntPtr ppv);
+        [PreserveSig] int GetDefaultSaveFolder(int dsft, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItem? ppv);
     }
 
     delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
@@ -210,6 +393,12 @@ internal static class ShellDragDrop
     [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc callback, IntPtr lParam);
     [DllImport("ole32.dll")] static extern int RegisterDragDrop(IntPtr hwnd, IDropTargetNative target);
     [DllImport("ole32.dll")] static extern int RevokeDragDrop(IntPtr hwnd);
+    [DllImport("ole32.dll")] static extern void ReleaseStgMedium(ref STGMEDIUM medium);
+    [DllImport("kernel32.dll")] static extern IntPtr GlobalLock(IntPtr global);
+    [DllImport("kernel32.dll")] static extern bool GlobalUnlock(IntPtr global);
+    [DllImport("kernel32.dll")] static extern UIntPtr GlobalSize(IntPtr global);
+    [DllImport("shell32.dll")]
+    static extern int SHCreateShellItemArrayFromDataObject(IntPtr pdo, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItemArray? ppv);
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -232,10 +421,11 @@ internal interface IDropTargetNative
 /// </summary>
 [ComVisible(true)]
 internal sealed class CopyFirstDropTarget(IntPtr hwnd, Func<Point, object?> keyAt, Func<object, IDropTargetNative?> open,
-    bool dragImage, bool owned = true) : IDropTargetNative
+    bool dragImage, bool owned = true, Action<Point?>? spot = null, Action? ended = null) : IDropTargetNative
 {
     static readonly object Unset = new();
     IntPtr _data;
+    IReadOnlyList<string>? _paths;
     object? _key = Unset;
     IDropTargetNative? _inner;
     IDropTargetHelper? _helper;
@@ -284,8 +474,19 @@ internal sealed class CopyFirstDropTarget(IntPtr hwnd, Func<Point, object?> keyA
         }
         effect = result;
         if (_helper != null) { var p = new POINT { X = pt.X, Y = pt.Y }; _helper.DragOver(ref p, effect); }
+        if (spot != null)
+        {
+            try { spot(result != ShellDragDrop.DROPEFFECT_NONE ? new Point(pt.X, pt.Y) : null); }
+            catch (Exception) { } // nothing the window throws may reach OLE
+        }
         return 0;
     }
+
+    /// <summary>
+    /// The file-system paths being dragged over the window now (<see cref="ShellDragDrop.DraggedPaths"/>), read the first
+    /// time they are asked for in a drag and let go of when it ends.
+    /// </summary>
+    public IReadOnlyList<string> DraggedPaths() => _paths ??= ShellDragDrop.DraggedPaths(_data);
 
     /// <summary>
     /// A place that can't take a copy (Quick access pins with a shortcut, say) is asked again with every effect the
@@ -305,6 +506,7 @@ internal sealed class CopyFirstDropTarget(IntPtr hwnd, Func<Point, object?> keyA
         LeaveInner();
         _helper?.DragLeave();
         ReleaseData();
+        Ended();
         return 0;
     }
 
@@ -341,8 +543,15 @@ internal sealed class CopyFirstDropTarget(IntPtr hwnd, Func<Point, object?> keyA
             if (_helper != null) { var p = new POINT { X = pt.X, Y = pt.Y }; _helper.Drop(pDataObj, ref p, result); }
             ReleaseData();
             _key = Unset;
+            Ended();
         }
         return 0;
+    }
+
+    /// <summary>Tells the window the drag left it or was dropped; nothing it throws may reach OLE.</summary>
+    void Ended()
+    {
+        try { ended?.Invoke(); } catch (Exception) { }
     }
 
     void LeaveInner()
@@ -363,6 +572,7 @@ internal sealed class CopyFirstDropTarget(IntPtr hwnd, Func<Point, object?> keyA
     {
         if (_data != IntPtr.Zero) Marshal.Release(_data);
         _data = IntPtr.Zero;
+        _paths = null;
     }
 
     [StructLayout(LayoutKind.Sequential)]

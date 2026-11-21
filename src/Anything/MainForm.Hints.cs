@@ -147,6 +147,43 @@ internal sealed partial class MainForm
         _searchField.SetScopeGlow(0);
     }
 
+    // ---- running as administrator ---------------------------------------------------------------
+
+    readonly FlowLayoutPanel _elevatedBar = new();
+
+    void BuildElevatedDropBar()
+    {
+        _elevatedBar.Dock = DockStyle.Top;
+        _elevatedBar.AutoSize = true;
+        _elevatedBar.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _elevatedBar.WrapContents = true;
+        _elevatedBar.Padding = new Padding(6, 3, 6, 3);
+        _elevatedBar.BackColor = SystemColors.Info;
+        _elevatedBar.ForeColor = SystemColors.InfoText;
+        // The Store's copy has no background service: run normally, it scans folders instead.
+        string text = StorePackage.IsInstalled
+            ? "Rock Preview is running as administrator, so Windows won't let you drag files into it from programs that aren't (your browser, Outlook, the desktop, File Explorer). Run it normally to drop files in; it then scans folders, which is slower."
+            : "Rock Preview is running as administrator, so Windows won't let you drag files into it from programs that aren't (your browser, Outlook, the desktop, File Explorer). Run it normally to drop files in; with instant indexing turned on, searches stay instant.";
+        var label = new Label { AutoSize = true, UseMnemonic = false, Text = text, Margin = new Padding(0, 2, 6, 2) };
+        var dismiss = new LinkLabel { AutoSize = true, Text = "Dismiss", Margin = new Padding(0, 2, 0, 2) };
+        dismiss.LinkClicked += (_, _) => _elevatedBar.Visible = false;
+        _elevatedBar.Controls.AddRange([label, dismiss]);
+        _elevatedBar.Visible = false;
+    }
+
+    /// <summary>
+    /// Run as administrator, Windows refuses files dragged in from programs that aren't, before the app sees the drag, so
+    /// nothing can say why at the time: the first window shown so says it once, in a bar (remembered in the settings).
+    /// </summary>
+    void ShowElevatedDropHintOnce()
+    {
+        var s = _app.Settings;
+        if (s.ElevatedDropHintShown || _app.IsDemo || !_app.IndexManager.IsElevated) return;
+        s.ElevatedDropHintShown = true;
+        s.Save();
+        _elevatedBar.Visible = true;
+    }
+
     /// <summary>The button was clicked to search everything: one more use; from the third, it never lights up again.</summary>
     void ScopeChipUsed()
     {

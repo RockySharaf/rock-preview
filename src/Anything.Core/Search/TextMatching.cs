@@ -153,11 +153,56 @@ internal static class TextUtil
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsWordChar(char c) => char.IsLetterOrDigit(c);
 
+    /// <summary>
+    /// True when the match at <paramref name="start"/> stands as whole words. A side needs a boundary only when the
+    /// match's own edge character there is a letter or digit, so ".pdf" matches "invoice.pdf" and "projects\" matches
+    /// "projects\app". Scripts written without spaces between words (Han, kana, Hangul, Thai, Lao, Khmer, Myanmar,
+    /// Tibetan) need no boundary, or a Chinese name could only be found by a complete name part; Arabic, Hebrew and every
+    /// other script need one exactly as Latin does. Highlighting uses this same test, so it marks what was matched.
+    /// </summary>
     public static bool IsWordBoundary(ReadOnlySpan<char> s, int start, int length)
     {
+        if (length <= 0) return true;
         int end = start + length;
-        return (start == 0 || !IsWordChar(s[start - 1])) && (end >= s.Length || !IsWordChar(s[end]));
+        return (start == 0 || !Joined(s[start - 1], s[start])) && (end >= s.Length || !Joined(s[end - 1], s[end]));
     }
+
+    // Two adjacent characters belong to one word when both are word characters and neither is from a script
+    // written without spaces between words.
+    static bool Joined(char a, char b)
+        => IsWordChar(a) && IsWordChar(b) && !IsUnspacedLetter(a) && !IsUnspacedLetter(b);
+
+    /// <summary>
+    /// A character of a script written without spaces between words, by Unicode block (letters and the marks that act as
+    /// letters there, such as the long-vowel mark ー, 々 and Thai ๆ). Supplementary ideographs are surrogates, which are
+    /// not word characters at all, so they never need a boundary either.
+    /// </summary>
+    internal static bool IsUnspacedLetter(char c) => c >= 0x0E00 && c switch
+    {
+        <= '໿' => true,                     // Thai, Lao
+        >= 'ༀ' and <= '࿿' => true,     // Tibetan
+        >= 'က' and <= '႟' => true,     // Myanmar
+        >= 'ᄀ' and <= 'ᇿ' => true,     // Hangul Jamo
+        >= 'ក' and <= '៿' => true,     // Khmer
+        >= '᧠' and <= '᧿' => true,     // Khmer symbols
+        >= '⺀' and <= '⿟' => true,     // CJK radicals, Kangxi radicals
+        >= '々' and <= '〇' => true,     // 々 〆 〇
+        >= '〱' and <= '〵' => true,     // vertical kana repeat marks
+        >= '〻' and <= '〼' => true,     // 〻 〼
+        >= '぀' and <= 'ㄯ' => true,     // Hiragana, Katakana, Bopomofo
+        >= '㄰' and <= '㆏' => true,     // Hangul compatibility jamo
+        >= 'ㆠ' and <= 'ㆿ' => true,     // Bopomofo extended
+        >= 'ㇰ' and <= 'ㇿ' => true,     // Katakana phonetic extensions
+        >= '㐀' and <= '䶿' => true,     // CJK extension A
+        >= '一' and <= '鿿' => true,     // CJK unified ideographs
+        >= 'ꥠ' and <= '꥿' => true,     // Hangul Jamo extended A
+        >= 'ꧠ' and <= '꧿' => true,     // Myanmar extended B
+        >= 'ꩠ' and <= 'ꩿ' => true,     // Myanmar extended A
+        >= '가' and <= '퟿' => true,     // Hangul syllables, Jamo extended B
+        >= '豈' and <= '﫿' => true,     // CJK compatibility ideographs
+        >= 'ｦ' and <= 'ￜ' => true,     // halfwidth Katakana (with ｰ) and Hangul
+        _ => false,
+    };
 
     /// <summary>True when <paramref name="hay"/> at <paramref name="offset"/> starts with the already-folded <paramref name="folded"/>.</summary>
     public static bool EqualsFold(ReadOnlySpan<char> hay, int offset, string folded, char[]? table)
@@ -170,6 +215,13 @@ internal static class TextUtil
     }
 
     public static bool HasWildcards(string s) => s.AsSpan().IndexOfAny('*', '?') >= 0;
+}
+
+/// <summary>The search engine's whole-word rule, for the app's own code (demo mode matches with it).</summary>
+public static class WholeWord
+{
+    /// <summary>True when the match of <paramref name="length"/> characters at <paramref name="start"/> stands as whole words.</summary>
+    public static bool IsMatch(ReadOnlySpan<char> s, int start, int length) => TextUtil.IsWordBoundary(s, start, length);
 }
 
 /// <summary>Whole-string wildcard matcher (<c>*</c> = any run, <c>?</c> = one char) with fold support.</summary>

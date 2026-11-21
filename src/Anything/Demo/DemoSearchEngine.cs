@@ -146,10 +146,7 @@ internal sealed class DemoSearchEngine : ISearchEngine
             int i = ci.IndexOf(hay, needle, start, o);
             if (i < 0) return false;
             if (!wholeWord) return true;
-            int end = i + needle.Length;
-            bool left = i == 0 || !char.IsLetterOrDigit(hay[i - 1]);
-            bool right = end >= hay.Length || !char.IsLetterOrDigit(hay[end]);
-            if (left && right) return true;
+            if (WholeWord.IsMatch(hay, i, needle.Length)) return true; // the real engine's rule
             start = i + 1;
         }
         return false;
@@ -223,7 +220,11 @@ internal sealed class DemoSearchEngine : ISearchEngine
                 break;
             case SortKey.Extension:
             case SortKey.Type:
-                SortBy(ids, id => index.Extension(id) + "\0" + index.Name(id), StringComparer.OrdinalIgnoreCase);
+                SortBy(ids, id => (index.Extension(id), index.Name(id)), Comparer<(string Ext, string Name)>.Create(static (a, b) =>
+                {
+                    int c = string.Compare(a.Ext, b.Ext, StringComparison.OrdinalIgnoreCase);
+                    return c != 0 ? c : NameOrderComparer.Instance.Compare(a.Name, b.Name);
+                }));
                 break;
             case SortKey.DateModified:
                 SortBy(ids, index.Modified, Comparer<long>.Default);
@@ -235,7 +236,7 @@ internal sealed class DemoSearchEngine : ISearchEngine
                 SortBy(ids, id => (int)index.Attributes(id), Comparer<int>.Default);
                 break;
             default:
-                SortBy(ids, index.Name, StringComparer.OrdinalIgnoreCase);
+                SortBy(ids, index.Name, NameOrderComparer.Instance); // File Explorer's order (IMG_2 before IMG_10), as the real engine
                 break;
         }
         ct.ThrowIfCancellationRequested();
