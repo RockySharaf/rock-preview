@@ -140,7 +140,8 @@ public sealed class FollowerStoreSeamTests : IDisposable
         _rig.Pass(40_000);
         Assert.Equal(reads + 3, _rig.Files.Reads);
         Assert.Equal(ContentPhase.UpToDate, _rig.Content!.Status.Phase);
-        Assert.Equal([@"B\note01.txt"], Find("content:word1 B\\"));
+        // Both folders' note01 (not "word1 B\": the rig's folder is a GUID, and one ending in b would match that too).
+        Assert.Equal([@"A\note01.txt", @"B\note01.txt"], Find("content:word1"));
         AssertNoDuplicates(8);
     }
 

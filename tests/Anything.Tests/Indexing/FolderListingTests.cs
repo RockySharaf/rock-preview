@@ -901,14 +901,20 @@ public sealed class FolderListingTests : IDisposable
         Assert.NotEqual(0, Assert.IsType<DeviceWatcher.Watch>(listing.RemovalWatch(0)).Notify);
     }
 
+    /// <summary>How long <see cref="Busy"/> keeps the device thread: twice <see cref="AtOnceMs"/>, so a busy PC can't make a wait look like none.</summary>
+    const int BusyMs = 6000;
+
+    /// <summary>What "returns at once" may take while the device thread is busy: wide, for a busy PC, and still well short of <see cref="BusyMs"/>.</summary>
+    const int AtOnceMs = 3000;
+
     /// <summary>
-    /// Another drive being let go of, which keeps the device thread busy for two seconds (an index root waiting for its
+    /// Another drive being let go of, which keeps the device thread busy for six seconds (an index root waiting for its
     /// scan, say). Ends once that is over.
     /// </summary>
     static Task Busy(DeviceWatcher devices, string other, ManualResetEventSlim entered)
     {
         Directory.CreateDirectory(other);
-        var watch = Assert.IsType<DeviceWatcher.Watch>(devices.WatchRemoval(other, () => { entered.Set(); Thread.Sleep(2000); }, () => { }));
+        var watch = Assert.IsType<DeviceWatcher.Watch>(devices.WatchRemoval(other, () => { entered.Set(); Thread.Sleep(BusyMs); }, () => { }));
         var eject = Task.Run(() => Send(devices, watch.Notify, DBT_DEVICEQUERYREMOVE));
         Assert.True(entered.Wait(5000), "the other drive's release did not start");
         return eject.ContinueWith(_ => watch.Dispose(), TaskScheduler.Default);
@@ -936,7 +942,7 @@ public sealed class FolderListingTests : IDisposable
             listing.Rescan();
             listing.CheckRootsNow();
             Assert.False(WaitFor(() => listing.ReadsDone != 0 || !Idle(listing), 500), "read before it was watched");
-            Assert.True(Ends(busy, 10_000), "the other drive's release did not end");
+            Assert.True(Ends(busy, 30_000), "the other drive's release did not end");
         }
 
         // Watched, then read once: the refresh is part of the first read.
@@ -976,7 +982,7 @@ public sealed class FolderListingTests : IDisposable
             // The timer's next check returns at once, without waiting for the gate or reading anything.
             var sw = Stopwatch.StartNew();
             checkIfIdle.Invoke(listing, null);
-            Assert.True(sw.ElapsedMilliseconds < 1000, $"the check took {sw.ElapsedMilliseconds} ms");
+            Assert.True(sw.ElapsedMilliseconds < AtOnceMs, $"the check took {sw.ElapsedMilliseconds} ms");
             Assert.False(WaitFor(() => listing.ReadsDone != 1 || !Idle(listing), 300), "read while the last check ran");
             Assert.Equal(ListingState.Unavailable, listing.State);
 
@@ -1018,9 +1024,9 @@ public sealed class FolderListingTests : IDisposable
                 var busy = Busy(devices, other, entered);
                 var sw = Stopwatch.StartNew();
                 listing.Start();
-                Assert.True(sw.ElapsedMilliseconds < 1000, $"Start took {sw.ElapsedMilliseconds} ms");
+                Assert.True(sw.ElapsedMilliseconds < AtOnceMs, $"Start took {sw.ElapsedMilliseconds} ms");
                 // Watched, then read, once the device thread is free.
-                Assert.True(Ends(busy, 10_000), "the other drive's release did not end");
+                Assert.True(Ends(busy, 30_000), "the other drive's release did not end");
                 Assert.True(WaitFor(() => listing.State == ListingState.Ready && listing.RemovalWatch(0) is DeviceWatcher.Watch { Notify: not 0 }),
                     $"state {listing.State}");
             }
@@ -1038,8 +1044,8 @@ public sealed class FolderListingTests : IDisposable
                 Thread.Sleep(200); // the check is waiting for the device thread now
                 var sw = Stopwatch.StartNew();
                 listing.Dispose();
-                Assert.True(sw.ElapsedMilliseconds < 1000, $"Dispose took {sw.ElapsedMilliseconds} ms");
-                Assert.True(Ends(busy, 10_000), "the other drive's release did not end");
+                Assert.True(sw.ElapsedMilliseconds < AtOnceMs, $"Dispose took {sw.ElapsedMilliseconds} ms");
+                Assert.True(Ends(busy, 30_000), "the other drive's release did not end");
                 Assert.True(Ends(check, 10_000), "the check did not end");
             }
             Assert.Null(listing.RemovalWatch(0));

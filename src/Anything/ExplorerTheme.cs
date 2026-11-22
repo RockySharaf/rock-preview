@@ -298,6 +298,112 @@ internal sealed class ExplorerToolStrip : ToolStrip
     [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public ExplorerBarKind Kind { get; }
 
+    // ---- no tooltip over a button's menu ----
+    // WinForms keeps a button's tooltip showing when a click opens the button's menu, and shows one after the click if
+    // the pointer arrived just before it (the hover started then). Either way it lands on the menu's first item. So
+    // while a menu of this bar is open its tooltips are off.
+
+    bool _tipsOff;      // off for an open menu (switched on again only by us)
+    bool _offOnRelease; // ...but still on until the click that opened the menu is over (see TipsOff)
+    bool _buttonDown;   // a mouse button went down on the bar and hasn't come up yet
+    int _otherMenus;    // menus shown for this bar's buttons by others (WhileMenuShows)
+
+    protected override void OnItemAdded(ToolStripItemEventArgs e)
+    {
+        base.OnItemAdded(e);
+        if (e.Item is ToolStripDropDownItem d) { d.DropDownOpened += MenuOpened; d.DropDownClosed += MenuClosed; }
+    }
+
+    protected override void OnItemRemoved(ToolStripItemEventArgs e)
+    {
+        base.OnItemRemoved(e);
+        if (e.Item is ToolStripDropDownItem d) { d.DropDownOpened -= MenuOpened; d.DropDownClosed -= MenuClosed; }
+    }
+
+    /// <summary>For a menu that isn't a WinForms drop-down (Explorer's own New menu): no tooltips while it shows.</summary>
+    public void WhileMenuShows(Action show)
+    {
+        _otherMenus++;
+        TipsOff(waitForRelease: false); // not a drop-down of the bar: the bar's mouse leave doesn't close it
+        try { show(); }
+        finally
+        {
+            _otherMenus--;
+            if (!MenuShowing) TipsOn();
+        }
+    }
+
+    bool MenuShowing => _otherMenus > 0 || Items.OfType<ToolStripDropDownItem>().Any(d => d.HasDropDown && d.DropDown.Visible);
+
+    void MenuOpened(object? sender, EventArgs e) => TipsOff(waitForRelease: true);
+
+    void MenuClosed(object? sender, EventArgs e)
+    {
+        if (!MenuShowing) TipsOn(); // another of the bar's menus may have opened as this one closed
+    }
+
+    void TipsOff(bool waitForRelease)
+    {
+        if (_tipsOff) return;
+        _tipsOff = true;
+        // The showing tooltip is closed by a mouse leave (StripToolTips.Close), and while the click that opened a menu is
+        // still going on, a leave makes the bar take the button's release for a click elsewhere, which closes the menu.
+        // So then it waits for the release; the tooltips stay on until then, so the leave also stops a hover under way.
+        if (waitForRelease && _buttonDown) _offOnRelease = true;
+        else SwitchOff();
+    }
+
+    void SwitchOff()
+    {
+        // Closed first: once ShowItemToolTips is off WinForms no longer closes the one showing. A tooltip from hovering
+        // can only be showing with the pointer on the bar.
+        if (IsHandleCreated && ClientRectangle.Contains(PointToClient(MousePosition))) StripToolTips.Close(this);
+        ShowItemToolTips = false;
+    }
+
+    void TipsOn()
+    {
+        if (!_tipsOff) return;
+        _tipsOff = _offOnRelease = false;
+        ShowItemToolTips = true;
+    }
+
+    protected override void OnMouseDown(MouseEventArgs mea)
+    {
+        _buttonDown = true;
+        base.OnMouseDown(mea);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs mea)
+    {
+        base.OnMouseUp(mea);
+        Released();
+    }
+
+    void Released()
+    {
+        _buttonDown = false;
+        if (!_offOnRelease) return;
+        _offOnRelease = false;
+        // Once the release has been handled.
+        BeginInvoke(() => { if (_tipsOff && !IsDisposed) SwitchOff(); });
+    }
+
+    // Not relying on DropDownClosed alone: if it never came for a menu, the pointer coming back to the bar with no menu
+    // open switches the tooltips on again, so they are never off for good.
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        if (_tipsOff && !MenuShowing) TipsOn();
+        base.OnMouseEnter(e);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs mea)
+    {
+        if (_buttonDown && mea.Button == MouseButtons.None) Released(); // released where the bar didn't see it (in a menu)
+        if (_tipsOff && !MenuShowing) TipsOn();
+        base.OnMouseMove(mea);
+    }
+
     /// <summary>Space between the buttons belongs to the window's title area (it drags the window), not to the bar.</summary>
     [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public bool PassEmptySpaceToWindow { get; set; }

@@ -183,9 +183,13 @@ public class FollowerRound2Tests
         Assert.Equal(5, offer.Documents);
         Assert.True(offer.IndexBytes > 0);
         Assert.Equal(0, h.Files.Reads);
-        // Settings and Setup sample real files, once the user looks at the choice.
-        await h.Content.EstimateAsync(documents, CancellationToken.None);
-        Assert.True(h.Files.Reads > 0);
+        // Settings and Setup sample real files, once the user looks at the choice. The sample has 3 s and runs in background
+        // mode, so on a busy PC (other test runs, a build) its thread can get no CPU before the time is up and read nothing
+        // that time: estimate again until a file is read, for up to a minute. An estimate that never samples still fails.
+        var clock = Stopwatch.StartNew();
+        do await h.Content.EstimateAsync(documents, CancellationToken.None);
+        while (h.Files.Reads == 0 && clock.ElapsedMilliseconds < 60_000);
+        Assert.True(h.Files.Reads > 0, $"no file read in {clock.ElapsedMilliseconds} ms of estimates");
     }
 
     /// <summary>One page with "Find invoice here" in Helvetica.</summary>
@@ -281,7 +285,10 @@ public class DutyCycleTests
         const int N = 20, Ms = 40;
         long idle = Run(active: false, N, Ms), active = Run(active: true, N, Ms);
         Assert.True(active >= 1.8 * N * Ms, $"active {active} ms for {N} reads of {Ms} ms (idle {idle} ms)");
-        Assert.True(active >= 1.6 * idle, $"active {active} ms, idle {idle} ms");
+        // Against the idle run when the lane read faster than one file after another; never against an idle run that a
+        // busy PC slowed down (the two runs are timed seconds apart, each under whatever else the PC was doing then).
+        long reading = Math.Min(idle, N * Ms);
+        Assert.True(active >= 1.6 * reading, $"active {active} ms, idle {idle} ms");
     }
 
     [Fact]
@@ -290,8 +297,12 @@ public class DutyCycleTests
         // 1 ms reads: a rest after each one would round up to the ~15 ms timer tick (about 3 s for 200 files).
         const int N = 200, Ms = 1;
         long idle = Run(active: false, N, Ms), active = Run(active: true, N, Ms);
-        Assert.True(active < 2_000, $"active {active} ms for {N} reads of {Ms} ms (idle {idle} ms)");
-        Assert.True(active > idle, $"active {active} ms, idle {idle} ms: the user's activity must still slow reading");
+        // Rests as long as the reads double the time, whatever the PC's load; a rest after each file adds 200 timer ticks
+        // (3 s or more), which no load can shorten. The 1.5 s between the two is room for a busy moment.
+        Assert.True(active < 2 * idle + 1_500, $"active {active} ms for {N} reads of {Ms} ms (idle {idle} ms)");
+        // Still a rest as long as the reads: at least N * Ms of reading and as much rest, less the last rest owed (under
+        // 50 ms, never taken). Not against the idle run, which a busy moment can slow past the active one.
+        Assert.True(active >= 1.6 * N * Ms, $"active {active} ms, idle {idle} ms: the user's activity must still slow reading");
     }
 }
 

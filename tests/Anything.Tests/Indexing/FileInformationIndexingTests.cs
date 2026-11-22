@@ -286,6 +286,11 @@ public sealed class FileInformationIndexingTests : IDisposable
         Directory.CreateDirectory(Path.Combine(dir, "sub"));
         File.WriteAllText(Path.Combine(dir, "sub", "a.txt"), "a");
         File.WriteAllText(Path.Combine(dir, "b.txt"), "b");
+        // Writing a.txt changed sub's times, but NTFS reports that to sub's parent only when sub is next opened. Left to
+        // the scan's own listing, the notice reaches the watcher and marks sub changed "now", which outranks the time set
+        // below whenever a busy machine holds this thread up past the watcher's 100 ms wait. Opening sub here, before
+        // anything watches, settles it.
+        _ = Directory.GetFileSystemEntries(Path.Combine(dir, "sub"));
         var host = new Host(fromJournal: false);
         host.Index.Configure(dateAccessed: true, folderSizes: false, recentChanges: true);
         using var root = new FolderIndexer(host, dir);

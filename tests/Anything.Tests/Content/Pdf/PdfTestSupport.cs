@@ -37,9 +37,6 @@ internal static class PdfTestSupport
 
     public static byte[] Ascii(string s) => Encoding.Latin1.GetBytes(s);
 
-    /// <summary>The task finished within the time (the Task.Run(...).Wait(2 × budget) rule, without blocking the test thread).</summary>
-    public static async Task<bool> Finishes(Task task, int milliseconds) => await Task.WhenAny(task, Task.Delay(milliseconds)) == task;
-
     /// <summary>The offset of the first occurrence of text in a file.</summary>
     public static int IndexOf(byte[] file, string text) => file.AsSpan().IndexOf(Encoding.Latin1.GetBytes(text));
 

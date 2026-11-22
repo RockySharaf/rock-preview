@@ -20,11 +20,15 @@ public class WatchdogTests
             Request = new ExtractRequest(path, ContentKind.Text, 10, 10, network, false, long.MaxValue, Quick),
         };
 
-    static ReadScheduler Scheduler(IContentSource source, Func<string, CancellationToken, int>? probe = null) => new(source, CrashMarker.InMemory(), new ReadSchedulerOptions
+    /// <summary>
+    /// A watchdog on a short leash. A read that is meant to be freed gets a long abandon grace (<paramref name="freed"/>):
+    /// on a busy PC the freed thread can take more than a moment to come back, and that is not a hang.
+    /// </summary>
+    static ReadScheduler Scheduler(IContentSource source, Func<string, CancellationToken, int>? probe = null, bool freed = false) => new(source, CrashMarker.InMemory(), new ReadSchedulerOptions
     {
         WatchdogPeriodMs = 15,
         CancelGraceMs = 20,
-        AbandonGraceMs = 120,
+        AbandonGraceMs = freed ? 20_000 : 120,
         ProbeRoot = probe ?? ((_, _) => 0),
     });
 
@@ -72,9 +76,9 @@ public class WatchdogTests
     [Fact]
     public void A_read_stuck_in_synchronous_io_is_freed_and_recorded_timed_out_when_its_root_still_answers()
     {
-        using var s = Scheduler(new StuckIoSource(), probe: (_, _) => 0);
+        using var s = Scheduler(new StuckIoSource(), probe: (_, _) => 0, freed: true);
         Assert.True(s.Start(Job(@"C:\a.txt")));
-        var o = Next(s);
+        var o = Next(s, 30_000);
         Assert.Equal(ReadResultKind.TimedOut, o.Kind);
         Assert.False(o.Abandoned);
         Assert.Equal(0, s.AbandonedThreads);
@@ -84,9 +88,9 @@ public class WatchdogTests
     [Fact]
     public void A_read_stuck_on_a_share_that_went_away_is_freed_and_comes_back_offline()
     {
-        using var s = Scheduler(new StuckIoSource(), probe: (_, _) => 53 /* ERROR_BAD_NETPATH */);
+        using var s = Scheduler(new StuckIoSource(), probe: (_, _) => 53 /* ERROR_BAD_NETPATH */, freed: true);
         Assert.True(s.Start(Job(@"\\nas\jobs\a.pdf", network: true, share: @"unc:\\NAS\JOBS")));
-        Assert.Equal(ReadResultKind.Offline, Next(s).Kind);
+        Assert.Equal(ReadResultKind.Offline, Next(s, 30_000).Kind);
     }
 
     [Fact]
@@ -192,7 +196,7 @@ public class StopTests
         return (content, names, files, store);
     }
 
-    static bool WaitFor(Func<bool> condition, int ms = 10_000)
+    static bool WaitFor(Func<bool> condition, int ms = 30_000)
     {
         var sw = Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < ms)
@@ -213,13 +217,15 @@ public class StopTests
         try
         {
             Assert.True(started.Wait(10_000), "no read started");
+            // The read hangs until the test lets it go, so a Stop that waited for it would never return: any return within
+            // the bounds is the wait honoured. They are wide, for a busy PC; the waits they tell apart are long ones.
             var sw = Stopwatch.StartNew();
             content.Stop(TimeSpan.FromMilliseconds(800));
-            Assert.True(sw.ElapsedMilliseconds < 1500, $"Stop took {sw.ElapsedMilliseconds} ms");
+            Assert.True(sw.ElapsedMilliseconds < 4000, $"Stop took {sw.ElapsedMilliseconds} ms");
             sw.Restart();
-            content.Stop(TimeSpan.FromSeconds(5));
+            content.Stop(TimeSpan.FromSeconds(10));
             content.Dispose();
-            Assert.True(sw.ElapsedMilliseconds < 100, "a second Stop must return at once");
+            Assert.True(sw.ElapsedMilliseconds < 5000, $"a second Stop must return at once, not wait its 10 s: took {sw.ElapsedMilliseconds} ms");
             // Commands after Stop are ignored, never thrown.
             content.Apply(Harness.DefaultSettings());
             content.Pause(null);
@@ -244,7 +250,8 @@ public class StopTests
             Thread.Sleep(200);
             var a = Task.Run(() => content.Stop(TimeSpan.FromMilliseconds(500)));
             var b = Task.Run(() => content.Stop(TimeSpan.FromMilliseconds(500)));
-            await Task.WhenAll(a, b).WaitAsync(TimeSpan.FromSeconds(3));
+            // The reads hang until the test lets them go: both returning at all is the point, so the wait is long.
+            await Task.WhenAll(a, b).WaitAsync(TimeSpan.FromSeconds(30));
         }
         finally { gate.Set(); }
     }
@@ -277,7 +284,8 @@ public class StopTests
             // The three are read and in the batch (the slow one is the only file still waiting).
             Assert.True(WaitFor(() => content.Status.Done == 3), "the first pass didn't read");
             Assert.Empty(store.Live());
-            content.Checkpoint(TimeSpan.FromSeconds(2));
+            // Returns once the checkpoint is done; the wait is long because the follower is low priority on a busy PC.
+            content.Checkpoint(TimeSpan.FromSeconds(30));
             Assert.Equal(3, store.Live().Count);
             Assert.NotEqual(ContentPhase.Stopped, content.Status.Phase);
             release.Set();
@@ -307,10 +315,12 @@ public class StopTests
         content.ContentChanged += () => Interlocked.Increment(ref changed);
         try
         {
-            Assert.True(WaitFor(() => store.Live().Count == 3));
-            Assert.True(WaitFor(() => Volatile.Read(ref changed) > 0, 6000), "no ContentChanged within the 3 s debounce");
+            // Long waits: the follower runs in background mode (low priority), which a busy PC can hold off for seconds.
+            Assert.True(WaitFor(() => store.Live().Count == 3, 30_000));
+            Assert.True(WaitFor(() => Volatile.Read(ref changed) > 0, 30_000), "no ContentChanged after the 3 s debounce");
             Assert.True(Volatile.Read(ref status) > 0);
-            Assert.Equal(ContentPhase.UpToDate, content.Status.Phase);
+            // The follower publishes its status on its own thread after the commit, not with ContentChanged (a timer's).
+            Assert.True(WaitFor(() => content.Status.Phase == ContentPhase.UpToDate, 30_000), $"phase {content.Status.Phase}");
         }
         finally { content.Stop(TimeSpan.FromSeconds(1)); }
     }

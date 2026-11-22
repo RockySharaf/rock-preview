@@ -1309,6 +1309,8 @@ internal sealed partial class MainForm : Form
         }
         if (!folderView) right = ContentStatusRight(right, listingLine != null);
         _statusRight.Text = right;
-        _statusRight.ToolTipText = right;
+        // Progress (indexing, reading a folder) changes it while its tooltip shows, several times a second: hovering
+        // again after each change would only make the tooltip flicker, so it comes back when the pointer moves.
+        StripToolTips.Set(_statusRight, right, hoverAgain: false);
     }
 }

@@ -34,6 +34,7 @@ internal sealed partial class ExplorerHost : Control
     readonly System.Windows.Forms.Timer _selectionTimer = new() { Interval = 200 };
     readonly System.Windows.Forms.Timer _selectTimer = new() { Interval = 100 };
     readonly System.Windows.Forms.Timer _themeTimer = new() { Interval = 400 };
+    readonly System.Windows.Forms.Timer _newFolderTimer = new() { Interval = NewFolderRename.WaitMilliseconds };
     string? _lastSelection;
     int _lastSelectionCount = -1;
     int _lastFocused = -1;
@@ -45,7 +46,12 @@ internal sealed partial class ExplorerHost : Control
     // SelectionFromNavigation). _navSelectionId: that item's ID in the view, once TrySelectPending has selected it.
     bool _selectionFromNavigation;
     byte[]? _navSelectionId;
-    NewFolderWatch? _newFolderWatch;    // the New folder command's watch for the folder it makes (CreateNewFolder)
+    // The New folder command's registration for the shell's word of the folder it makes (CreateNewFolder), 0 when none,
+    // and its second one for the view's own form of the folder when that differs (0 when none); the message that word
+    // comes in, and the view's location when the command ran.
+    uint _newFolderNotify, _newFolderNotifyShown;
+    int _newFolderMessage, _newFolderCount;
+    string? _newFolderLocation;
     bool _navPane = true;
     bool _thisPcPending;                // the view being created shows This PC
 
@@ -76,6 +82,7 @@ internal sealed partial class ExplorerHost : Control
         _selectionTimer.Tick += (_, _) => PollSelection();
         _selectTimer.Tick += (_, _) => TrySelectPending();
         _themeTimer.Tick += (_, _) => { _themeTimer.Stop(); ApplyViewTheme(); };
+        _newFolderTimer.Tick += (_, _) => { _newFolderTimer.Stop(); EndNewFolderWatch(); };
         Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
     }
 
@@ -177,6 +184,7 @@ internal sealed partial class ExplorerHost : Control
             _selectionTimer.Dispose();
             _selectTimer.Dispose();
             _themeTimer.Dispose();
+            _newFolderTimer.Dispose();
             WatchUserInput(false);
             EndNewFolderWatch();
             ReleaseBrowser();
@@ -219,7 +227,7 @@ internal sealed partial class ExplorerHost : Control
     }
 
     /// <summary>
-    /// Forgets a new folder's rename still to come: the watch for the folder, and its select and rename once found. The
+    /// Forgets a new folder's rename still to come: the wait for the shell's word of it, and its select and rename. The
     /// user went on meanwhile (input in the view, the view hidden), so what they do stands.
     /// </summary>
     void DropNewFolderRename()
@@ -261,13 +269,13 @@ internal sealed partial class ExplorerHost : Control
             try
             {
                 if (host._selectItemAfterNavigate == null && !host._selectionFromNavigation
-                    && host._newFolderWatch == null && !host._renameAfterSelect) return false;
+                    && host._newFolderNotify == 0 && !host._renameAfterSelect) return false;
                 if (!NavigationInput.MovesOn(m.Msg, m.WParam, m.LParam)) return false;
                 if (host.IsDisposed || !host.IsHandleCreated) return false;
                 if (m.HWnd != host.Handle && !IsChild(host.Handle, m.HWnd)) return false;
                 host.DropItemSelect();
                 // Nor a new folder's rename still to come: a late one would take the focus from what the user does now
-                // (their own F2 on it, a click elsewhere). Its own key (Ctrl+Shift+N) comes before the watch starts.
+                // (their own F2 on it, a click elsewhere). Its own key (Ctrl+Shift+N) comes before the wait starts.
                 host.DropNewFolderRename();
                 // What makes the selection the user's is the user changing it, which the poll sees (PollSelection, by
                 // the item's ID): a click on the column header (drawn inside the items window, so not told apart from a
@@ -923,6 +931,9 @@ internal sealed partial class ExplorerHost : Control
             _renameAfterSelect = false;
             return;
         }
+        // A new folder's rename only while the keys are still in this view, where the command left them: gone to the
+        // search box or the address bar meanwhile (a click there is no input in the view), what the user does stands.
+        if (_renameAfterSelect && !KeysInView()) { DropNewFolderRename(); return; }
         // A rename box closes when the view gets the focus after it opens, so the view gets it first, a tick earlier.
         if (_renameAfterSelect && _selectAttempts == 1) { FocusView(); return; }
         var view = GetView<IShellView>(ShellNative.IID_IShellView);
@@ -964,7 +975,7 @@ internal sealed partial class ExplorerHost : Control
                 if (_renameAfterSelect) _renameAfterSelect = false;
                 // Back's or Up's item takes the focus only while the keys are still in this view: not when the view is
                 // hidden (a search, another tab) or the user has gone on to the address bar, the navigation pane...
-                else if (path != null || Visible && (ContainsFocus || IsFormsActiveControl())) FocusView();
+                else if (path != null || KeysInView()) FocusView();
             }
         }
         finally
@@ -994,6 +1005,9 @@ internal sealed partial class ExplorerHost : Control
         }
         return active == this;
     }
+
+    /// <summary>The view is shown and the keys are in it (also while the app is in the background).</summary>
+    bool KeysInView() => Visible && (ContainsFocus || IsFormsActiveControl());
 
     /// <summary>
     /// The selected item's ID inside the folder (the focused one when it is selected, else the first selected), kept in
@@ -1108,14 +1122,15 @@ internal sealed partial class ExplorerHost : Control
     {
         DropItemSelect(); // Back's or Up's late select would end the rename box
         // Where the folder lands on disk: a library makes it in its save folder.
-        folder ??= CurrentParsingName is { } name ? ShellDragDrop.FileSystemFolder(name) : null;
-        _newFolderWatch?.Dispose(); // an earlier one still waiting: this folder is the one to rename
-        _newFolderWatch = folder != null ? new NewFolderWatch(this, folder, CurrentParsingName) : null;
+        if (NewFolderRename.NeedsSaveFolder(folder))
+            folder = (folder ?? CurrentParsingName) is { } name ? ShellDragDrop.FileSystemFolder(name) : null;
+        // Hosted here, the view makes the folder but leaves it unselected and not renaming: done as Explorer does once
+        // the shell tells which folder it made (OnNewFolderMade). An earlier command still waiting ends: this one's is
+        // the folder to rename. A wait that brings no word ends by itself after a while (NewFolderRename.WaitMilliseconds).
+        WatchForNewFolder(folder);
         if (NewFolderInView(out int refused))
         {
-            // Hosted here, the view makes the folder but leaves it unselected and not renaming: done as Explorer does,
-            // once the watch sees which folder it made.
-            _newFolderWatch?.CommandDone();
+            if (_newFolderNotify != 0) _newFolderTimer.Start();
             return;
         }
         EndNewFolderWatch();
@@ -1145,12 +1160,107 @@ internal sealed partial class ExplorerHost : Control
         _selectTimer.Start();
     }
 
-    /// <summary>Stops the New folder command's watch, if any (also when the host's window goes).</summary>
+    /// <summary>
+    /// Asks the shell for word of the folder the New folder command is about to make in <paramref name="folder"/> (on
+    /// disk; a library's save folder). That word (SHCNE_MKDIR) is the one Windows' own file operation raises itself, in
+    /// this process, as it makes the folder, carrying the folder's ID list: the view learns of its new item the same
+    /// way. Shell-level only, so it never waits on a change notice from the disk or a share (many send none), and no
+    /// clock decides when the rename starts: one only ends a wait that brought no word. Each command gets a message of
+    /// its own, so a word still queued for an earlier one is told apart.
+    /// The word names the folder as the shell saw it made, which need not be its path's ID list: the Desktop shown as the
+    /// top of the namespace, This PC's Downloads or Documents name their items their own way, and a registration on one
+    /// form of a folder hears nothing raised in another. So the view's own folder, as the view names it, is asked for too,
+    /// by a registration of its own with the same message: Windows faults on a registration with more than one entry.
+    /// </summary>
+    void WatchForNewFolder(string? folder)
+    {
+        EndNewFolderWatch();
+        if (folder == null || !IsHandleCreated) return;
+        if (SHParseDisplayName(folder, IntPtr.Zero, out var onDisk, 0, out _) != ShellNative.S_OK || onDisk == IntPtr.Zero) return;
+        IntPtr shown = IntPtr.Zero;
+        try
+        {
+            _newFolderMessage = NewFolderRename.MessageFor(++_newFolderCount);
+            _newFolderNotify = RegisterForNewFolder(onDisk);
+            if (_newFolderNotify == 0) return;
+            _newFolderLocation = CurrentParsingName;
+            if (_current == null) return;
+            shown = Marshal.AllocCoTaskMem(_current.Length);
+            Marshal.Copy(_current, 0, shown, _current.Length);
+            if (!ILIsEqual(onDisk, shown)) _newFolderNotifyShown = RegisterForNewFolder(shown);
+        }
+        finally // a registration keeps its own copy
+        {
+            ShellNative.ILFree(onDisk);
+            if (shown != IntPtr.Zero) Marshal.FreeCoTaskMem(shown);
+        }
+    }
+
+    /// <summary>
+    /// One registration for SHCNE_MKDIR in the folder <paramref name="pidl"/> (not below it), told in the command's
+    /// message; 0 when refused.
+    /// </summary>
+    uint RegisterForNewFolder(IntPtr pidl)
+    {
+        var entry = new SHChangeNotifyEntry { pidl = pidl, fRecursive = 0 };
+        return SHChangeNotifyRegister(Handle, SHCNRF_ShellLevel | SHCNRF_NewDelivery, SHCNE_MKDIR, (uint)_newFolderMessage, 1, ref entry);
+    }
+
+    /// <summary>Stops waiting for the New folder command's folder, if it still is (also when the host's window goes).</summary>
     void EndNewFolderWatch()
     {
-        _newFolderWatch?.Dispose();
-        _newFolderWatch = null;
+        _newFolderTimer.Stop();
+        if (_newFolderNotify != 0) SHChangeNotifyDeregister(_newFolderNotify);
+        if (_newFolderNotifyShown != 0) SHChangeNotifyDeregister(_newFolderNotifyShown);
+        _newFolderNotify = _newFolderNotifyShown = 0;
+        _newFolderLocation = null;
     }
+
+    /// <summary>
+    /// The shell's word of a folder made where the New folder command ran: it is selected and its rename started, while
+    /// the user is still where the command left them (the same location, shown, the keys in the view, which the command
+    /// gave the focus). Gone to the search box, the address bar or another tab: left alone. Word for an earlier command,
+    /// or one that came after this one ended, is only let go. The path is read from the folder's ID list in whichever form
+    /// the word names it; the first word ends the wait, so the same folder told in both forms is renamed once.
+    /// </summary>
+    void OnNewFolderMade(ref Message m)
+    {
+        string? path = null;
+        IntPtr held = SHChangeNotification_Lock(m.WParam, (uint)m.LParam, out IntPtr pidls, out int what);
+        if (held == IntPtr.Zero) return;
+        try
+        {
+            if (m.Msg == _newFolderMessage && _newFolderNotify != 0 && (what & SHCNE_MKDIR) != 0 && pidls != IntPtr.Zero)
+                path = ShellNative.NameOf(Marshal.ReadIntPtr(pidls), SIGDN.FileSysPath);
+        }
+        finally { SHChangeNotification_Unlock(held); } // always: the word's memory is freed only so
+        if (path == null) return;
+        string? location = _newFolderLocation;
+        EndNewFolderWatch();
+        if (NewFolderRename.MayStart(KeysInView(), CurrentParsingName, location)) SelectAndRename(path);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (NewFolderRename.IsMessage(m.Msg))
+        {
+            try { OnNewFolderMade(ref m); } catch (Exception) { } // never out of the window's message
+            return;
+        }
+        base.WndProc(ref m);
+    }
+
+    const int SHCNRF_ShellLevel = 0x0002, SHCNRF_NewDelivery = 0x8000, SHCNE_MKDIR = 0x00000008;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct SHChangeNotifyEntry { public IntPtr pidl; public int fRecursive; }
+
+    [DllImport("shell32.dll")]
+    static extern uint SHChangeNotifyRegister(IntPtr hwnd, int fSources, int fEvents, uint wMsg, int cEntries, ref SHChangeNotifyEntry pshcne);
+    [DllImport("shell32.dll")] static extern bool SHChangeNotifyDeregister(uint ulID);
+    [DllImport("shell32.dll")] static extern bool ILIsEqual(IntPtr pidl1, IntPtr pidl2);
+    [DllImport("shell32.dll")] static extern IntPtr SHChangeNotification_Lock(IntPtr hChange, uint dwProcId, out IntPtr pppidl, out int plEvent);
+    [DllImport("shell32.dll")] static extern bool SHChangeNotification_Unlock(IntPtr hLock);
 
     /// <summary>
     /// In a library the view's items are the library's own, so the ID of a folder's path on disk isn't found among them:
@@ -1184,111 +1294,6 @@ internal sealed partial class ExplorerHost : Control
         }
         catch (COMException) { return false; }
         finally { Marshal.ReleaseComObject(fv); }
-    }
-
-    /// <summary>
-    /// Finds the folder the view's New folder command makes in a folder on disk (Windows' own name, in the user's
-    /// language), then selects it and starts its rename while the view still shows the same location. A watcher on the
-    /// folder, started before the command, tells at once; where it can't be started or tells nothing (a share or drive
-    /// without change notifications), the folder's one subfolder made since the command is looked for, off the UI
-    /// thread, a second after the command has run. Lives on the UI thread; ended by the host (another New folder, the
-    /// window going) or once found or not.
-    /// </summary>
-    sealed class NewFolderWatch : IDisposable
-    {
-        readonly ExplorerHost _host;
-        readonly string _folder;
-        readonly string? _location;           // the view's location when the command ran
-        readonly DateTime _since = DateTime.UtcNow.AddSeconds(-2); // FAT's 2-second times, a share's clock a little off
-        readonly FileSystemWatcher? _watcher;
-        readonly System.Windows.Forms.Timer _wait = new() { Interval = 1000 };
-        int _finished;                        // 1 once found, looked for or ended (any thread)
-        bool _disposed;                       // UI thread
-
-        public NewFolderWatch(ExplorerHost host, string folder, string? location)
-        {
-            _host = host;
-            _folder = folder;
-            _location = location;
-            _wait.Tick += (_, _) => { try { LookForIt(); } catch (Exception) { } }; // never out of a timer
-            FileSystemWatcher? w = null;
-            try
-            {
-                w = new FileSystemWatcher(folder) { NotifyFilter = NotifyFilters.DirectoryName, IncludeSubdirectories = false };
-                w.Created += (_, e) => { try { Found(e.FullPath); } catch (Exception) { } }; // never out of the watcher's callback
-                w.EnableRaisingEvents = true;
-                _watcher = w;
-            }
-            catch (Exception) { w?.Dispose(); } // not watchable (a zip, a share that refuses): looked for after the command
-        }
-
-        /// <summary>The view's command has run (it makes the folder before it returns): looked for in a second unless told by then.</summary>
-        public void CommandDone()
-        {
-            if (!_disposed && Volatile.Read(ref _finished) == 0) _wait.Start();
-        }
-
-        void LookForIt()
-        {
-            _wait.Stop();
-            if (_disposed || Volatile.Read(ref _finished) != 0) return;
-            string folder = _folder;
-            DateTime since = _since;
-            Task.Run(() => NewestFolder(folder, since)).ContinueWith(t => Found(t.IsCompletedSuccessfully ? t.Result : null), TaskScheduler.Default);
-        }
-
-        /// <summary>
-        /// The one subfolder of <paramref name="folder"/> made since <paramref name="since"/> (and not later than a little
-        /// after now); null when there is none or more than one. A folder another program made meanwhile, or one carrying
-        /// a creation time in the future (copied with its times, a clock ahead), is then never taken for the new one: its
-        /// rename is simply not started. Off the UI thread.
-        /// </summary>
-        static string? NewestFolder(string folder, DateTime since)
-        {
-            try
-            {
-                DateTime until = DateTime.UtcNow.AddSeconds(2);
-                string? found = null;
-                foreach (var d in new DirectoryInfo(folder).EnumerateDirectories())
-                {
-                    DateTime made = d.CreationTimeUtc;
-                    if (made < since || made > until) continue;
-                    if (found != null) return null; // two: which one the command made can't be told
-                    found = d.FullName;
-                }
-                return found;
-            }
-            catch (Exception) { return null; }
-        }
-
-        /// <summary>The folder made (null: none found), handed to the UI thread once. Any thread.</summary>
-        void Found(string? path)
-        {
-            if (Interlocked.Exchange(ref _finished, 1) != 0) return;
-            try { _host.BeginInvoke(() => Done(path)); }
-            catch (Exception) { } // the window is gone: the host ends the watch as it goes (EndNewFolderWatch)
-        }
-
-        void Done(string? path)
-        {
-            if (_disposed) return; // ended by the host meanwhile (another New folder, a closed tab)
-            if (_host._newFolderWatch == this) _host._newFolderWatch = null;
-            Dispose();
-            // Only while the user is still where the command left them: the same location, shown, with the keys in the
-            // view (the command gave it the focus). Gone to the search box, the address bar or another tab: left alone.
-            if (path != null && !_host.IsDisposed && _host.Visible && (_host.ContainsFocus || _host.IsFormsActiveControl())
-                && string.Equals(_host.CurrentParsingName, _location, StringComparison.OrdinalIgnoreCase))
-                _host.SelectAndRename(path);
-        }
-
-        public void Dispose()
-        {
-            if (_disposed) return;
-            _disposed = true;
-            Interlocked.Exchange(ref _finished, 1);
-            _wait.Dispose();
-            _watcher?.Dispose();
-        }
     }
 
     /// <summary>Starts in-place rename of the selected item.</summary>
@@ -1452,8 +1457,9 @@ internal sealed partial class ExplorerHost : Control
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         if (FocusInView(out bool inRename) && inRename && IsRenameKey(keyData)) return false;
-        // Escape, and Ctrl+N (the view's own opens a File Explorer window): the window's, as with the keys in other places.
-        if (keyData is Keys.Escape or (Keys.Control | Keys.N)) return base.ProcessCmdKey(ref msg, keyData);
+        // Escape, Ctrl+N (the view's own opens a File Explorer window) and F1 (the view's own does nothing here; the
+        // window's opens Search Syntax, as the menu says): the window's, as with the keys in other places.
+        if (keyData is Keys.Escape or (Keys.Control | Keys.N) or Keys.F1) return base.ProcessCmdKey(ref msg, keyData);
         var view = GetView<IShellView>(ShellNative.IID_IShellView);
         if (view != null)
         {

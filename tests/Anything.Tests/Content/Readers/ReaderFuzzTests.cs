@@ -73,27 +73,26 @@ public class ReaderFuzzTests
     static (string Name, string Extension, byte[] Bytes) Fixture(string name) => Fixtures.Value.Single(f => f.Name == name);
 
     /// <summary>
-    /// Runs one input as a task on its own thread (a long-running task, so a busy pool can't delay its start) and waits
-    /// twice the time budget from the moment it starts; fails with the seed and a hex head when it runs past that, lets
-    /// an exception out, or allocates past the limit.
+    /// Runs one input on a thread of its own; fails with the seed and a hex head when it uses more than twice the time
+    /// budget in CPU time (or hangs), lets an exception out, or allocates past the limit. CPU time, not the wall clock:
+    /// these tests run beside the rest of the suite, and a thread held off a busy CPU for a moment is not a reader that
+    /// ignores its budget.
     /// </summary>
     static ExtractedDoc RunGuarded(byte[] input, string extension, string what)
     {
         long allocated = 0;
         ExtractedDoc? doc = null;
         Exception? error = null;
-        using var started = new ManualResetEventSlim();
-        var task = Task.Factory.StartNew(() =>
+        bool finished = CpuBound.Run(() =>
         {
-            started.Set();
             long before = GC.GetAllocatedBytesForCurrentThread();
             try { doc = ReaderRun.Bytes(input, extension, Limits); }
             catch (Exception e) { error = e; }
             allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-        started.Wait();
-        if (!task.Wait(2 * Limits.MaxMilliseconds))
-            throw new Xunit.Sdk.XunitException($"{what}: ran past its time budget; head {Convert.ToHexString(input.AsSpan(0, Math.Min(64, input.Length)))}");
+        }, out double cpuMs);
+        if (!finished || cpuMs > 2 * Limits.MaxMilliseconds)
+            throw new Xunit.Sdk.XunitException($"{what}: ran past its time budget ({(finished ? $"{cpuMs:F0} ms of CPU" : "still running")}); " +
+                $"head {Convert.ToHexString(input.AsSpan(0, Math.Min(64, input.Length)))}");
         if (error != null) throw new Xunit.Sdk.XunitException($"{what}: {error.GetType().Name} escaped: {error.Message}");
         Assert.True(allocated < MaxAllocation, $"{what}: allocated {allocated:N0} bytes");
         return doc!;

@@ -407,7 +407,10 @@ internal sealed partial class MainForm
         object? view = _explorer.GetShellViewObject();
         try
         {
-            if (!ShellContextMenu.ShowNewMenu(this, folder, view, pt)) CmdNewFolder();
+            // The bar can't see this menu open (it isn't a WinForms drop-down), so it is told.
+            bool shown = false;
+            _commands.WhileMenuShows(() => shown = ShellContextMenu.ShowNewMenu(this, folder, view, pt));
+            if (!shown) CmdNewFolder();
         }
         finally
         {
@@ -529,9 +532,10 @@ internal sealed partial class MainForm
         if (_cmdSearchOptions.Owner is null) return; // the menus are built before the bar
         var kind = Filters.All[_filterIndex];
         bool any = _filterIndex > 0;
-        _cmdSearchOptions.ToolTipText = any ? $"Showing only {kind.Shown}. Where and how to search" : "Where and how to search";
+        // The kind changes with the tab too (Ctrl+Tab), also while the pointer rests on these (see StripToolTips.Set).
+        StripToolTips.Set(_cmdSearchOptions, any ? $"Showing only {kind.Shown}. Where and how to search" : "Where and how to search");
         _cmdSearchOptions.AccessibleName = any ? $"Search options: {kind.Name}" : null;
-        _cmdClearKind.ToolTipText = any ? $"Show every kind of file, not only {kind.Shown}" : "";
+        StripToolTips.Set(_cmdClearKind, any ? $"Show every kind of file, not only {kind.Shown}" : "");
         if (_searchOptionsLook != (_filterIndex, DeviceDpi))
         {
             _searchOptionsLook = (_filterIndex, DeviceDpi);
@@ -578,11 +582,12 @@ internal sealed partial class MainForm
         bool thumbs = !explorer && ThumbnailMode;
         _thumbsButton.Enabled = !explorer || _explorer.CurrentPath != null || AtHome; // This PC, Network...: no folder of files; Home: its recent files
         _thumbsButton.Tag = thumbs; // drawn pressed while thumbnails are showing
-        _thumbsButton.ToolTipText = explorer && AtHome ? "Thumbnails of the files you opened lately (Ctrl+Shift+X)"
+        // Thumbnails and Everyday files change their tooltip when clicked, under the pointer (see StripToolTips.Set).
+        StripToolTips.Set(_thumbsButton, explorer && AtHome ? "Thumbnails of the files you opened lately (Ctrl+Shift+X)"
             : explorer ? "Thumbnails of every file in this folder and its subfolders (Ctrl+Shift+X)"
             : thumbs ? (_zapActive ? "Back to the folder (Ctrl+Shift+X)" : "Back to the list (Ctrl+Shift+X)")
             : Filters.All[_filterIndex].Search == "folder:" ? "Show these folders as thumbnails (Ctrl+Shift+X)"
-            : "Thumbnails of the files found and of every file in the folders found (Ctrl+Shift+X)";
+            : "Thumbnails of the files found and of every file in the folders found (Ctrl+Shift+X)");
         _thumbsButton.Invalidate();
         // Only where it applies: "every file in", and search results as thumbnails. Available, not Visible: Visible reads
         // false until the bar shows.
@@ -590,9 +595,9 @@ internal sealed partial class MainForm
         if (_cmdEveryday.Available != everydayApplies) _cmdEveryday.Available = everydayApplies;
         _cmdEveryday.Tag = _app.Settings.EverydayFilesOnly; // drawn pressed while on
         _cmdEveryday.Invalidate();
-        _cmdEveryday.ToolTipText = _app.Settings.EverydayFilesOnly
+        StripToolTips.Set(_cmdEveryday, _app.Settings.EverydayFilesOnly
             ? "Showing only everyday files: pictures, videos, music, documents... Click to show every file (code, settings, system files...); the arrow picks the kinds"
-            : "Showing every file. Click to show only everyday files: pictures, videos, music, documents...";
+            : "Showing every file. Click to show only everyday files: pictures, videos, music, documents...");
         _cmdPreview.Checked = _app.Settings.PreviewVisible;
     }
 
@@ -821,11 +826,13 @@ internal sealed partial class MainForm
     {
         // Back from results goes to the folder they were searched from.
         string? back = !explorer && _browsing ? _explorer.CurrentDisplayName : _explorer.BackName;
-        _navBack.ToolTipText = _navBack.Enabled && back is { Length: > 0 } ? $"Back to {back} (Alt+Left)" : "Back (Alt+Left)";
+        // Through StripToolTips: after a click the pointer still rests on the button, and its tooltip would keep naming
+        // the old place.
+        StripToolTips.Set(_navBack, _navBack.Enabled && back is { Length: > 0 } ? $"Back to {back} (Alt+Left)" : "Back (Alt+Left)");
         string? forward = explorer && ForwardSearchHere && _tab.ForwardSearch is { } search ? $"the search for \"{search.Text}\"" : _explorer.ForwardName;
-        _navForward.ToolTipText = _navForward.Enabled && forward is { Length: > 0 } ? $"Forward to {forward} (Alt+Right)" : "Forward (Alt+Right)";
+        StripToolTips.Set(_navForward, _navForward.Enabled && forward is { Length: > 0 } ? $"Forward to {forward} (Alt+Right)" : "Forward (Alt+Right)");
         string? up = _explorer.ParentDisplayName;
-        _navUp.ToolTipText = _navUp.Enabled && up is { Length: > 0 } ? $"Up to {up} (Alt+Up)" : "Up (Alt+Up)";
+        StripToolTips.Set(_navUp, _navUp.Enabled && up is { Length: > 0 } ? $"Up to {up} (Alt+Up)" : "Up (Alt+Up)");
     }
 
     void SyncAddress()
@@ -915,6 +922,16 @@ internal sealed partial class MainForm
     {
         string typed = text.Trim();
         if (typed.Length == 0) { GoHome(); return true; }
+        // What the bar itself shows for the open folder means that folder, so Enter on it keeps the folder open; the
+        // Desktop's is just "Desktop", which would otherwise open a folder of that name inside the Desktop. With results
+        // or "every file in" showing over it, they are left and the folder itself shows again, as Escape and the search
+        // box's × leave them.
+        if (_browsing && string.Equals(typed, _explorer.CurrentEditingName, StringComparison.Ordinal))
+        {
+            if (_zapActive) ExitZap(rerun: true); // also empties the search box and brings the folder view back
+            else if (_search.TextLength > 0) _search.Clear();
+            return true;
+        }
         string? folder = _browsing ? _explorer.CurrentPath : null;
         if (AddressCommand.IsWebAddress(typed)) return StartAddress(new AddressCommand.Run(typed, "", folder), typed, quiet: false);
         string expanded = Environment.ExpandEnvironmentVariables(typed.Trim('"'));

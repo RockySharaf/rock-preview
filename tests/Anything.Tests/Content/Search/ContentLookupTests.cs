@@ -326,11 +326,24 @@ public class ContentLookupTests
         uint segment = store.FakeSegments[0].Id;
 
         // No helper: the search thread itself works (as when the thread pool is busy), on 300 candidates of 10 ms.
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
-        var clock = System.Diagnostics.Stopwatch.StartNew();
+        // Within one candidate is counted, not timed: the candidates begun after the cancel (a busy PC can stretch the
+        // 10 ms ones, but not add to their number). The count is taken just after the cancel, on the timer's thread, which
+        // the search may outrun: it is waited for. (A callback registered on the token runs after the search can already
+        // see the cancel, so it may not have run when the search returns.)
+        using var cts = new CancellationTokenSource();
+        int readsAtCancel = -1;
+        using var counted = new ManualResetEventSlim();
+        using var timer = new Timer(_ =>
+        {
+            cts.Cancel();
+            Volatile.Write(ref readsAtCancel, Volatile.Read(ref reads));
+            counted.Set();
+        }, null, 150, Timeout.Infinite);
         Assert.ThrowsAny<OperationCanceledException>(() => lookup.WaitFor([segment], long.MaxValue, cts.Token));
-        Assert.True(clock.ElapsedMilliseconds < 600, $"stopped {clock.ElapsedMilliseconds} ms after starting (cancelled at 150 ms)");
-        Assert.True(Volatile.Read(ref reads) < 60, $"{reads} candidates read");
+        int readsAtReturn = Volatile.Read(ref reads);
+        Assert.True(counted.Wait(TimeSpan.FromSeconds(30)), "the cancel never came");
+        Assert.True(readsAtReturn <= readsAtCancel + 1, $"{readsAtReturn - readsAtCancel} candidates begun after the cancel ({readsAtReturn} in all)");
+        Assert.True(readsAtReturn < 300, $"{readsAtReturn} candidates read: it ran to the end");
         Assert.True(lookup.HasQueued, "the candidates it didn't reach were thrown away");
 
         // The background lane finishes the rest: every candidate is read exactly once, and the answer is complete.

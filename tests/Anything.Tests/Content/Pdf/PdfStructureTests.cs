@@ -15,6 +15,17 @@ public class PdfStructureTests
         return w;
     }
 
+    /// <summary>
+    /// Reads a file built to loop. A reader caught in the loop would run until its 15 s budget, so it must be done in well
+    /// under that, counted in CPU time: the wall clock also counts the moments a busy PC keeps the thread waiting.
+    /// </summary>
+    static ExtractedDoc Looped(Func<ExtractedDoc> read)
+    {
+        var doc = CpuBound.Measure(read, out double cpuMs, out _);
+        Assert.True(cpuMs < 10_000, $"{cpuMs:F0} ms of CPU");
+        return doc;
+    }
+
     [Theory]
     [InlineData(0, false)]
     [InlineData(1, false)]
@@ -69,41 +80,38 @@ public class PdfStructureTests
     }
 
     [Fact]
-    public async Task A_prev_chain_that_loops_ends()
+    public void A_prev_chain_that_loops_ends()
     {
         var w = W.SimpleDocument(W.Lines("Looping trailer"));
         var file = Encoding.Latin1.GetString(w.Write());
         int xrefAt = file.LastIndexOf("\nxref\n", StringComparison.Ordinal) + 1;
         // The trailer's /Prev points at its own section.
         file = file.Replace("trailer\n<< ", $"trailer\n<< /Prev {xrefAt} ", StringComparison.Ordinal);
-        var task = Task.Run(() => Read(Ascii(file)));
-        Assert.True(await Finishes(task, 10_000));
-        Assert.Equal("Looping trailer", (await task).Body);
+        var doc = Looped(() => Read(Ascii(file)));
+        Assert.Equal("Looping trailer", doc.Body);
     }
 
     [Fact]
-    public async Task A_page_tree_that_loops_gives_each_page_once()
+    public void A_page_tree_that_loops_gives_each_page_once()
     {
         var w = W.SimpleDocument(W.Lines("Only page"));
         // The root's kids: the page, the root itself, the page again, and a node whose kid is the root.
         int back = w.Add("<< /Type /Pages /Kids [2 0 R] /Count 1 >>");
         w.Set(2, $"<< /Type /Pages /Kids [4 0 R 2 0 R 4 0 R {back} 0 R] /Count 3 >>");
-        var task = Task.Run(() => Read(w.Write()));
-        Assert.True(await Finishes(task, 10_000));
-        Assert.Equal("Only page", (await task).Body);
-        Assert.Equal(1, (await task).Pages);
+        var doc = Looped(() => Read(w.Write()));
+        Assert.Equal("Only page", doc.Body);
+        Assert.Equal(1, doc.Pages);
     }
 
     [Fact]
-    public async Task Ten_thousand_deep_arrays_do_not_overflow_the_stack()
+    public void Ten_thousand_deep_arrays_do_not_overflow_the_stack()
     {
         string deep = new string('[', 10_000) + new string(']', 10_000);
         var w = W.SimpleDocument(deep + " pop BT /F1 12 Tf 72 700 Td (Still here) Tj ET " + new string('[', 10_000));
         w.Set(2, "<< /Type /Pages /Kids [4 0 R] /Count 1 /Junk " + deep + " >>");
         w.Info = w.Add("<< /Title (t) /Also <<" + new string('[', 5000) + " >>");
-        var task = Task.Run(() => Read(w.Write()));
-        Assert.True(await Finishes(task, 10_000));
-        Assert.Equal("Still here", (await task).Body);
+        var doc = Looped(() => Read(w.Write()));
+        Assert.Equal("Still here", doc.Body);
     }
 
     [Fact]

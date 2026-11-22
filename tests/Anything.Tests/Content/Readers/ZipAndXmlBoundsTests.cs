@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
 using Anything.Core.Content;
@@ -17,12 +16,11 @@ public class ZipAndXmlBoundsTests(ITestOutputHelper output)
     static ExtractBudget Budget() => new(ExtractLimits.Local, CancellationToken.None);
 
     /// <summary>Allocation on this thread while reading bytes as a file of an extension.</summary>
-    static (ExtractedDoc Doc, long Allocated, long Ms) Measure(byte[] bytes, string extension)
+    /// <summary>Reads on a thread of its own: what it allocated, and the CPU time it took (a busy PC stretches the wall clock).</summary>
+    static (ExtractedDoc Doc, long Allocated, long CpuMs) Measure(byte[] bytes, string extension)
     {
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        var sw = Stopwatch.StartNew();
-        var doc = ReaderRun.Bytes(bytes, extension);
-        return (doc, GC.GetAllocatedBytesForCurrentThread() - before, sw.ElapsedMilliseconds);
+        var doc = CpuBound.Measure(() => ReaderRun.Bytes(bytes, extension), out double cpuMs, out long allocated);
+        return (doc, allocated, (long)cpuMs);
     }
 
     [Theory]
@@ -156,7 +154,7 @@ public class ZipAndXmlBoundsTests(ITestOutputHelper output)
             _ => Zip(false, ("docProps/core.xml", "<cp:coreProperties xmlns:cp=\"x\"><dc:title xmlns:dc=\"y\">" + deep), ("word/document.xml", DocxBody())),
         };
         var (doc, allocated, ms) = Measure(docx, "docx");
-        output.WriteLine($"{where}: {doc.Status}, allocated {allocated >> 20} MB in {ms} ms");
+        output.WriteLine($"{where}: {doc.Status}, allocated {allocated >> 20} MB in {ms} ms of CPU");
         Assert.True(allocated < 24 << 20, $"allocated {allocated >> 20} MB");
         Assert.Equal(DocStatus.Truncated, doc.Status); // the other parts are still read
         if (where != "skipped pPr" && where != "inside t") Assert.Contains("Invoice", doc.Body);
@@ -197,11 +195,11 @@ public class ZipAndXmlBoundsTests(ITestOutputHelper output)
         for (int i = 0; sb.Length < chars; i++) sb.Append('a').Append(i).Append("=\"\" ");
         sb.Append("/></w:body></w:document>");
         var (doc, allocated, ms) = Measure(Docx(body: sb.ToString()), "docx");
-        output.WriteLine($"{chars:N0} chars: {doc.Status} in {ms} ms, allocated {allocated >> 20} MB");
+        output.WriteLine($"{chars:N0} chars: {doc.Status} in {ms} ms of CPU, allocated {allocated >> 20} MB");
         Assert.Equal(DocStatus.Truncated, doc.Status);
         Assert.Contains("Confidential header", doc.Body);
         Assert.True(allocated < 24 << 20, $"allocated {allocated >> 20} MB");
-        Assert.True(ms < 2000, $"{ms} ms");
+        Assert.True(ms < 2000, $"{ms} ms of CPU");
     }
 
     [Theory]
@@ -221,7 +219,7 @@ public class ZipAndXmlBoundsTests(ITestOutputHelper output)
             }
         sb.Append("</w:body></w:document>");
         var (doc, allocated, ms) = Measure(Docx(body: sb.ToString()), "docx");
-        output.WriteLine($"{kind}: {doc.Status} in {ms} ms, allocated {allocated >> 20} MB");
+        output.WriteLine($"{kind}: {doc.Status} in {ms} ms of CPU, allocated {allocated >> 20} MB");
         Assert.Equal(DocStatus.Truncated, doc.Status); // the other parts are still read
         Assert.Contains("Confidential header", doc.Body);
         Assert.True(allocated < 24 << 20, $"allocated {allocated >> 20} MB");

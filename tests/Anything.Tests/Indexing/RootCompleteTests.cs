@@ -59,6 +59,11 @@ public sealed class RootCompleteTests : IDisposable
     public void Folder_is_complete_once_its_first_scan_finishes()
     {
         for (int i = 0; i < 20; i++) Write(Path.Combine(_root, $"sub{i}", "a.txt"));
+        // Each a.txt changed its folder's times, but NTFS reports that to the parent only when the folder is next opened.
+        // Left to the scan's own listing, those notices reach the watcher and are applied once the scan is over, raising
+        // Changed with the root complete whenever a busy machine holds this thread up past the watcher's 100 ms wait.
+        // Opening the folders here, before anything watches, settles them.
+        for (int i = 0; i < 20; i++) _ = Directory.GetFileSystemEntries(Path.Combine(_root, $"sub{i}"));
         var host = new Host();
         using var root = new FolderIndexer(host, _root);
         Assert.False(root.Complete);

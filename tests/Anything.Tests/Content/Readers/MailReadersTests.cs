@@ -154,10 +154,10 @@ public class MailReadersTests
         var sb = new StringBuilder("From: a@b.c\r\n");
         for (int i = 0; i < headers; i++) sb.Append(i < 100 ? "To: " : "Subject: ").Append(half).Append("\r\n ").Append(half).Append("\r\n");
         sb.Append("Subject: hello\r\n\r\nbody words\r\n");
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var doc = ReaderRun.Bytes(Encoding.ASCII.GetBytes(sb.ToString()), "eml");
+        // In CPU time: quadratic decoding costs it every time, a busy PC's stalls only now and then.
+        var doc = CpuBound.Measure(() => ReaderRun.Bytes(Encoding.ASCII.GetBytes(sb.ToString()), "eml"), out double cpuMs, out _);
         Assert.Equal("body words", doc.Body.Trim());
-        Assert.True(sw.ElapsedMilliseconds < ExtractLimits.Local.MaxMilliseconds / 5, $"{sw.ElapsedMilliseconds} ms");
+        Assert.True(cpuMs < ExtractLimits.Local.MaxMilliseconds / 5, $"{cpuMs:F0} ms of CPU");
     }
 
     [Fact]
@@ -169,10 +169,9 @@ public class MailReadersTests
         var sb = new StringBuilder("From: a@b.c\r\n");
         for (int i = 0; i < 266; i++) sb.Append(i < 100 ? "To: " : "Subject: ").Append(half).Append("\r\n ").Append(half).Append("\r\n");
         sb.Append("\r\nbody words\r\n");
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var doc = ReaderRun.Bytes(Encoding.ASCII.GetBytes(sb.ToString()), "eml");
+        var doc = CpuBound.Measure(() => ReaderRun.Bytes(Encoding.ASCII.GetBytes(sb.ToString()), "eml"), out double cpuMs, out _); // CPU time, as above
         Assert.StartsWith("AAAA", doc.Field(DocField.Subject)); // unknown charsets fall back, words still decoded
-        Assert.True(sw.ElapsedMilliseconds < ExtractLimits.Local.MaxMilliseconds / 5, $"{sw.ElapsedMilliseconds} ms");
+        Assert.True(cpuMs < ExtractLimits.Local.MaxMilliseconds / 5, $"{cpuMs:F0} ms of CPU");
         // The budget is checked while a header decodes: a cancelled read stops there.
         using var cts = new CancellationTokenSource();
         var budget = new ExtractBudget(ExtractLimits.Local, cts.Token);

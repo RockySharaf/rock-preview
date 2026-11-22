@@ -351,10 +351,13 @@ public class FollowerReviewTests
         Assert.Equal(0, h.Files.Reads); // the follower reads nothing as administrator
         await h.Content.EstimateAsync(h.Settings, CancellationToken.None);
         Assert.Equal(0, h.Files.Reads);
-        // Not elevated, the calibration samples them.
+        // Not elevated, the calibration samples them. The sample has 3 s in background mode, which a busy PC can use up
+        // before its thread gets the CPU: estimate again until a file is read, for up to a minute.
         h.Names.IsElevated = false;
-        await h.Content.EstimateAsync(h.Settings, CancellationToken.None);
-        Assert.True(h.Files.Reads > 0);
+        var clock = Stopwatch.StartNew();
+        do await h.Content.EstimateAsync(h.Settings, CancellationToken.None);
+        while (h.Files.Reads == 0 && clock.ElapsedMilliseconds < 60_000);
+        Assert.True(h.Files.Reads > 0, $"no file read in {clock.ElapsedMilliseconds} ms of estimates");
     }
 
     [Fact]

@@ -57,10 +57,25 @@ public class ContentReviewSearchTests
             f.Doc($@"C:\Slow\doc{s}.txt", "the budget for next year");
         }
         var store = f.Publish();
-        foreach (var seg in store.FakeSegments) seg.OnTerms = () => Thread.Sleep(150);
+        // The lookups on other threads wait for the test before their slow work: had they only been slow, a busy PC could
+        // keep the hurried search's thread waiting (or doing one of them itself, when no helper got a thread in time) until
+        // they were all done, and its results would be complete. The search's own thread never waits for the test: it
+        // would wait for itself. (Not disposed: background lookups may still look at it after the test.)
+        var go = new ManualResetEventSlim();
+        int searching = Environment.CurrentManagedThreadId;
+        foreach (var seg in store.FakeSegments)
+            seg.OnTerms = () =>
+            {
+                if (Environment.CurrentManagedThreadId != searching) go.Wait(TimeSpan.FromMinutes(1));
+                Thread.Sleep(150);
+            };
         // A window's short budget: the lookups run on in the background and the results say so (it searches again).
-        var hurried = Services.CreateSearchEngine(TimeSpan.FromMilliseconds(20)).Search(f.Index, "budget", ContentFixture.Plain, SortKey.Name, false, CancellationToken.None);
-        Assert.True(hurried.ContentPending);
+        try
+        {
+            var hurried = Services.CreateSearchEngine(TimeSpan.FromMilliseconds(20)).Search(f.Index, "budget", ContentFixture.Plain, SortKey.Name, false, CancellationToken.None);
+            Assert.True(hurried.ContentPending);
+        }
+        finally { go.Set(); }
         // A one-shot command line can't search again: it waits for every lookup, and nothing is missing.
         var patient = Services.CreateSearchEngine(TimeSpan.MaxValue).Search(f.Index, "year", ContentFixture.Plain, SortKey.Name, false, CancellationToken.None);
         Assert.False(patient.ContentPending);

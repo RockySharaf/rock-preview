@@ -177,8 +177,9 @@ internal static class ShellDragDrop
         try
         {
             if (ShellNative.SHCreateItemFromParsingName(folder, IntPtr.Zero, ref iid, out item) != S_OK || item == null) return null;
-            if (ShellNative.NameOf(item, SIGDN.FileSysPath) is { Length: > 0 } path) return path;
-            return folder.EndsWith(".library-ms", StringComparison.OrdinalIgnoreCase) ? LibrarySaveFolder(item) : null;
+            // A library first: one opened from its .library-ms file has a path of its own, the file's.
+            if (folder.EndsWith(".library-ms", StringComparison.OrdinalIgnoreCase) && LibrarySaveFolder(item) is { } saveFolder) return saveFolder;
+            return ShellNative.NameOf(item, SIGDN.FileSysPath) is { Length: > 0 } path ? path : null;
         }
         catch (Exception e) when (e is COMException or InvalidCastException) { return null; }
         finally { if (item != null) Marshal.ReleaseComObject(item); }

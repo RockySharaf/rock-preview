@@ -9,8 +9,8 @@ namespace Anything.Tests.Content.Pdf;
 /// <summary>
 /// 1,000 mutations of each fixture, mostly of its structured fields (numbers: lengths, counts, offsets, object numbers,
 /// xref entries; names; spans), on unfiltered variants so the mutations reach the reader rather than the inflater. Every
-/// case runs under Task.Run(...).Wait(2 × the time budget) and must return a document: no exception, no hang, no
-/// allocation storm. A failure names the fixture, the seed and the input in hex.
+/// case runs on a thread of its own, may use at most twice the time budget in CPU time, and must return a document: no
+/// exception, no hang, no allocation storm. A failure names the fixture, the seed and the input in hex.
 /// </summary>
 public class PdfFuzzTests
 {
@@ -97,12 +97,13 @@ public class PdfFuzzTests
 
     [Theory]
     [MemberData(nameof(Fixtures))]
-    public async Task Mutations_never_let_an_exception_out(string name)
+    public void Mutations_never_let_an_exception_out(string name)
     {
         var original = Fixture(name);
         // The unmutated fixture reads.
         Assert.Contains(Run(original, out _).Status, new[] { DocStatus.Ok, DocStatus.Truncated });
         var numbers = NumberSpans(original);
+        var slow = new List<string>();
         for (int c = 0; c < Cases; c++)
         {
             int seed = name.Aggregate(17, (h, ch) => unchecked(h * 31 + ch)) * 1009 + c; // reproducible across runs
@@ -110,28 +111,27 @@ public class PdfFuzzTests
             ExtractedDoc? doc = null;
             long allocated = 0;
             Exception? error = null;
-            var task = Task.Run(() =>
+            // Timed in CPU time on a thread of its own: these run beside the whole suite, where the wall clock (and a
+            // thread-pool task's start) can be held up for seconds by other tests, while a real loop burns CPU every time.
+            bool finished = CpuBound.Run(() =>
             {
                 try { doc = Run(input, out allocated); }
                 catch (Exception e) { error = e; }
-            });
-            if (!await Finishes(task, 2 * Limits.MaxMilliseconds))
-                Assert.Fail($"{name}: hung past {2 * Limits.MaxMilliseconds} ms; {Describe(seed, input)}");
+            }, out double cpuMs);
+            if (!finished) Assert.Fail($"{name}: hung past {CpuBound.HangMilliseconds} ms; {Describe(seed, input)}");
             if (error != null) Assert.Fail($"{name}: {error.GetType().Name} escaped: {error.Message}; {Describe(seed, input)}");
+            Assert.True(cpuMs <= 2 * Limits.MaxMilliseconds, $"{name}: {cpuMs:F0} ms of CPU, past twice the budget; {Describe(seed, input)}");
             Assert.True(Enum.IsDefined(doc!.Status), $"{name}: status {doc.Status}; {Describe(seed, input)}");
             Assert.True(doc.Body.Length <= Limits.MaxTextChars, $"{name}: body {doc.Body.Length}; {Describe(seed, input)}");
             Assert.True(allocated < 128 << 20, $"{name}: allocated {allocated >> 20} MB; {Describe(seed, input)}");
-            // Slow once can be a GC pause while the whole suite runs in parallel; a real loop is slow every time.
-            if (doc.ElapsedMs > 750 && Run(input, out _).ElapsedMs > 750) slow.Add($"{doc.ElapsedMs} ms {doc.Status} seed {seed}");
+            if (cpuMs > 750) slow.Add($"{cpuMs:F0} ms of CPU, {doc.Status}, seed {seed}");
         }
         // A few kilobytes are never worth more than a moment: anything slow is a loop that should have been bounded.
         Assert.True(slow.Count == 0, $"{name}: {slow.Count} slow cases: {string.Join("; ", slow.Take(5))}");
     }
 
-    readonly List<string> slow = [];
-
     [Fact]
-    public async Task Page_boxes_survive_mutations_too()
+    public void Page_boxes_survive_mutations_too()
     {
         var original = Fixture("cid");
         var numbers = NumberSpans(original);
@@ -140,7 +140,7 @@ public class PdfFuzzTests
             int seed = 7919 * c + 13;
             var input = Mutate(original, numbers, new Random(seed));
             Exception? error = null;
-            var task = Task.Run(() =>
+            bool finished = CpuBound.Run(() =>
             {
                 try
                 {
@@ -150,8 +150,8 @@ public class PdfFuzzTests
                 }
                 catch (ContentLimitException) { } // a document-level limit is the caller's to handle; nothing else may escape
                 catch (Exception e) { error = e; }
-            });
-            if (!await Finishes(task, 2 * Limits.MaxMilliseconds)) Assert.Fail($"boxes hung; {Describe(seed, input)}");
+            }, out double cpuMs);
+            if (!finished || cpuMs > 2 * Limits.MaxMilliseconds) Assert.Fail($"boxes hung ({cpuMs:F0} ms of CPU); {Describe(seed, input)}");
             if (error != null) Assert.Fail($"boxes: {error.GetType().Name}: {error.Message}; {Describe(seed, input)}");
         }
     }

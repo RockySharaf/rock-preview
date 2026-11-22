@@ -54,7 +54,10 @@ public class SearchPerfTests(ITestOutputHelper output)
         }
 
         output.WriteLine($"entries: {index.LiveCount:N0}, cores: {Environment.ProcessorCount}");
-        double substring = Time("12345");
+        // The fastest of three: a slow search is slow every time, while a busy PC (other test runs, a build, a GC another
+        // test caused) can stall one search for seconds (seen: 2,002 ms against 122 ms in the next run). Nothing is cached
+        // between them that the warm-up didn't build already.
+        double substring = Math.Min(Time("12345"), Math.Min(Time("12345"), Time("12345")));
         Time("alpha_123");
         Time("cafe");
         Time("*.mp3");

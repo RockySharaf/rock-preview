@@ -9,35 +9,31 @@ namespace Anything.Tests.Content.Pdf;
 /// <summary>Crafted files that try to make the reader allocate, loop or nest without bound.</summary>
 public class PdfHostileTests
 {
-    /// <summary>Reads on another thread within a deadline and measures what that thread allocated.</summary>
-    static async Task<(ExtractedDoc Doc, long Allocated)> Bounded(byte[] file, ExtractLimits? limits = null, int deadlineMs = 20_000)
+    /// <summary>
+    /// Reads on a thread of its own and measures what that thread allocated. It may use no more than its 15 s budget and a
+    /// little more, in CPU time: these run beside the rest of the suite, where the wall clock can stall for seconds.
+    /// </summary>
+    static (ExtractedDoc Doc, long Allocated) Bounded(byte[] file, ExtractLimits? limits = null, int cpuLimitMs = 20_000)
     {
-        long allocated = 0;
-        var task = Task.Run(() =>
-        {
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            var doc = Read(file, limits: limits);
-            allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-            return doc;
-        });
-        Assert.True(await Finishes(task, deadlineMs), "took too long");
-        return (await task, allocated);
+        var doc = CpuBound.Measure(() => Read(file, limits: limits), out double cpuMs, out long allocated);
+        Assert.True(cpuMs < cpuLimitMs, $"took {cpuMs:F0} ms of CPU");
+        return (doc, allocated);
     }
 
     [Fact]
-    public async Task A_huge_string_is_shown_in_bounded_memory()
+    public void A_huge_string_is_shown_in_bounded_memory()
     {
         var text = new StringBuilder("BT /F1 10 Tf 72 700 Td (");
         for (int i = 0; text.Length < 3_000_000; i++) text.Append("word").Append(i % 1000).Append(' ');
         text.Append(") Tj ET");
-        var (doc, allocated) = await Bounded(W.SimpleDocument(text.ToString()).Write());
+        var (doc, allocated) = Bounded(W.SimpleDocument(text.ToString()).Write());
         Assert.Equal(DocStatus.Truncated, doc.Status);
         Assert.StartsWith("word0 word1 word2", doc.Body);
         Assert.True(allocated < 200 << 20, $"allocated {allocated >> 20} MB");
     }
 
     [Fact]
-    public async Task A_page_tree_deeper_than_64_is_cut_without_harm()
+    public void A_page_tree_deeper_than_64_is_cut_without_harm()
     {
         var w = W.SimpleDocument(W.Lines("Shallow page"));
         // A chain of 200 /Pages nodes with a page at the bottom, beside the shallow page.
@@ -53,12 +49,12 @@ public class PdfHostileTests
         }
         first = chain[0];
         w.Set(2, $"<< /Type /Pages /Kids [4 0 R {first} 0 R] /Count 2 >>");
-        var (doc, _) = await Bounded(w.Write());
+        var (doc, _) = Bounded(w.Write());
         Assert.Equal("Shallow page", doc.Body);
     }
 
     [Fact]
-    public async Task Forms_nested_twenty_deep_stop_at_eight()
+    public void Forms_nested_twenty_deep_stop_at_eight()
     {
         var w = new W();
         int catalog = w.Reserve(), pages = w.Reserve();
@@ -75,12 +71,12 @@ public class PdfHostileTests
         w.Set(pages, $"<< /Type /Pages /Kids [{page} 0 R] /Count 1 >>");
         w.Set(catalog, $"<< /Type /Catalog /Pages {pages} 0 R >>");
         w.Root = catalog;
-        var (doc, _) = await Bounded(w.Write());
+        var (doc, _) = Bounded(w.Write());
         Assert.Equal(string.Join('\n', Enumerable.Range(0, 8).Select(i => $"level{i}")), doc.Body);
     }
 
     [Fact]
-    public async Task A_cmap_with_too_many_entries_is_capped()
+    public void A_cmap_with_too_many_entries_is_capped()
     {
         var map = new StringBuilder("/CIDInit /ProcSet findresource begin begincmap 1 begincodespacerange <0000> <FFFF> endcodespacerange 100000 beginbfchar ");
         for (int i = 0; i < 100_000; i++) map.Append($"<{i:X4}> <{0x4E00 + i % 20000:X4}> ");
@@ -95,7 +91,7 @@ public class PdfHostileTests
         w.Set(pages, $"<< /Type /Pages /Kids [{page} 0 R] /Count 1 >>");
         w.Set(catalog, $"<< /Type /Catalog /Pages {pages} 0 R >>");
         w.Root = catalog;
-        var (doc, allocated) = await Bounded(w.Write());
+        var (doc, allocated) = Bounded(w.Write());
         Assert.Equal("丁丂", doc.Body);
         Assert.True(allocated < 100 << 20, $"allocated {allocated >> 20} MB");
     }
@@ -153,7 +149,7 @@ public class PdfHostileTests
     }
 
     [Fact]
-    public async Task A_chain_of_object_streams_each_measured_by_the_next_never_runs_the_stack_out()
+    public void A_chain_of_object_streams_each_measured_by_the_next_never_runs_the_stack_out()
     {
         // 5,000 links: loaded inside one another they would take about 50,000 frames, far past any thread's stack (a
         // stack overflow can't be caught: it would end the app). Read on a thread with a small stack, so a deep load
@@ -162,14 +158,14 @@ public class PdfHostileTests
         ExtractedDoc? doc = null;
         var thread = new Thread(() => doc = Read(file), 512 << 10) { IsBackground = true };
         thread.Start();
-        Assert.True(await Finishes(Task.Run(thread.Join), 20_000), "took too long");
+        Assert.True(thread.Join(CpuBound.HangMilliseconds), "took too long");
         Assert.NotNull(doc);
         Assert.Equal(DocStatus.Ok, doc.Status);
         Assert.Equal("Chain words", doc.Body);
     }
 
     [Fact]
-    public async Task Thousands_of_fonts_with_huge_widths_stay_bounded()
+    public void Thousands_of_fonts_with_huge_widths_stay_bounded()
     {
         var w = new W();
         int catalog = w.Reserve(), pages = w.Reserve();
@@ -188,7 +184,7 @@ public class PdfHostileTests
         w.Set(pages, $"<< /Type /Pages /Kids [{page} 0 R] /Count 1 >>");
         w.Set(catalog, $"<< /Type /Catalog /Pages {pages} 0 R >>");
         w.Root = catalog;
-        var (doc, allocated) = await Bounded(w.Write(), new ExtractLimits(MaxMilliseconds: 15_000));
+        var (doc, allocated) = Bounded(w.Write(), new ExtractLimits(MaxMilliseconds: 15_000));
         // The first font's "a" is text at once, so only a time limit on a very slow run can make it Truncated.
         Assert.Contains(doc.Status, new[] { DocStatus.Ok, DocStatus.Truncated });
         Assert.StartsWith("aaaa", doc.Body);
@@ -197,23 +193,23 @@ public class PdfHostileTests
     }
 
     [Fact]
-    public async Task A_dense_vector_page_with_a_caption_reads_quickly()
+    public void A_dense_vector_page_with_a_caption_reads_quickly()
     {
         var content = new StringBuilder("BT /F1 12 Tf 72 760 Td (Caption over the art) Tj ET\n");
         for (int i = 0; i < 200_000; i++) content.Append(i % 600).Append(' ').Append(i % 800).Append(" m ").Append(i % 590).Append(' ').Append(i % 780).Append(" l S\n");
         var file = W.SimpleDocument(content.ToString()).Write();
-        var started = Environment.TickCount64;
-        var (doc, _) = await Bounded(file);
+        // Timed in CPU time: a page that is slow to read is slow every time, a busy PC only now and then.
+        var doc = CpuBound.Measure(() => Read(file), out double cpuMs, out _);
         Assert.Equal("Caption over the art", doc.Body);
-        Assert.True(Environment.TickCount64 - started < 5_000, $"{Environment.TickCount64 - started} ms");
+        Assert.True(cpuMs < 5_000, $"{cpuMs:F0} ms of CPU");
     }
 
     [Fact]
-    public async Task Inline_images_without_ei_end_the_content()
+    public void Inline_images_without_ei_end_the_content()
     {
         var content = new StringBuilder("BT /F1 12 Tf 72 700 Td (Before) Tj ET ");
         for (int i = 0; i < 2000; i++) content.Append("BI /W 1 /H 1 ID xyz ");
-        var (doc, _) = await Bounded(W.SimpleDocument(content.ToString()).Write());
+        var (doc, _) = Bounded(W.SimpleDocument(content.ToString()).Write());
         Assert.Equal("Before", doc.Body);
     }
 
@@ -227,21 +223,21 @@ public class PdfHostileTests
     }
 
     [Fact]
-    public async Task A_broken_file_of_a_million_object_headers_is_rebuilt_in_bounded_memory()
+    public void A_broken_file_of_a_million_object_headers_is_rebuilt_in_bounded_memory()
     {
         // Unbounded, the scan kept every header in a hash table: 4 million of them in 60 MB held about 290 MB.
         var file = BrokenWith("Rebuilt words", t => { for (int i = 0; i < 1_000_000; i++) t.Append('\n').Append(100_000 + i).Append(" 0 obj null endobj"); });
-        var (doc, allocated) = await Bounded(file);
+        var (doc, allocated) = Bounded(file);
         Assert.Equal("Rebuilt words", doc.Body);
         Assert.Equal(DocStatus.Truncated, doc.Status); // the objects past the cap are left out
         Assert.True(allocated < 32 << 20, $"allocated {allocated >> 20} MB");
     }
 
     [Fact]
-    public async Task A_broken_file_of_many_trailers_keeps_only_the_newest()
+    public void A_broken_file_of_many_trailers_keeps_only_the_newest()
     {
         var file = BrokenWith("Trailer words", t => { for (int i = 0; i < 250_000; i++) t.Append("\ntrailer"); });
-        var (doc, allocated) = await Bounded(file);
+        var (doc, allocated) = Bounded(file);
         Assert.Equal("Trailer words", doc.Body); // the catalog the scan found stands in for the trailers' /Root
         Assert.True(allocated < 32 << 20, $"allocated {allocated >> 20} MB");
     }
@@ -263,18 +259,18 @@ public class PdfHostileTests
     }
 
     [Fact]
-    public async Task Info_keywords_of_megabytes_keep_the_first_ones_in_bounded_memory()
+    public void Info_keywords_of_megabytes_keep_the_first_ones_in_bounded_memory()
     {
         var w = W.SimpleDocument(W.Lines("Keyword body"));
         w.Info = w.Add("<< /Keywords (first, second" + string.Concat(Enumerable.Repeat(",a", 2_000_000)) + ") >>");
-        var (doc, allocated) = await Bounded(w.Write());
+        var (doc, allocated) = Bounded(w.Write());
         Assert.Equal("Keyword body", doc.Body);
         Assert.StartsWith("first; second; a", doc.Fields.First(f => f.Field == DocField.Keywords).Value);
         Assert.True(allocated < 64 << 20, $"allocated {allocated >> 20} MB");
     }
 
     [Fact]
-    public async Task A_ToUnicode_range_with_a_destination_of_megabytes_keeps_each_glyph_short()
+    public void A_ToUnicode_range_with_a_destination_of_megabytes_keeps_each_glyph_short()
     {
         var w = W.SimpleDocument(W.Lines("Intro"));
         // One bfrange over all 256 codes whose destination is 500,000 characters, shared by 8 simple fonts: before, each
@@ -290,7 +286,7 @@ public class PdfHostileTests
         string names = string.Join(' ', fonts.Select((id, i) => $"/G{i} {id} 0 R"));
         w.Set(4, $"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R {names} >> >> /Contents {stream} 0 R >>");
 
-        var (doc, allocated) = await Bounded(w.Write());
+        var (doc, allocated) = Bounded(w.Write());
         Assert.Equal(DocStatus.Ok, doc.Status);
         // Each code's text is the destination's first 64 characters with the last one moved on by the code.
         Assert.Contains(new string('X', 63) + "Y" + new string('X', 63) + "Z", doc.Body);
@@ -308,7 +304,7 @@ public class PdfHostileTests
     }
 
     [Fact]
-    public async Task A_choice_field_of_many_huge_values_is_cut_before_it_is_joined()
+    public void A_choice_field_of_many_huge_values_is_cut_before_it_is_joined()
     {
         var w = W.SimpleDocument(W.Lines("Choices"));
         // 256 references to one string of 4 million characters: joined whole, a string past .NET's longest (out of memory).
@@ -318,7 +314,7 @@ public class PdfHostileTests
         int single = w.Add($"<< /Type /Annot /Subtype /Widget /FT /Tx /V {big} 0 R /Rect [200 600 400 620] >>");
         w.Set(4, $"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R /Annots [{widget} 0 R {single} 0 R] >>");
 
-        var (doc, allocated) = await Bounded(w.Write());
+        var (doc, allocated) = Bounded(w.Write());
         Assert.StartsWith("Choices\nAAAA", doc.Body);
         // Two values of at most 65,536 characters each, and the line breaks between the blocks.
         Assert.True(doc.Body.Length <= 2 * ExtractSink.MaxFieldChars * 16 + 16, $"body of {doc.Body.Length} characters");
@@ -326,7 +322,7 @@ public class PdfHostileTests
     }
 
     [Fact]
-    public async Task A_UTF16_field_value_keeps_all_of_its_characters_up_to_the_value_cap()
+    public void A_UTF16_field_value_keeps_all_of_its_characters_up_to_the_value_cap()
     {
         var w = W.SimpleDocument(W.Lines("Comment"));
         // 40,000 Cyrillic characters in UTF-16 (80,000 bytes): a byte cut sized one byte a character kept only the first half.
@@ -334,22 +330,22 @@ public class PdfHostileTests
         int widget = w.Add($"<< /Type /Annot /Subtype /Widget /FT /Tx /V <{hex}> /Rect [200 700 400 720] >>");
         w.Set(4, $"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R /Annots [{widget} 0 R] >>");
 
-        var (doc, _) = await Bounded(w.Write());
+        var (doc, _) = Bounded(w.Write());
         Assert.Contains(new string('Ж', 40_000) + "Я", doc.Body);
     }
 
     [Fact]
-    public async Task Object_streams_that_lie_about_their_contents()
+    public void Object_streams_that_lie_about_their_contents()
     {
         var w = W.SimpleDocument(W.Lines("Body text"));
         w.CompressStructure = false;
         var text = Encoding.Latin1.GetString(w.Write(W.XrefKind.Stream, objectStreams: true));
         // /N far larger than the header, /First past the end.
         var lying = text.Replace("/Type /ObjStm /N ", "/Type /ObjStm /N 99999999", StringComparison.Ordinal);
-        var (doc, _) = await Bounded(Ascii(lying));
+        var (doc, _) = Bounded(Ascii(lying));
         Assert.Contains(doc.Status, new[] { DocStatus.Ok, DocStatus.NoText, DocStatus.Damaged });
         var pastEnd = System.Text.RegularExpressions.Regex.Replace(text, @"/First \d+", "/First 999999");
-        var (doc2, _) = await Bounded(Ascii(pastEnd));
+        var (doc2, _) = Bounded(Ascii(pastEnd));
         Assert.Contains(doc2.Status, new[] { DocStatus.Ok, DocStatus.NoText, DocStatus.Damaged });
     }
 }

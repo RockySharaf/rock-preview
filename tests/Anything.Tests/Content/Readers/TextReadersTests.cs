@@ -73,11 +73,10 @@ public class TextReadersTests
     {
         // Each '&' looked for its ';' through the rest of the value: 2 MB of them took over a minute, past the watchdog.
         var html = $"<html><head><meta name=\"{name}\" content=\"{new string('&', 3_000_000)}\"></head><body>hello world</body></html>";
-        var started = Environment.TickCount64;
-        var doc = ReaderRun.Bytes(Encoding.ASCII.GetBytes(html), "html");
-        long ms = Environment.TickCount64 - started;
+        // In CPU time: the quadratic search costs it every time, a busy PC's stalls only now and then.
+        var doc = CpuBound.Measure(() => ReaderRun.Bytes(Encoding.ASCII.GetBytes(html), "html"), out double cpuMs, out _);
         Assert.Equal("hello world", doc.Body.Trim());
-        Assert.True(ms < 3_000, $"{ms} ms");
+        Assert.True(cpuMs < 3_000, $"{cpuMs:F0} ms of CPU");
         Assert.Equal(DecodedEntitiesStillWork, HtmlText.Decode("a &amp; b &#233; &unknown; c&lt;"));
     }
 

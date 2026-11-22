@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using Anything.Core.Content;
 using static Anything.Tests.Content.Pdf.PdfTestSupport;
@@ -49,12 +48,11 @@ public class PdfFontTableBoundsTests
         content.Append("ET");
         var pdf = Page(w, [font], content.ToString());
 
-        var sw = Stopwatch.StartNew();
-        var doc = Read(pdf, limits: ExtractLimits.Local);
-        sw.Stop();
+        // In CPU time: a busy PC can stretch the wall clock of a read that is fine, never the work of one that isn't.
+        var doc = CpuBound.Measure(() => Read(pdf, limits: ExtractLimits.Local), out double cpuMs, out _);
         Assert.NotEqual(DocStatus.TimedOut, doc.Status);
         Assert.Contains("AAAAAAAA", doc.Body);
-        Assert.True(sw.ElapsedMilliseconds < 10_000, $"took {sw.ElapsedMilliseconds} ms");
+        Assert.True(cpuMs < 10_000, $"took {cpuMs:F0} ms of CPU");
     }
 
     [Fact]
@@ -119,15 +117,12 @@ public class PdfFontTableBoundsTests
         var headers = Encoding.ASCII.GetBytes(string.Concat(Enumerable.Repeat("9 0\n", 2_000_000)));
         byte[] padded = [.. plain.AsSpan(0, at), .. headers, .. plain.AsSpan(at)];
         // startxref still points at "xref": only the table grew.
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        var sw = Stopwatch.StartNew();
-        var doc = Read(padded, limits: ExtractLimits.Local);
-        sw.Stop();
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        // In CPU time, as above.
+        var doc = CpuBound.Measure(() => Read(padded, limits: ExtractLimits.Local), out double cpuMs, out long allocated);
         Assert.Equal(DocStatus.Ok, doc.Status);
         Assert.Contains("Net income rose", doc.Body);
         Assert.True(allocated < 24L << 20, $"allocated {allocated / (1 << 20)} MB");
-        Assert.True(sw.ElapsedMilliseconds < 10_000, $"took {sw.ElapsedMilliseconds} ms");
+        Assert.True(cpuMs < 10_000, $"took {cpuMs:F0} ms of CPU");
     }
 
     [Fact]

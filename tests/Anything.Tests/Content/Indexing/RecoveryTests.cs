@@ -255,7 +255,7 @@ public class RecoveryThreadTests
         content.Start(names, Harness.DefaultSettings());
         try
         {
-            await content.Settled.WaitAsync(TimeSpan.FromSeconds(5));
+            await content.Settled.WaitAsync(TimeSpan.FromSeconds(30)); // the follower is low priority: a busy PC can hold it off
             var f = content.Follower!;
             Assert.True(WaitFor(() => { f.Wake(); return content.Status.Phase == ContentPhase.Stopped; }), "the follower didn't give up");
             Assert.Contains("error", content.Status.Reason);

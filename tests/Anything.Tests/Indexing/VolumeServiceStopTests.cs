@@ -23,7 +23,7 @@ public sealed class VolumeServiceStopTests
         public Func<VolumeRecords>? Records; // set: returns these instead of reading until stopped
         public readonly ManualResetEventSlim Reading = new();
         public readonly AutoResetEvent ChunkStarted = new(false);
-        public long DisposedAt, ReturnedAt; // Stopwatch timestamps, 0 = not yet
+        public long DisposedAt, ReturnedAt, ChunkStartedAt; // Stopwatch timestamps (the last chunk's start), 0 = not yet
         readonly ManualResetEventSlim _disposed = new();
 
         public string Kind => "local";
@@ -42,6 +42,7 @@ public sealed class VolumeServiceStopTests
             for (int n = 0; !ct.IsCancellationRequested && !_disposed.IsSet; n += 1000)
             {
                 progress(n);
+                Interlocked.Exchange(ref ChunkStartedAt, Stopwatch.GetTimestamp());
                 ChunkStarted.Set();
                 Thread.Sleep(ChunkMs);
             }
@@ -49,11 +50,21 @@ public sealed class VolumeServiceStopTests
             throw new OperationCanceledException(ct);
         }
 
-        /// <summary>Waits until a chunk has just started (after the first, so progress is flowing): a stop now finds a whole chunk ahead.</summary>
+        /// <summary>
+        /// Waits until a chunk has just started (after the first, so progress is flowing): a stop now finds a whole chunk
+        /// ahead. A test thread that a busy PC held up past a chunk's first quarter waits for the next chunk instead.
+        /// </summary>
         public void AtChunkStart()
         {
             Assert.True(Reading.Wait(5000));
-            Assert.True(ChunkStarted.WaitOne(5000) && ChunkStarted.WaitOne(5000), "the read never got going");
+            Assert.True(ChunkStarted.WaitOne(5000), "the read never got going");
+            var sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < 30_000)
+            {
+                Assert.True(ChunkStarted.WaitOne(5000), "the read stopped going");
+                if (Ms(Interlocked.Read(ref ChunkStartedAt), Stopwatch.GetTimestamp()) < ChunkMs / 4) return;
+            }
+            Assert.Fail("never caught a chunk at its start");
         }
 
         public int ReadJournal(ulong journalId, long start, byte* buffer, int size) => -1;
@@ -123,10 +134,21 @@ public sealed class VolumeServiceStopTests
     static void AssertStopped(SlowVolume volume, long stoppedAt, long heardAt)
     {
         Assert.True(volume.DisposedAt != 0, "the service never closed the volume");
-        // At once: not when the chunk under way is done (a service that only sees the stop when it next reports
-        // progress closes it a whole chunk later).
-        Assert.True(Ms(stoppedAt, volume.DisposedAt) < volume.ChunkMs / 3, $"closed {Ms(stoppedAt, volume.DisposedAt):F0} ms after the stop");
+        AssertClosedMidChunk(volume, stoppedAt);
         Assert.True(volume.ReturnedAt != 0 && volume.ReturnedAt <= heardAt, "the app heard back before the read let go of the volume");
+    }
+
+    /// <summary>
+    /// At once: closed while the chunk under way at the stop was still being read, and no chunk started after the stop. A
+    /// service that only sees the stop when it next reports progress closes the volume a chunk later: after the read
+    /// returned, or at the next chunk's start. Told apart by order, not by a few ms on the clock, so a busy PC can't
+    /// fail it unless it holds the service off for most of a chunk.
+    /// </summary>
+    static void AssertClosedMidChunk(SlowVolume volume, long stoppedAt)
+    {
+        Assert.True(Interlocked.Read(ref volume.ChunkStartedAt) < stoppedAt, $"a chunk started {Ms(stoppedAt, volume.ChunkStartedAt):F0} ms after the stop");
+        Assert.True(volume.ReturnedAt != 0 && volume.DisposedAt < volume.ReturnedAt,
+            $"closed {Ms(stoppedAt, volume.DisposedAt):F0} ms after the stop, once the chunk under way was done ({Ms(stoppedAt, volume.ReturnedAt):F0} ms)");
     }
 
     [Fact]
@@ -193,8 +215,9 @@ public sealed class VolumeServiceStopTests
 
         long stoppedAt = Stopwatch.GetTimestamp();
         client.Dispose();
-        Assert.True(DriveIndexingTestSupport.WaitFor(() => Interlocked.Read(ref volume.DisposedAt) != 0, 2000));
-        Assert.True(Ms(stoppedAt, volume.DisposedAt) < volume.ChunkMs / 3, $"closed {Ms(stoppedAt, volume.DisposedAt):F0} ms after the hang-up");
+        Assert.True(DriveIndexingTestSupport.WaitFor(() => Interlocked.Read(ref volume.ReturnedAt) != 0, 10_000), "the read never ended");
+        Assert.True(volume.DisposedAt != 0, "the service never closed the volume");
+        AssertClosedMidChunk(volume, stoppedAt);
         Assert.False((await serving.WaitAsync(TimeSpan.FromSeconds(5))).Open);
     }
 

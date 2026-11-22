@@ -1,6 +1,9 @@
 namespace Anything;
 
-/// <summary>Base for small code-built dialogs: DPI auto-scaling, OK/Cancel buttons in a bottom row.</summary>
+/// <summary>
+/// Base for small code-built dialogs: DPI auto-scaling, OK/Cancel buttons in a bottom row. It leaves the layout
+/// suspended: a derived constructor builds the dialog in 96-DPI units and ends with ResumeLayout(false), PerformLayout().
+/// </summary>
 internal class DialogBase : Form
 {
     protected readonly FlowLayoutPanel Buttons = new()
@@ -14,6 +17,9 @@ internal class DialogBase : Form
 
     protected DialogBase(string title)
     {
+        // WinForms scales a form to its DPI only for AutoScale settings made while its layout is suspended, when the
+        // layout resumes (as designer code does). Set before the suspend, a dialog kept its 96-DPI size in pixels.
+        SuspendLayout();
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
         Text = title;
@@ -41,7 +47,6 @@ internal sealed class InputDialog : DialogBase
 
     InputDialog(string title, string prompt, string value, int selectLength, bool fileName) : base(title)
     {
-        SuspendLayout();
         var body = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 12, 12, 4) };
         var label = new Label { Text = prompt, Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 4) };
         body.Controls.Add(_text);
@@ -86,7 +91,6 @@ internal sealed class BookmarksForm : DialogBase
             MatchContent = b.MatchContent,
         }).ToList();
 
-        SuspendLayout();
         FormBorderStyle = FormBorderStyle.Sizable;
         MinimumSize = new Size(380, 260);
         var side = new FlowLayoutPanel { Dock = DockStyle.Right, FlowDirection = FlowDirection.TopDown, AutoSize = true, Padding = new Padding(6, 0, 0, 0) };
@@ -276,35 +280,103 @@ internal sealed class SearchSyntaxForm : Form
                                      sizes and 6 is details
         """;
 
-    SearchSyntaxForm()
+    const int LogicalHeight = 600;
+    const int EM_GETMARGINS = 0xD4, EM_GETFIRSTVISIBLELINE = 0xCE, EM_LINESCROLL = 0xB6;
+    readonly TextBox _box;
+    readonly IWin32Window _owner;
+
+    SearchSyntaxForm(IWin32Window owner)
     {
+        _owner = owner;
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
         Text = "Search Syntax - Rock Preview";
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(700, 600);
+        ClientSize = new Size(700, LogicalHeight); // until OnLoad sizes it to the text
         MinimizeBox = false;
-        var box = new TextBox
+        _box = new TextBox
         {
             Multiline = true,
             ReadOnly = true,
-            ScrollBars = ScrollBars.Both,
+            ScrollBars = ScrollBars.Vertical, // FitToText adds the horizontal one when the window can't fit the text
             WordWrap = false,
             Dock = DockStyle.Fill,
             Font = new Font(FontFamily.GenericMonospace, 9.5f),
             Text = SyntaxText.Replace("\n", "\r\n").Replace("\r\r\n", "\r\n"),
             BorderStyle = BorderStyle.None,
         };
-        Controls.Add(box);
+        Controls.Add(_box);
         KeyPreview = true;
         KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) Close(); };
-        Shown += (_, _) => box.Select(0, 0);
+        Shown += (_, _) => _box.Select(0, 0);
+    }
+
+    /// <summary>
+    /// Sized from the text itself: no fixed width is right for every scaling, and the size set in the constructor is
+    /// never auto-scaled (nothing resumes a suspended layout there), so it stayed 700 pixels wide at every scaling, while
+    /// the longest line is about 960 pixels at 100%. Done here because the handle exists, so the window's DPI and its
+    /// frame are known, and before Form.OnLoad centres it on its owner with that size.
+    /// </summary>
+    protected override void OnLoad(EventArgs e)
+    {
+        FitToText(Screen.FromHandle(_owner.Handle), LogicalToDeviceUnits(LogicalHeight));
+        base.OnLoad(e);
+    }
+
+    /// <summary>
+    /// Moved to a screen with another scaling, WinForms scales the window in proportion, but the font's width doesn't
+    /// grow in proportion (Courier New is 8, 10, 11, 14 and 16 pixels a character at 100 to 200%): opened at 150% and
+    /// moved to 125%, the longest line was cut off again. So it is sized from the text again, where it now is; the height,
+    /// already scaled, stays as it is.
+    /// </summary>
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        if (!e.Cancel) FitToText(Screen.FromHandle(Handle), ClientSize.Height);
+    }
+
+    void FitToText(Screen screen, int height)
+    {
+        const TextFormatFlags flags = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix;
+        int frameWidth = Width - ClientSize.Width, frameHeight = Height - ClientSize.Height; // read before anything changes
+        int text = 0;
+        foreach (var line in _box.Lines) text = Math.Max(text, TextRenderer.MeasureText(line, _box.Font, Size.Empty, flags).Width);
+        long margins = (long)Interop.Native.SendMessage(_box.Handle, EM_GETMARGINS, IntPtr.Zero, IntPtr.Zero);
+        int chrome = _box.Width - _box.ClientSize.Width                  // the vertical scroll bar
+                   + (int)(margins & 0xFFFF) + (int)((margins >> 16) & 0xFFFF) // the box's margins either side of the text
+                   + LogicalToDeviceUnits(12);                           // and the caret and a little air after the last character
+        var area = screen.WorkingArea;
+        MinimumSize = Size.Empty; // a minimum from the screen before must not hold the new size back
+        var (w, h) = Core.TextWindowLayout.ClientSize(text, chrome, height, frameWidth, frameHeight, area.Width, area.Height);
+        // Only a normal window is resized. A maximised one stays as it is: Windows keeps the size to restore it to, and
+        // the minimum below, worked out from the fitted size, still holds when it is restored.
+        bool normal = WindowState == FormWindowState.Normal;
+        if (normal) ClientSize = new Size(w, h);
+        // A horizontal scroll bar only when the box is too narrow for the longest line; otherwise it is a dead grey
+        // strip. Set only when it changes, because setting it makes the box anew, back at the top with nothing selected:
+        // the line at the top and the selection are put back, so a window moved to another screen keeps the reader's place.
+        bool across = Core.TextWindowLayout.NeedsHorizontalScroll(text, chrome, normal ? w : ClientSize.Width);
+        var bars = across ? ScrollBars.Both : ScrollBars.Vertical;
+        if (_box.ScrollBars != bars)
+        {
+            int top = (int)Interop.Native.SendMessage(_box.Handle, EM_GETFIRSTVISIBLELINE, IntPtr.Zero, IntPtr.Zero);
+            int start = _box.SelectionStart, length = _box.SelectionLength;
+            _box.ScrollBars = bars;
+            _box.Select(start, length);
+            int now = (int)Interop.Native.SendMessage(_box.Handle, EM_GETFIRSTVISIBLELINE, IntPtr.Zero, IntPtr.Zero);
+            if (top != now) Interop.Native.SendMessage(_box.Handle, EM_LINESCROLL, IntPtr.Zero, (IntPtr)(top - now));
+        }
+        // Without the horizontal scroll bar nothing would reach the end of a line cut off by a narrower window, so it can't
+        // be made narrower than the text; it may still be made lower. The minimum is the fitted width, never the present
+        // one, which for a maximised window is the whole screen.
+        MinimumSize = Core.TextWindowLayout.NeedsHorizontalScroll(text, chrome, w)
+            ? Size.Empty : new Size(w + frameWidth, LogicalToDeviceUnits(200));
     }
 
     public static void ShowSyntax(IWin32Window owner)
     {
-        using var f = new SearchSyntaxForm();
+        using var f = new SearchSyntaxForm(owner);
         f.ShowDialog(owner);
     }
 }
