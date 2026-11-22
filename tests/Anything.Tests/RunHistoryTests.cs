@@ -19,9 +19,9 @@ public sealed class RunHistoryTests : IDisposable
         string file = Path.Combine(_dir, "Run History.csv");
         File.WriteAllText(file, """
             Filename,Run Count,Last Run Date
-            "E:\Desktop\New folder\Order Confirmation\6363_OrderConfirmation.rpt",21,134320502716270325
-            "C:\Users\ROG\bot Gray\tb-particle-wind.mp4",8,134323647930563419
-            "E:\Desktop\Afees",3,134318996582931505
+            "E:\Desktop\New folder\Sample Reports\1234_SampleReport.rpt",21,134320502716270325
+            "C:\Users\Sam\Holiday Videos\beach-waves.mp4",8,134323647930563419
+            "E:\Desktop\Taxes",3,134318996582931505
             C:\Unquoted, with a comma.txt,2,134318996582931506
             "C:\Has ""quotes"".txt",1,1
             "C:\no count.txt",0,5
@@ -31,8 +31,8 @@ public sealed class RunHistoryTests : IDisposable
         history.Load(file);
 
         Assert.Equal(5, history.Count);
-        Assert.Equal(new RunHistory.Entry(21, 134320502716270325), history.Get(@"e:\desktop\new folder\order confirmation\6363_OrderConfirmation.rpt"));
-        Assert.Equal(3, history.Get(@"E:\Desktop\Afees\").Count); // a folder, with or without the backslash
+        Assert.Equal(new RunHistory.Entry(21, 134320502716270325), history.Get(@"e:\desktop\new folder\sample reports\1234_SampleReport.rpt"));
+        Assert.Equal(3, history.Get(@"E:\Desktop\Taxes\").Count); // a folder, with or without the backslash
         Assert.Equal(2, history.Get(@"C:\Unquoted, with a comma.txt").Count);
         Assert.Equal(1, history.Get("C:\\Has \"quotes\".txt").Count);
         Assert.Equal(0, history.Get(@"C:\no count.txt").Count);

@@ -58,8 +58,8 @@ public sealed class HiddenNetworkDriveTests
     {
         // The office PC: P: and S: mapped in the normal session, missing here; C: and the USB stick D: are here.
         const uint D = 1u << 3;
-        var connect = Drives.MappingsToReconnect(C | D, [("P", @"\\Titan\Bob"), ("s", @"\\Titan\CURRENT DATA\")]);
-        Assert.Equal([("P:", @"\\Titan\Bob"), ("S:", @"\\Titan\CURRENT DATA")], connect);
+        var connect = Drives.MappingsToReconnect(C | D, [("P", @"\\Atlas\Kim"), ("s", @"\\Atlas\SHARED FILES\")]);
+        Assert.Equal([("P:", @"\\Atlas\Kim"), ("S:", @"\\Atlas\SHARED FILES")], connect);
     }
 
     [Fact]

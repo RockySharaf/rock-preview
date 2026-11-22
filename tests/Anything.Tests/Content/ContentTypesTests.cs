@@ -62,7 +62,7 @@ public class ContentTypesTests
     [InlineData("Chrome Passwords.csv"), InlineData("Microsoft Edge Passwords.csv"), InlineData("Google Passwords.csv"), InlineData("logins.csv")]
     [InlineData("Firefox logins.csv"), InlineData("bitwarden_export_20260101120000.csv"), InlineData("lastpass_export.csv")]
     [InlineData("1PasswordExport-2026.csv"), InlineData("BitLocker Recovery Key 1A2B3C4D-5E6F-7A8B-9C0D-1E2F3A4B5C6D.TXT")]
-    [InlineData("github-recovery-codes.txt"), InlineData("Backup-codes-me.txt"), InlineData("rootkey.csv"), InlineData("ROG_accessKeys.csv")]
+    [InlineData("github-recovery-codes.txt"), InlineData("Backup-codes-me.txt"), InlineData("rootkey.csv"), InlineData("Sam_accessKeys.csv")]
     [InlineData("client_secret_1234.apps.googleusercontent.com.json"), InlineData("dashlane-credential-export.csv"), InlineData("passwords.xlsx")]
     [InlineData("Password policy.pdf")] // an accepted cost of matching by name
     public void Password_exports_and_recovery_codes_are_denied(string name) => Assert.True(ContentTypes.IsDeniedFile(name), name);

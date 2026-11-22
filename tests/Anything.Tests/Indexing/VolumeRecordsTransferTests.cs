@@ -11,7 +11,7 @@ public sealed class VolumeRecordsTransferTests
         var records = new VolumeRecords();
         records.EnsureRoot();
         records.SetFromUsn(16, VolumeRecords.RootRecord, "Users", FileAttributes.Directory);
-        records.SetFromUsn(17, 16, "ROG", FileAttributes.Directory);
+        records.SetFromUsn(17, 16, "Sam", FileAttributes.Directory);
         records.SetFromUsn(18, 17, "photo.psd", FileAttributes.Archive);
         records.SetFromUsn(18, 16, "photo-link.psd", FileAttributes.Archive); // a second hard link
         records.SetFromUsn(40, 17, "naïve résumé.docx", FileAttributes.Archive | FileAttributes.Hidden);

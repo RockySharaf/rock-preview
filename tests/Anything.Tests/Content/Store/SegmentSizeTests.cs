@@ -70,7 +70,7 @@ public class SegmentSizeTests(ITestOutputHelper output)
                 var doc = new StoredDoc(fieldsOnly ? "" : body, fieldsOnly && body.Length > 0 ? [(DocField.Keywords, body)] : [],
                     picture ? Synth.Picture(rnd) : null);
                 // Paths like the brief's sample: about 90 characters, varied names with dates and numbers.
-                string path = $"Users\\ROG\\{Folders[rnd.Next(4)]}\\{Folders[rnd.Next(Folders.Length)]}\\{words[rnd.Next(30_000)]} {words[rnd.Next(30_000)]} " +
+                string path = $"Users\\Sam\\{Folders[rnd.Next(4)]}\\{Folders[rnd.Next(Folders.Length)]}\\{words[rnd.Next(30_000)]} {words[rnd.Next(30_000)]} " +
                     $"{2015 + rnd.Next(11)}-{rnd.Next(1, 13):D2}\\{words[rnd.Next(200_000)]} {words[rnd.Next(200_000)]} {rnd.Next(1000)}_{words[rnd.Next(900_000)]}" +
                     $".{kind.ToString().ToLowerInvariant()}";
                 var status = chosen.Count > 0 ? DocStatus.Ok : DocStatus.NoText;

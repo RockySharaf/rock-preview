@@ -5,7 +5,7 @@ namespace Anything.Tests;
 /// <summary>The address bar's commands: "cmd" and the like run in the open folder, as in File Explorer.</summary>
 public sealed class AddressCommandTests
 {
-    const string Folder = @"C:\Users\ROG\Desktop\Reference";
+    const string Folder = @"C:\Users\Sam\Desktop\Reference";
 
     [Theory]
     [InlineData("cmd", "cmd", "")]

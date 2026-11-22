@@ -195,13 +195,13 @@ public class PdfReaderTests
         int helv = 3;
         int ap = w.AddStream($"<< /Type /XObject /Subtype /Form /BBox [0 0 200 20] /Resources << /Font << /Helv {helv} 0 R >> >> >>", Ascii("/Tx BMC BT /Helv 10 Tf 2 5 Td (Jane Appleseed) Tj ET EMC"));
         int filled = w.Add($"<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /V (Jane Appleseed) /Rect [200 700 400 720] /AP << /N {ap} 0 R >> >>");
-        int noAppearance = w.Add("<< /Type /Annot /Subtype /Widget /FT /Tx /T (city) /V " + W.Str("Thunder Bay") + " /Rect [200 670 400 690] >>");
+        int noAppearance = w.Add("<< /Type /Annot /Subtype /Widget /FT /Tx /T (city) /V " + W.Str("Springfield") + " /Rect [200 670 400 690] >>");
         int hidden = w.Add("<< /Type /Annot /Subtype /Widget /FT /Tx /T (secret) /V (Hidden value) /F 2 /Rect [0 0 10 10] >>");
         int check = w.Add("<< /Type /Annot /Subtype /Widget /FT /Btn /T (ok) /V /Yes /AS /Yes /Rect [0 0 10 10] >>");
         int link = w.Add("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>");
         w.Set(page, $"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R /Annots [{filled} 0 R {noAppearance} 0 R {hidden} 0 R {check} 0 R {link} 0 R] >>");
         var doc = Read(w.Write(crypt: W.CryptKind.Aes128));
-        Assert.Equal("Applicant name:\nJane Appleseed\nThunder Bay", doc.Body);
+        Assert.Equal("Applicant name:\nJane Appleseed\nSpringfield", doc.Body);
     }
 
     [Fact]
