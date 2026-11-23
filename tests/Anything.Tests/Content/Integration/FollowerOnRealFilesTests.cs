@@ -197,6 +197,108 @@ public sealed class FollowerOnRealFilesTests : IDisposable
         Assert.Null(content.GetStatus(Path.Combine(Path.GetTempPath(), "elsewhere.txt")));
     }
 
+    const string OldDoc = @"Docs\old memo.doc", OldXls = @"Docs\old budget.xls", OldPpt = @"Docs\old deck.ppt";
+    static readonly string[] OldOffice = [OldDoc, OldXls, OldPpt];
+
+    static byte[] OldOfficeBytes(string relative) => relative switch
+    {
+        OldDoc => Readers.LegacyWordTests.DocFile("Zeppelin memo\rThe hangar is ready\r"),
+        OldXls => Readers.LegacyExcelTests.XlsFile(("Summary", false, [(0, 0, "Total")], []), ("Fuel 1997", false, [(0, 0, "Helium"), (0, 1, "Kerosene")], [(0, 2, 42)])),
+        _ => Readers.LegacyPowerPointTests.PptFile(["Opening slide", "Airship closing words"]),
+    };
+
+    [Fact]
+    public void Old_Word_Excel_and_PowerPoint_files_are_found_with_their_sheet_and_slide()
+    {
+        foreach (var f in OldOffice) _rig.Write(f, OldOfficeBytes(f));
+        Build(hostile: false);
+
+        foreach (var f in OldOffice)
+        {
+            Assert.Equal(1, _rig.Files.ReadsOf(_rig.Full(f)));
+            Assert.Equal(DocStatus.Ok, _rig.Row(_rig.Full(f))!.Value.Status);
+            Assert.Equal(ContentKind.Office, _rig.Row(_rig.Full(f))!.Value.Kind);
+        }
+        Same([OldDoc], "content:hangar");
+        Same([OldXls], "content:kerosene");
+        Same([OldPpt], "content:airship");
+        Same([OldDoc], "zeppelin", new SearchOptions { MatchContent = true });
+
+        // The place of the match, which the preview opens at: the sheet by name, the slide by number.
+        var sheet = Snippet(OldXls, "content:helium")!;
+        Assert.Equal("Fuel 1997", sheet.Sheet);
+        Assert.Equal(2, sheet.Page);
+        var slide = Snippet(OldPpt, "content:airship")!;
+        Assert.Equal(2, slide.Page);
+        Assert.Null(slide.Sheet);
+        var memo = Snippet(OldDoc, "content:hangar")!;
+        Assert.Equal(0, memo.Page);
+        Assert.Contains("hangar", memo.Text);
+    }
+
+    /// <summary>
+    /// The files as a build before this one recorded them, without reading them: a .doc as a format it didn't know, a .xls
+    /// read as plain text (a user's extra text extension) and a .ppt with no words; every other file read for real.
+    /// </summary>
+    sealed class BuildBefore(IContentSource real) : IContentSource
+    {
+        public ContentRead Read(ExtractRequest request, CancellationToken ct)
+        {
+            string ext = Path.GetExtension(request.FullPath).ToLowerInvariant();
+            if (ext is not (".doc" or ".xls" or ".ppt")) return real.Read(request, ct);
+            real.TryStat(request.FullPath, out long size, out long modified, out _);
+            var doc = ext switch
+            {
+                ".doc" => ExtractedDoc.Failed(ContentKind.Office, DocStatus.Unsupported),
+                ".xls" => new ExtractedDoc { Kind = ContentKind.Text, Status = DocStatus.NoText, ExtractorVersion = 1 },
+                _ => new ExtractedDoc { Kind = ContentKind.Office, Status = DocStatus.NoText, ExtractorVersion = 1 },
+            };
+            return new ContentRead(doc, size, modified, false, false);
+        }
+
+        public bool TryStat(string fullPath, out long size, out long modifiedUtc, out FileAttributes attributes)
+            => real.TryStat(fullPath, out size, out modifiedUtc, out attributes);
+    }
+
+    [Fact]
+    public void An_index_from_before_reads_exactly_the_old_Office_files_again()
+    {
+        foreach (var f in OldOffice) _rig.Write(f, OldOfficeBytes(f));
+        WriteAll(_rig, hostile: false);
+        _rig.Files = new CountingFiles(new BuildBefore(ContentServices.Files()));
+        _rig.Start();
+        _rig.Settle();
+        Assert.Equal(Readable.Length + OldOffice.Length, _rig.Rows().Count);
+        Same([], "content:hangar");
+        _rig.Stop();
+
+        // The update: the app starts again with this build's readers; the first reconcile queues the old Office files
+        // (their records' versions are older than the reader's) and nothing else.
+        _rig.Files = new CountingFiles(ContentServices.Files());
+        _rig.NewIndex(fill: true);
+        _rig.Start();
+        _rig.Settle();
+        Assert.Equal(OldOffice.Length, _rig.Files.Reads);
+        foreach (var f in OldOffice)
+        {
+            Assert.Equal(1, _rig.Files.ReadsOf(_rig.Full(f)));
+            Assert.Equal(DocStatus.Ok, _rig.Row(_rig.Full(f))!.Value.Status);
+        }
+        Assert.Equal(Readable.Length + OldOffice.Length, _rig.Rows().Count);
+        Same([OldDoc], "content:hangar");
+        Same([OldXls], "content:kerosene");
+        Same([OldPpt], "content:airship");
+        Same([Letter], "content:INV-2024");
+        Assert.Equal(ContentPhase.UpToDate, _rig.Content!.Status.Phase);
+
+        // Read once: the next start reads nothing.
+        _rig.Stop();
+        _rig.NewIndex(fill: true);
+        _rig.Start();
+        _rig.Settle();
+        Assert.Equal(OldOffice.Length, _rig.Files.Reads);
+    }
+
     [Fact]
     public void Edits_renames_and_deletes_are_followed_with_only_the_reads_they_need()
     {

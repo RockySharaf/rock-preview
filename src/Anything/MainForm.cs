@@ -79,11 +79,7 @@ internal sealed partial class MainForm : Form
         {
             source.SaveColumnState();
             foreach (var (k, v) in source._cols) _cols[k] = new ColumnSetting { Visible = v.Visible, Width = v.Width, Position = v.Position };
-            if (tab is null)
-            {
-                (_matchCase, _wholeWord, _matchPath, _diacritics, _regex) = (source._matchCase, source._wholeWord, source._matchPath, source._diacritics, source._regex);
-                (_filterIndex, _sort, _desc) = (source._filterIndex, source._sort, source._desc);
-            }
+            if (tab is null) (_filterIndex, _sort, _desc) = (source._filterIndex, source._sort, source._desc);
             else TakeContentState(tab, source);
             // As Explorer's: a step down and right of it on its monitor, and maximized when it is.
             var b = source.WindowState == FormWindowState.Normal ? source.Bounds : source.RestoreBounds;
@@ -95,7 +91,6 @@ internal sealed partial class MainForm : Form
         else
         {
             foreach (var (k, v) in s.Columns) _cols[k] = new ColumnSetting { Visible = v.Visible, Width = v.Width, Position = v.Position };
-            (_matchCase, _wholeWord, _matchPath, _diacritics, _regex) = (s.MatchCase, s.MatchWholeWord, s.MatchPath, s.MatchDiacritics, s.Regex);
             (_filterIndex, _sort, _desc) = (Filters.IndexOf(s.Filter), s.Sort, s.SortDescending);
             if (!s.WindowBounds.IsEmpty && Screen.AllScreens.Any(sc => sc.WorkingArea.IntersectsWith(s.WindowBounds)))
             {
@@ -118,6 +113,9 @@ internal sealed partial class MainForm : Form
             }
             TopMost = s.AlwaysOnTop;
         }
+        // A new window's first tab starts with the saved matching switches, also when it comes from another window
+        // (Ctrl+N), as new tabs do; a tab brought from another window (duplicated or dragged out) keeps its own.
+        if (tab is null) StartMatching(_tab, duplicated: null);
 
         SuspendLayout();
         AutoScaleDimensions = new SizeF(96F, 96F);

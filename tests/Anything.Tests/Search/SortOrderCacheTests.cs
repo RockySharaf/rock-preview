@@ -50,11 +50,11 @@ public class SortOrderCacheTests
                 var actual = cached.Search(index, q, new SearchOptions(), key, false, CancellationToken.None).Ids;
                 Assert.True(expected.SequenceEqual(actual), $"ascending {key} '{q}' differs");
 
-                // Descending walks the order backwards: same members, and the exact reverse of ascending (date accessed
-                // is never presorted: sorted each time, ties keep their id order both ways).
+                // Descending walks the order backwards, equal keys staying in name order (ResultSorter.Descend): exactly
+                // the classic sorter's descending order, and the exact reverse of ascending for Name and Path.
                 var desc = cached.Search(index, q, new SearchOptions(), key, true, CancellationToken.None).Ids;
-                if (key != SortKey.DateAccessed) Assert.True(actual.Reverse().SequenceEqual(desc), $"descending {key} '{q}' is not the reverse");
-                Assert.True(Classic(index, q, key, true).Order().SequenceEqual(desc.Order()), $"descending {key} '{q}' members differ");
+                Assert.True(Classic(index, q, key, true).SequenceEqual(desc), $"descending {key} '{q}' differs");
+                if (!ResultSorter.TiesByName(key)) Assert.True(actual.Reverse().SequenceEqual(desc), $"descending {key} '{q}' is not the reverse");
             }
     }
 
@@ -70,6 +70,7 @@ public class SortOrderCacheTests
     [InlineData(SortKey.Path)]
     [InlineData(SortKey.Size)]
     [InlineData(SortKey.Extension)]
+    [InlineData(SortKey.Type)]
     [InlineData(SortKey.DateModified)]
     [InlineData(SortKey.DateAccessed)]
     [InlineData(SortKey.DateRecentlyChanged)]
@@ -101,6 +102,9 @@ public class SortOrderCacheTests
                 var expected = Classic(index, q, key, false);
                 var actual = engine.Search(index, q, new SearchOptions(), key, false, CancellationToken.None).Ids;
                 Assert.True(expected.SequenceEqual(actual), $"round {round}: {key} '{q}' differs after an update");
+                // Descending too: the runs of equal keys the order keeps for it are patched by the same merges.
+                var desc = engine.Search(index, q, new SearchOptions(), key, true, CancellationToken.None).Ids;
+                Assert.True(Classic(index, q, key, true).SequenceEqual(desc), $"round {round}: {key} '{q}' descending differs after an update");
             }
         }
     }
@@ -133,6 +137,8 @@ public class SortOrderCacheTests
                 var expected = Classic(index, q, key, false);
                 var actual = engine.Search(index, q, new SearchOptions(), key, false, CancellationToken.None).Ids;
                 Assert.True(expected.SequenceEqual(actual), $"round {round}: {key} '{q}' differs");
+                var desc = engine.Search(index, q, new SearchOptions(), key, true, CancellationToken.None).Ids;
+                Assert.True(Classic(index, q, key, true).SequenceEqual(desc), $"round {round}: {key} '{q}' descending differs");
             }
         }
     }

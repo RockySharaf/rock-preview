@@ -308,6 +308,126 @@ public sealed class OfficeThumbPagesTests : IDisposable
         Assert.Equal(new string?[] { null, "b" }, none![0]);
     }
 
+    // ------------------------------------------------------------------ dates in new Excel files
+
+    // A styles part: custom number formats (id, code) and the cellXfs' number format ids, in order (a cell's s is the index).
+    static string Styles(IEnumerable<(int Id, string Code)> custom, params int[] cellFormats)
+        => $"<styleSheet xmlns=\"{S}\">"
+            + (custom.Any() ? "<numFmts>" + string.Concat(custom.Select(f => $"<numFmt numFmtId=\"{f.Id}\" formatCode=\"{f.Code}\"/>")) + "</numFmts>" : "")
+            + "<cellStyleXfs count=\"1\"><xf numFmtId=\"14\"/></cellStyleXfs>" // not a cell's style: never counted
+            + "<cellXfs>" + string.Concat(cellFormats.Select(id => $"<xf numFmtId=\"{id}\" xfId=\"0\"/>")) + "</cellXfs>"
+            + "<dxfs><dxf><numFmt numFmtId=\"167\" formatCode=\"yyyy-mm-dd\"/></dxf></dxfs>" // a conditional format's (167 is a percentage below): never counted
+            + "</styleSheet>";
+
+    static string Styled(string at, string v, int style) => $"<c r=\"{at}\" s=\"{style}\"><v>{v}</v></c>";
+
+    static string Workbook1904(bool on)
+        => $"<workbook xmlns=\"{S}\" xmlns:r=\"{Rns}\"><workbookPr date1904=\"{(on ? "1" : "0")}\"/><sheets><sheet name=\"S\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>";
+
+    // The first row's cells of a one-sheet workbook with these styles (null: no styles part).
+    string?[] FirstRow(string? styles, params string[] cells)
+    {
+        var parts = new List<(string, string)> { ("xl/worksheets/sheet1.xml", SheetXml(Row(1, cells))) };
+        if (styles != null) parts.Add(("xl/styles.xml", styles));
+        return FirstRows(Xlsx(Workbook(("S", null)), Rels(1), parts.ToArray()))![0];
+    }
+
+    [Fact]
+    public void Xlsx_dates_and_times_in_built_in_formats_show_as_the_old_format_reader_shows_them()
+    {
+        // Styles: 0 General, 1 a date (14), 2 a time (20, h:mm), 3 both (22), 4 an elapsed time (46, [h]:mm:ss), 5 a long date (15).
+        string styles = Styles([], 0, 14, 20, 22, 46, 15);
+        var row = FirstRow(styles, Styled("A1", "45000", 1), Styled("B1", "0.75", 2), Styled("C1", "45000.75", 3),
+            Styled("D1", "1.5", 4), Styled("E1", "45000", 5), Styled("F1", "45000", 0));
+        Assert.Equal(new string?[] { "2023-03-15", "18:00:00", "2023-03-15 18:00:00", "36:00:00", "2023-03-15", "45000" }, row);
+        // The same text as the old-format reader gives for these formats.
+        Assert.Equal(LegacyExcel.DateText(45000, LegacyExcel.BuiltInKind(14), false), row[0]);
+        Assert.Equal(LegacyExcel.DateText(0.75, LegacyExcel.BuiltInKind(20), false), row[1]);
+        Assert.Equal(LegacyExcel.DateText(45000.75, LegacyExcel.BuiltInKind(22), false), row[2]);
+        Assert.Equal(LegacyExcel.DateText(1.5, LegacyExcel.BuiltInKind(46), false), row[3]);
+        // Excel's day zero and its false 29 February 1900, as the old reader keeps them.
+        Assert.Equal(new string?[] { "1900-01-00", "1900-02-29", "1900-03-01" },
+            FirstRow(styles, Styled("A1", "0", 1), Styled("B1", "60", 1), Styled("C1", "61", 1)));
+    }
+
+    [Fact]
+    public void Xlsx_custom_date_formats_are_read_by_their_letters_and_other_numbers_stay_numbers()
+    {
+        // 164 a date, 165 a time with AM/PM, 166 an elapsed time, 167 a percentage, 168 a quoted "d" (text, not a date).
+        string styles = Styles([(164, "dd/mm/yyyy"), (165, "h:mm AM/PM"), (166, "[h]:mm"), (167, "0.00%"), (168, "0 &quot;days&quot;")],
+            164, 165, 166, 167, 168, 0);
+        var row = FirstRow(styles, Styled("A1", "45000", 0), Styled("B1", "0.5", 1), Styled("C1", "2.25", 2),
+            Styled("D1", "125", 3), Styled("E1", "12", 4), Styled("F1", "45001", 5));
+        Assert.Equal(new string?[] { "2023-03-15", "12:00:00", "54:00:00", "125", "12", "45001" }, row);
+        Assert.Equal(LegacyExcel.DateText(45000, LegacyExcel.FormatKind("dd/mm/yyyy"), false), row[0]);
+        // A custom format that redefines a built-in id wins over the built-in kind, as in the old reader.
+        Assert.Equal("45000", FirstRow(Styles([(14, "0.00")], 14), Styled("A1", "45000", 0))[0]);
+        // Text, booleans and shared strings are never taken for dates, whatever their style.
+        Assert.Equal(new string?[] { "45000", "TRUE" },
+            FirstRow(Styles([], 14), "<c r=\"A1\" s=\"0\" t=\"str\"><v>45000</v></c>", "<c r=\"B1\" s=\"0\" t=\"b\"><v>1</v></c>"));
+    }
+
+    [Fact]
+    public void Xlsx_dates_follow_the_workbooks_1904_system()
+    {
+        string styles = Styles([], 14, 22);
+        string sheet = SheetXml(Row(1, Styled("A1", "0", 0), Styled("B1", "45000", 0), Styled("C1", "1.5", 1)));
+        var on = FirstRows(Xlsx(Workbook1904(true), Rels(1), ("xl/worksheets/sheet1.xml", sheet), ("xl/styles.xml", styles)))![0];
+        Assert.Equal(new string?[] { "1904-01-01", "2027-03-16", "1904-01-02 12:00:00" }, on);
+        Assert.Equal(LegacyExcel.DateText(45000, LegacyExcel.DateKind.Date, true), on[1]);
+        var off = FirstRows(Xlsx(Workbook1904(false), Rels(1), ("xl/worksheets/sheet1.xml", sheet), ("xl/styles.xml", styles)))![0];
+        Assert.Equal(new string?[] { "1900-01-00", "2023-03-15", "1900-01-01 12:00:00" }, off);
+    }
+
+    [Fact]
+    public void Xlsx_without_usable_styles_shows_numbers_as_before()
+    {
+        string[] cells = [Styled("A1", "45000", 1), Styled("B1", "2", 1), Inline("C1", "x")];
+        string?[] asNumbers = ["45000", "2", "x"];
+        // No styles part.
+        Assert.Equal(asNumbers, FirstRow(null, cells));
+        // A styles part that is broken.
+        Assert.Equal(asNumbers, FirstRow($"<styleSheet xmlns=\"{S}\"><cellXfs><xf numFmtId=\"0\"/><xf numFmtId=\"14\"", cells));
+        // A style index past the cell styles there are.
+        Assert.Equal(new string?[] { "45000", "1900-01-02" }, FirstRow(Styles([], 14), Styled("A1", "45000", 5), Styled("B1", "2", 0)));
+        // A styles part over the cap, uncompressed: not read at all (padding after cellXfs, which is otherwise never read).
+        string big = Styles([], 0, 14).Replace("</styleSheet>", "<!--" + new string('p', (int)OfficePreview.FirstRowsMaxStylesBytes) + "--></styleSheet>");
+        Assert.Equal(asNumbers, FirstRow(big, cells));
+        // At the cap it is read, with the padding before cellXfs (read through) or after it (never read).
+        foreach (string before in new[] { "<cellXfs>", "</styleSheet>" })
+        {
+            string at = Styles([], 0, 14);
+            at = at.Replace(before, "<!--" + new string('p', (int)OfficePreview.FirstRowsMaxStylesBytes - at.Length - 7) + "-->" + before);
+            Assert.Equal(OfficePreview.FirstRowsMaxStylesBytes, Encoding.UTF8.GetByteCount(at));
+            Assert.Equal(new string?[] { "2023-03-15", "1900-01-02", "x" }, FirstRow(at, cells));
+        }
+        // A styles entry the zip can't open (an unknown compression method): the dates are lost, not the sheet page.
+        var damaged = WithMethod(Xlsx(Workbook(("S", null)), Rels(1), ("xl/worksheets/sheet1.xml", SheetXml(Row(1, cells))),
+            ("xl/styles.xml", Styles([], 0, 14))), "xl/styles.xml", 99);
+        Assert.Equal(asNumbers, FirstRows(damaged)![0]);
+    }
+
+    // The zip with this entry's compression method changed, in its local header and its central directory record.
+    static byte[] WithMethod(byte[] zip, string name, ushort method)
+    {
+        byte[] n = Encoding.ASCII.GetBytes(name);
+        int patched = 0;
+        for (int i = 0; i + 46 <= zip.Length; i++)
+        {
+            uint sig = BitConverter.ToUInt32(zip, i);
+            int nameAt, at;
+            if (sig == 0x04034b50) (nameAt, at) = (i + 30, i + 8);
+            else if (sig == 0x02014b50) (nameAt, at) = (i + 46, i + 10);
+            else continue;
+            int len = BitConverter.ToUInt16(zip, sig == 0x04034b50 ? i + 26 : i + 28);
+            if (len != n.Length || nameAt + len > zip.Length || !zip.AsSpan(nameAt, len).SequenceEqual(n)) continue;
+            BitConverter.TryWriteBytes(zip.AsSpan(at, 2), method);
+            patched++;
+        }
+        Assert.Equal(2, patched);
+        return zip;
+    }
+
     [Fact]
     public void A_broken_xlsx_gives_null()
     {

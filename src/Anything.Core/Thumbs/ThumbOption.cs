@@ -197,15 +197,18 @@ public static class ThumbOption
         return text;
     }
 
-    /// <summary>The card's line while the store is full and drops its oldest thumbnails.</summary>
-    public const string FullText = "Full: the oldest thumbnails are dropped as new ones are saved. Raise the limit to keep more.";
+    /// <summary>
+    /// The card's line while the store is full: documents and videos are dropped before pictures, and new ones of a kind
+    /// that would go first are not saved (<see cref="ThumbStore.Refuses"/>).
+    /// </summary>
+    public const string FullText = "Full: to keep your pictures, thumbnails of documents and videos go first, and new ones aren't saved while it is full. Raise the limit to keep more.";
 
     /// <summary>The card's line while new pictures are refused because the drive is nearly full.</summary>
     public static string DiskLowText(string folder) => $"Not saving new thumbnails now: {DriveName(folder)} is nearly full.";
 
     /// <summary>The bar above the files when the store has filled up: "Instant thumbnails is full (8 GB). ..."</summary>
     public static string FullBarText(int capMegabytes)
-        => $"Instant thumbnails is full ({CapText(capMegabytes)}). The oldest are dropped to make room for new ones.";
+        => $"Instant thumbnails is full ({CapText(capMegabytes)}). To make room, documents and videos go first, then the oldest pictures.";
 
     /// <summary>
     /// Whether the "store is full" bar may show: not yet in this run, and not for the limit the user was last told about
@@ -215,12 +218,17 @@ public static class ThumbOption
         => !toldThisRun && capMegabytes != toldAtMegabytes;
 
     /// <summary>
-    /// The grey line under "Keep thumbnails of": that nothing new is saved when no box is ticked; otherwise what happens
-    /// to thumbnails already saved for a type switched off (the store's records carry no type, so they can't be picked out).
+    /// The grey line under "Keep thumbnails of": that nothing new is saved when no box is ticked; otherwise which kinds
+    /// go first when the store is full, and what happens to thumbnails already saved for a kind switched off (deleted:
+    /// the store keeps the kinds apart) or a file type left out (they stay: the store doesn't keep types apart). With
+    /// <paramref name="earlierSaved"/> (the store holds thumbnails an earlier version saved, which carry no kind) one more
+    /// sentence says those are the exception to both rules.
     /// </summary>
-    public static string KeepNote(ThumbKeep keep)
+    public static string KeepNote(ThumbKeep keep, bool earlierSaved = false)
         => keep.KeepsNothing ? "Nothing is being saved."
-            : "If you switch a type off, thumbnails already saved for it stay until newer ones replace them, or until you clear the store.";
+            : "When the store is full, thumbnails of documents are dropped first, then videos, then the oldest pictures. "
+              + "Switching a kind off deletes its saved thumbnails; those of the file types listed here stay until the store needs their room, or until you clear it."
+              + (earlierSaved ? " Thumbnails saved by an earlier version go first, and stay when you switch a kind off." : "");
 
     /// <summary>A limit as it reads: "250 MB", "1 GB", "1.5 GB", "120 GB", "2 TB" (decimal: 1 GB is 1,000 MB, 1 TB 1,000 GB).</summary>
     public static string CapText(int megabytes)
@@ -236,6 +244,21 @@ public static class ThumbOption
     /// </summary>
     public static string SizeNowText(long bytes, int capMegabytes)
         => bytes < 0 ? "" : $"{StoreSizeText(bytes)} of {CapText(capMegabytes)}";
+
+    /// <summary>
+    /// <see cref="SizeNowText(long, int)"/> with what each kind takes, when two or more hold something: "1.2 GB of 2 GB:
+    /// pictures 900 MB, videos 100 MB, documents 200 MB". Thumbnails saved by an earlier version, which carry no kind,
+    /// read "saved by an earlier version 300 MB". Only kinds that hold something are named.
+    /// </summary>
+    public static string SizeNowText(long bytes, int capMegabytes, ThumbStoreSplit split)
+    {
+        string text = SizeNowText(bytes, capMegabytes);
+        if (text.Length == 0) return text;
+        var parts = new List<string>(4);
+        foreach (var (name, part) in new[] { ("pictures", split.Pictures), ("videos", split.Videos), ("documents", split.Documents), ("saved by an earlier version", split.Earlier) })
+            if (part > 0) parts.Add($"{name} {StoreSizeText(part)}");
+        return parts.Count < 2 ? text : $"{text}: {string.Join(", ", parts)}";
+    }
 
     /// <summary>
     /// A store's size, counted as its limit is and rounded down: "0 MB", "less than 1 MB", "123 MB", "1.2 GB", "120 GB",

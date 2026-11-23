@@ -251,6 +251,45 @@ public static class ThumbKinds
         return false;
     }
 
+    // Kinds whose picture is mostly a white page: documents and presentations (new and old Office, OpenDocument), PDF,
+    // vector and design files, fonts, and the flat pictures screenshots are saved as. Not icons (ico, cur): they are
+    // shapes on transparency, not pages. Text kinds are left out: their page draws its own border.
+    static readonly Dictionary<string, bool>.AlternateLookup<ReadOnlySpan<char>> PageLike = BuildPageLike();
+
+    static Dictionary<string, bool>.AlternateLookup<ReadOnlySpan<char>> BuildPageLike()
+    {
+        var map = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach (var set in new[] { Office, OldOffice, Vector, Fonts, FlatPictures })
+            foreach (var ext in set) map[ext] = true;
+        map["pdf"] = true;
+        // Pages and slides only Windows pictures (from the picture saved in the file): old PowerPoint, PowerPoint slides,
+        // binary Excel, XPS, Visio and Publisher. "pub" is also a key file's name (a text kind): its text page's own border
+        // sits on the same edge pixels, so the outline replaces it rather than adding a second.
+        foreach (var ext in new[] { "ppt", "pps", "pot", "sldx", "sldm", "xlsb", "xps", "oxps", "vsd", "vsdx", "vsdm", "vstx", "pub" })
+            map[ext] = true;
+        map.Remove("ico");
+        map.Remove("cur");
+        return map.GetAlternateLookup<ReadOnlySpan<char>>();
+    }
+
+    /// <summary>
+    /// Whether a picture of this kind is page-like (documents, presentations, PDF, vector and design files, fonts, flat
+    /// pictures such as png, gif and bmp), so the thumbnail view outlines it: mostly white, it has no edge of its own on a
+    /// white view. Not photos, videos, icons or text pages. Takes an extension (with or without the dot) or a path, any
+    /// case, without allocating: it is asked once per cell painted.
+    /// </summary>
+    public static bool IsPageLike(ReadOnlySpan<char> extensionOrPath)
+    {
+        var s = extensionOrPath;
+        int slash = s.LastIndexOfAny('\\', '/');
+        if (slash >= 0) s = s[(slash + 1)..];
+        int dot = s.LastIndexOf('.');
+        // As Ext reads it: a bare word is an extension, a name without a dot after a folder has none.
+        if (dot >= 0) s = s[(dot + 1)..];
+        else if (slash >= 0) return false;
+        return s.Length > 0 && PageLike.ContainsKey(s);
+    }
+
     /// <summary>Whether this is a camera RAW kind.</summary>
     public static bool IsRaw(string extensionOrPath) => Raw.Contains(Ext(extensionOrPath));
 

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
 using Anything.Core.Thumbs;
 using Anything.Preview.Thumbnails;
 
@@ -432,7 +433,7 @@ internal sealed class ThumbnailGrid : Control
             if (path is not null)
             {
                 // Only what has arrived is drawn: nothing here asks for a picture or touches a file.
-                if (!DrawThumb(g, i, box, IsCut(path)))
+                if (!DrawThumb(g, i, box, path, IsCut(path)))
                     g.DrawRectangle(frame, Rectangle.Inflate(box, -box.Width / 6, -box.Height / 6));
             }
             captions.Add((NameAt(i), new Rectangle(cell.X + 4, box.Bottom + 4, cell.Width - 8, TextHeight)));
@@ -445,13 +446,239 @@ internal sealed class ThumbnailGrid : Control
         try
         {
             using var dc = new SharedDc(hdc);
+            var font = Font;
+            StartCaptions(dc, font, captions[0].Rect.Width);
             foreach (var (name, rect) in captions)
-                TextRenderer.DrawText(dc, name, Font, rect, ForeColor,
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
-                    TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
+            {
+                // Windows' own wrapping, unless it would cut the extension: then the two lines laid out here. Worked out
+                // once per name for this font and width: a repaint (the pointer, an arrival) measures nothing.
+                if (!_captionLines.TryGetValue(name, out var lines))
+                {
+                    lines = CaptionLines(name, rect.Width, CaptionMeasurer);
+                    if (_captionLines.Count >= MaxCaptionLayouts) _captionLines.Clear();
+                    _captionLines[name] = lines;
+                }
+                if (lines != null) TextRenderer.DrawText(dc, lines, font, rect, ForeColor, CaptionLinesFlags);
+                else TextRenderer.DrawText(dc, name, font, rect, ForeColor, CaptionFlags);
+            }
         }
-        finally { g.ReleaseHdc(hdc); }
+        finally
+        {
+            _captionDc = null;
+            g.ReleaseHdc(hdc);
+        }
     }
+
+    // ---- caption layout -------------------------------------------------------------------------
+    //
+    // A layout needs ten or so widths (TextRenderer takes about 10 microseconds for each, which doubled a caption's cost
+    // at the small size). So they are measured with GDI's own extent call (a microsecond or two) in a font made as
+    // TextRenderer makes it (selected for each call: TextRenderer doesn't leave it selected), plus the margins TextRenderer
+    // adds. Two samples check that this gives TextRenderer's widths exactly; if not, or for text outside Latin (where
+    // Windows may take glyphs from another font), TextRenderer measures. Each name is laid out once for a font and width.
+
+    readonly Dictionary<string, string?> _captionLines = new(StringComparer.Ordinal);
+    const int MaxCaptionLayouts = 8192;
+    Font? _captionFont;
+    int _captionWidth = -1, _captionMargin;
+    bool _captionGdi; // GDI's widths agreed with TextRenderer's for this font
+    IntPtr _captionHfont, _captionHdc;
+    IDeviceContext? _captionDc;
+    CaptionMeasure? _captionMeasurer; // made once: no delegate per paint
+    CaptionMeasure CaptionMeasurer => _captionMeasurer ??= MeasureCaption;
+
+    /// <summary>Gets the captions' turn ready: the layouts kept while font and width stay; margin and agreement measured when either changed.</summary>
+    void StartCaptions(IDeviceContext dc, Font font, int width)
+    {
+        _captionDc = dc;
+        _captionHdc = dc.GetHdc();
+        if (!ReferenceEquals(font, _captionFont))
+        {
+            FreeCaptionFont();
+            _captionFont = font;
+            _captionHfont = CaptionHfont(font);
+            _captionWidth = -1; // the margin is measured again
+        }
+        if (width == _captionWidth) return;
+        _captionLines.Clear();
+        _captionWidth = width;
+        _captionGdi = false;
+        if (_captionHfont != IntPtr.Zero)
+        {
+            const string Short = "Report 2024.xlsx", Long = "Quarterly summary (final) - copy 2.pptx";
+            int margin = TextRenderer.MeasureText(dc, Short, font, NoLimit, CaptionMeasureFlags).Width - GdiWidth(Short);
+            _captionGdi = TextRenderer.MeasureText(dc, Long, font, NoLimit, CaptionMeasureFlags).Width - GdiWidth(Long) == margin;
+            _captionMargin = margin;
+        }
+    }
+
+    int MeasureCaption(ReadOnlySpan<char> text)
+    {
+        bool latin = _captionGdi && !text.IsEmpty;
+        foreach (char c in text)
+            if (c >= '\u0250' && c != '\u2026') { latin = false; break; }
+        return latin ? GdiWidth(text) + _captionMargin : TextRenderer.MeasureText(_captionDc!, text, _captionFont, NoLimit, CaptionMeasureFlags).Width;
+    }
+
+    int GdiWidth(ReadOnlySpan<char> text)
+    {
+        if (text.IsEmpty) return 0;
+        IntPtr old = SelectObject(_captionHdc, _captionHfont);
+        try { return GetTextExtentPoint32W(_captionHdc, ref MemoryMarshal.GetReference(MemoryMarshal.Cast<char, ushort>(text)), text.Length, out var size) ? size.Width : -1; }
+        finally { SelectObject(_captionHdc, old); }
+    }
+
+    // The font TextRenderer selects for a hand-made device context: the family at the size in points at the system's DPI
+    // (rounded up), normal quality, TrueType preferred. Zero when it can't be made (TextRenderer then measures everything).
+    static IntPtr CaptionHfont(Font font)
+    {
+        IntPtr screen = GetDC(IntPtr.Zero);
+        int dpi;
+        try { dpi = GetDeviceCaps(screen, LogPixelsY); }
+        finally { ReleaseDC(IntPtr.Zero, screen); }
+        string face = font.FontFamily.Name;
+        if (face.Length > 1 && face[0] == '@') face = face[1..];
+        var lf = new LogFont
+        {
+            Height = -(int)Math.Ceiling(dpi * font.SizeInPoints / 72),
+            Weight = font.Bold ? 700 : 400,
+            Italic = (byte)(font.Italic ? 1 : 0),
+            Underline = (byte)(font.Underline ? 1 : 0),
+            StrikeOut = (byte)(font.Strikeout ? 1 : 0),
+            CharacterSet = font.GdiCharSet,
+            OutPrecision = 4, // OUT_TT_PRECIS
+            FaceName = face,
+        };
+        return CreateFontIndirectW(ref lf);
+    }
+
+    void FreeCaptionFont()
+    {
+        if (_captionHfont != IntPtr.Zero) DeleteObject(_captionHfont);
+        _captionHfont = IntPtr.Zero;
+        _captionFont = null;
+        _captionLines.Clear();
+    }
+
+    const int LogPixelsY = 90;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct LogFont
+    {
+        public int Height, Width, Escapement, Orientation, Weight;
+        public byte Italic, Underline, StrikeOut, CharacterSet, OutPrecision, ClipPrecision, Quality, PitchAndFamily;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string FaceName;
+    }
+
+    // The text as UTF-16 units (ushort: pinned and passed as it is; a char would be copied as one ANSI byte).
+    [DllImport("gdi32.dll")] static extern bool GetTextExtentPoint32W(IntPtr hdc, ref ushort text, int count, out Size size);
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)] static extern IntPtr CreateFontIndirectW(ref LogFont font);
+    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr hdc, IntPtr obj);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
+    [DllImport("gdi32.dll")] static extern int GetDeviceCaps(IntPtr hdc, int index);
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
+
+    // How a caption is drawn: Windows wraps it at spaces (else anywhere) and ends the second line with an ellipsis.
+    const TextFormatFlags CaptionFlags = TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
+        TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl;
+    // Two lines laid out by CaptionLines: drawn as given, each centred.
+    const TextFormatFlags CaptionLinesFlags = TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl;
+    // One line measured as a caption line is drawn (same margins), so "fits" means what the drawing does.
+    const TextFormatFlags CaptionMeasureFlags = TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl;
+    static readonly Size NoLimit = new(int.MaxValue, int.MaxValue);
+    /// <summary>The longest extension (after the last dot) kept whole on a caption's last line, as File Explorer keeps it.</summary>
+    internal const int MaxCaptionExtension = 8;
+
+    /// <summary>The width in pixels a caption line takes when drawn.</summary>
+    internal delegate int CaptionMeasure(ReadOnlySpan<char> text);
+
+    /// <summary>
+    /// The two lines of a caption <paramref name="width"/> pixels wide (joined by a line break) when Windows' wrapping would
+    /// cut the name's extension, else null (drawn as before: the name fits on one line, has no extension of at most
+    /// <see cref="MaxCaptionExtension"/> characters, or the extension alone is wider than a line). The first line breaks
+    /// where Windows breaks it (after the last space that fits, else after the last character that fits), but never after
+    /// the last dot; the second line is the rest, and when it is too wide, as much of it as fits, an ellipsis and the
+    /// extension ("report-2024-fi", an ellipsis, ".xlsx").
+    /// </summary>
+    internal static string? CaptionLines(string name, int width, CaptionMeasure measure)
+    {
+        int dot = name.LastIndexOf('.');
+        int extLength = name.Length - dot - 1;
+        // Cheap checks first: most names fit, and a name without a short extension is drawn as before unmeasured.
+        if (dot <= 0 || extLength < 1 || extLength > MaxCaptionExtension || width <= 0) return null;
+        var all = name.AsSpan();
+        if (measure(all) <= width) return null;
+        var ext = all[dot..];
+        if (measure(ext) > width) return null;
+
+        // The first line as Windows wraps it: the most characters that fit, then back to the last space among them.
+        int fit = FitCount(all, width, measure);
+        if (fit == 0 || fit >= all.Length) return null; // widths that don't add up: drawn as before
+        int lineEnd = fit, next = fit;
+        if (all[fit] != ' ')
+        {
+            int space = all[..fit].LastIndexOf(' ');
+            if (space > 0) lineEnd = next = space + 1;
+        }
+        // Never inside the extension: the dot and what follows go to the second line together.
+        if (lineEnd > dot) lineEnd = next = dot;
+        while (next < dot && all[next] == ' ') next++; // the spaces at a break are not drawn
+        var first = all[..lineEnd].TrimEnd(' ');
+        var rest = all[next..];
+        if (first.IsEmpty) return null;
+        if (measure(rest) <= width) return string.Concat(first, "\n", rest);
+
+        // Too long for two lines: as much of the rest as fits before an ellipsis and the extension.
+        var stem = rest[..^ext.Length];
+        Span<char> buffer = stackalloc char[Math.Min(stem.Length, 256) + 1 + ext.Length];
+        int lo = 0, hi = Math.Min(stem.Length, 256);
+        while (lo < hi)
+        {
+            int mid = (lo + hi + 1) / 2;
+            if (measure(Shortened(buffer, stem[..mid], ext)) <= width) lo = mid;
+            else hi = mid - 1;
+        }
+        lo = WholeCharacters(stem, lo);
+        var second = Shortened(buffer, stem[..lo].TrimEnd(' '), ext);
+        if (measure(second) > width) return null;
+        return string.Concat(first, "\n", second);
+    }
+
+    // The stem's start, an ellipsis and the extension, written into buffer.
+    static ReadOnlySpan<char> Shortened(Span<char> buffer, ReadOnlySpan<char> stem, ReadOnlySpan<char> ext)
+    {
+        stem.CopyTo(buffer);
+        buffer[stem.Length] = '\u2026';
+        ext.CopyTo(buffer[(stem.Length + 1)..]);
+        return buffer[..(stem.Length + 1 + ext.Length)];
+    }
+
+    // How many characters from the start fit in width (a binary search: widths grow with the characters).
+    static int FitCount(ReadOnlySpan<char> text, int width, CaptionMeasure measure)
+    {
+        int lo = 0, hi = text.Length;
+        while (lo < hi)
+        {
+            int mid = (lo + hi + 1) / 2;
+            if (measure(text[..mid]) <= width) lo = mid;
+            else hi = mid - 1;
+        }
+        return WholeCharacters(text, lo);
+    }
+
+    // A cut at count moved back so it splits no character: not between the halves of a surrogate pair (an emoji), and not
+    // between a letter and the accents or variation marks that follow it.
+    static int WholeCharacters(ReadOnlySpan<char> text, int count)
+    {
+        while (count > 0 && count < text.Length && (char.IsLowSurrogate(text[count]) || IsCombiningMark(text[count])))
+            count--;
+        return count;
+    }
+
+    static bool IsCombiningMark(char c) => c >= '\u0300' && System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c)
+        is System.Globalization.UnicodeCategory.NonSpacingMark or System.Globalization.UnicodeCategory.SpacingCombiningMark
+        or System.Globalization.UnicodeCategory.EnclosingMark;
 
     /// <summary>A device context taken once from the paint's Graphics, lent to each caption (none of them gives it back).</summary>
     sealed class SharedDc(IntPtr hdc) : IDeviceContext
@@ -462,7 +689,7 @@ internal sealed class ThumbnailGrid : Control
     }
 
     /// <summary>Draws what item <paramref name="index"/> has (ThumbPaint decides which picture and at what scale); false for nothing.</summary>
-    bool DrawThumb(Graphics g, int index, Rectangle box, bool faded)
+    bool DrawThumb(Graphics g, int index, Rectangle box, string path, bool faded)
     {
         if (!_cellKeys.TryGetValue(index, out var key)) return false;
         ThumbShown? exact = _memory.TryGet((key, _thumbSize), out var e) ? e : null;
@@ -485,13 +712,40 @@ internal sealed class ThumbnailGrid : Control
         g.PixelOffsetMode = exactSize ? System.Drawing.Drawing2D.PixelOffsetMode.Half : System.Drawing.Drawing2D.PixelOffsetMode.Default;
         try
         {
-            if (!faded) { g.DrawImage(bmp, dest); return true; }
-            using var half = new System.Drawing.Imaging.ImageAttributes();
-            half.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = 0.5f }); // a cut item, until it is pasted
-            g.DrawImage(bmp, dest, 0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel, half);
-            return true;
+            if (!faded) g.DrawImage(bmp, dest);
+            else
+            {
+                using var half = new System.Drawing.Imaging.ImageAttributes();
+                half.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = 0.5f }); // a cut item, until it is pasted
+                g.DrawImage(bmp, dest, 0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel, half);
+            }
         }
         finally { g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Default; }
+        // A page-like picture (a white slide, a PDF page, a screenshot) gets a hairline on its own edge pixels, so it
+        // doesn't melt into the white view. Only real pictures: an icon (None) has its own shape. A text or sheet page
+        // draws a border on the same pixels, so this replaces it rather than adding a second one.
+        if (shown.Quality != ThumbQuality.None && w > 2 && h > 2 && ThumbKinds.IsPageLike(path))
+            g.DrawRectangle(OutlinePen(faded), dest.X, dest.Y, w - 1, h - 1);
+        return true;
+    }
+
+    Pen? _outlinePen, _fadedOutlinePen;
+
+    /// <summary>
+    /// The page outline's pen, in the theme's divider colour, at half strength for a cut item as its picture is (each made
+    /// again only when the theme changes).
+    /// </summary>
+    Pen OutlinePen(bool faded)
+    {
+        var color = ExplorerTheme.NavDivider;
+        if (faded) color = Color.FromArgb(color.A / 2, color);
+        ref Pen? pen = ref faded ? ref _fadedOutlinePen : ref _outlinePen;
+        if (pen is null || pen.Color != color)
+        {
+            pen?.Dispose();
+            pen = new Pen(color);
+        }
+        return pen;
     }
 
     // ---- thumbnails: what the view asks for, what arrives, the memory of both -------------------------
@@ -905,6 +1159,9 @@ internal sealed class ThumbnailGrid : Control
             _memory.Evicted -= OnEvicted;
             ThumbHost.NotePlan(this, 0);
             _idleTimer?.Dispose();
+            _outlinePen?.Dispose();
+            _fadedOutlinePen?.Dispose();
+            FreeCaptionFont();
             _client?.Dispose();
             DisposeArrivals();
             // The pictures stay in the program's memory for the other windows.

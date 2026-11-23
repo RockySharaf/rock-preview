@@ -31,11 +31,11 @@ internal interface IContentReader
 /// <summary>Extension → reader, and the one wrapper that turns exceptions and limits into a status.</summary>
 internal static class ContentReaders
 {
-    /// <summary>PdfTextReader (U2); OoxmlReader, OdfReader, IdmlReader, PlainTextReader, RtfReader, EmlReader, MsgReader, PictureReader, PsdReader, XmpScanReader (U3).</summary>
+    /// <summary>PdfTextReader (U2); OoxmlReader, OdfReader, IdmlReader, PlainTextReader, RtfReader, EmlReader, MsgReader, PictureReader, PsdReader, XmpScanReader (U3); LegacyOfficeReader.</summary>
     public static IReadOnlyList<IContentReader> All { get; } =
     [
         new PdfTextReader(), new OoxmlReader(), new OdfReader(), new IdmlReader(), new PlainTextReader(), new RtfReader(),
-        new EmlReader(), new MsgReader(), new PictureReader(), new PsdReader(), new XmpScanReader(),
+        new EmlReader(), new MsgReader(), new PictureReader(), new PsdReader(), new XmpScanReader(), new LegacyOfficeReader(),
     ];
 
     /// <summary>The reader for an extension (any case, no dot), or null.</summary>
@@ -135,6 +135,9 @@ internal static class ExtractorChanges
         // Mail v2: the subject is stored as Subject (it was Title), so every message read with its fields is read again.
         (typeof(EmlReader), 2, [DocStatus.Ok, DocStatus.Truncated, DocStatus.NoText, DocStatus.Damaged, DocStatus.Unsupported]),
         (typeof(MsgReader), 2, [DocStatus.Ok, DocStatus.Truncated, DocStatus.NoText, DocStatus.Damaged, DocStatus.Unsupported]),
+        // Old Office v2: the first reader of .doc, .xls and .ppt; whatever another reader stored for them before (plain
+        // text, for a user's extra text extension) is read again.
+        (typeof(LegacyOfficeReader), 2, [DocStatus.Ok, DocStatus.Truncated, DocStatus.NoText, DocStatus.Damaged, DocStatus.Unsupported]),
     ];
 
     static readonly DocStatus[] DefaultStatuses = [DocStatus.NoText, DocStatus.Damaged, DocStatus.Unsupported];

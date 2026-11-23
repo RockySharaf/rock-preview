@@ -24,16 +24,23 @@ namespace Anything.Core.Thumbs;
 //       thumb.Kind Jpeg/Png: thumb.Payload is the encoded master at the key's size class (decode and scale it).
 //       thumb.Kind None: every source answered cleanly and none could make a picture: show the icon.
 //       thumb.Kind Crashed: making this picture once killed the program: show the icon, don't try again.
-//   store.Put(key, StoredKind.Jpeg, w, h, bytes) / PutNone(key) / PutCrashed(key)
+//   store.Put(key, StoredKind.Jpeg, w, h, bytes, ThumbKeep.GroupOf(path)) / PutNone(key) / PutCrashed(key)
 //       any thread; queued for the writer thread and readable at once through TryGet. The store keeps the array: don't
-//       change it afterwards. False means "not stored" (closed, disabled, too much queued, or bad arguments).
+//       change it afterwards. False means "not stored" (closed, disabled, too much queued, or bad arguments). The group
+//       (pictures, videos, documents) decides which packs the picture goes to, and so how long it is kept.
 //   store.Marker                           the in-flight marker: each decode/extract worker takes a slot (Acquire) and
 //       wraps each piece of work in Enter(slot, key) ... Leave(slot, epoch); a slot left set by a crash becomes a
 //       Suspect record at the next Open, or Crashed on a second strike.
-//   store.CapBytes = ...; store.SizeBytes   the cap (oldest pack deleted when over it) and what the packs take now.
-//       The store also holds at most MaxRecords records (the memory its map takes); past that the oldest packs go too.
+//   store.CapBytes = ...; store.SizeBytes   the cap and what the packs take now. Over the cap, whole packs are deleted:
+//       those of earlier versions first, then documents, then videos, then pictures, the oldest first within each. The
+//       store also holds at most MaxRecords records (the memory its map takes); past that packs go in the same order.
+//       Once full, a thumbnail of a kind ranked below everything the store holds (a document in a store of pictures)
+//       isn't written: it would be the first thing dropped, and each drop is a pass over the whole map.
+//   store.Split                            what the packs of each group take now (Settings' "Saved now"); never waits.
+//   store.DropGroup(group)                 deletes every thumbnail of a group the user switched off; off the UI thread.
 //   store.IsFull / store.BecameFull        packs are being dropped because the limit (or the record ceiling) is reached;
-//       false again when the limit is raised, the store is cleared or reopened with room. BecameFull comes on the writer
+//       false again when the limit is raised, the store is cleared, a group dropped makes room, or it is reopened with
+//       room. BecameFull comes on the writer
 //       thread: subscribe, then read IsFull (it may have become full while opening).
 //   store.DiskLow                          the last picture was not kept because the drive is nearly full.
 //   store.Clear()                          deletes every picture; the store stays open (the setting's Clear button).
@@ -49,6 +56,11 @@ namespace Anything.Core.Thumbs;
 // Files in the folder: pack-00000001.bin ... (append-only, 16 MB at most each), index.bin (saved on close and every
 // minute while it changes, less often when it is large; written to index.tmp and moved), inflight.bin (the marker). The
 // store holds no file names: keys are hashes.
+//
+// Groups: each pack holds one group (PackGroup), written in byte 6 of every record's header and read from its first
+// record at open, so the names, the index and the records keep the layout of 1.7.30 and 1.7.31. Those versions wrote that
+// byte as zero and never read it: their packs open here as "earlier versions", and they open this version's store as
+// their own (they append their records to its newest pack and drop packs oldest first; nothing is lost or damaged).
 
 /// <summary>What a stored record says about a key.</summary>
 public enum StoredKind : byte
@@ -74,6 +86,10 @@ public readonly record struct StoredThumb(StoredKind Kind, int Width, int Height
     /// <summary>Whether this is a picture (Jpeg or Png) rather than a "no picture" record.</summary>
     public bool HasPicture => Kind is StoredKind.Jpeg or StoredKind.Png;
 }
+
+/// <summary>What the packs of each group take on disk, in bytes (<see cref="ThumbStore.Split"/>).</summary>
+/// <param name="Earlier">Packs written by 1.7.31 and earlier, whose thumbnails carry no group.</param>
+public readonly record struct ThumbStoreSplit(long Pictures, long Videos, long Documents, long Earlier);
 
 /// <summary>Why a store stores nothing (<see cref="ThumbStore.Problem"/>).</summary>
 public enum ThumbStoreProblem : byte
@@ -135,7 +151,7 @@ public sealed class ThumbStoreOptions
     internal Func<string, bool?>? KeepsPermissions { get; init; }
     /// <summary>Tests: whether an account named in a folder's permissions exists (a made-up one stands for another user), instead of asking Windows.</summary>
     internal Func<System.Security.Principal.SecurityIdentifier, bool>? AccountExists { get; init; }
-    /// <summary>The most records the store holds (tests use less); past it the oldest packs go, as past the cap.</summary>
+    /// <summary>The most records the store holds (tests use less); past it packs go in the same order as past the cap.</summary>
     internal int MaxRecords { get; init; } = ThumbStore.MaxRecords;
     /// <summary>The largest index.bin saved or read; 0: what <see cref="MaxRecords"/> needs, with room to spare (tests set less).</summary>
     internal long MaxIndexBytes { get; init; }
@@ -162,8 +178,8 @@ public sealed class ThumbStore : IDisposable
     public const int MaxCapMegabytes = 4_000_000;
     /// <summary>
     /// The most records the store holds, whatever the limit: its map takes about 50 bytes of memory per record (measured
-    /// 148 MB at 3 million, opened from its 108 MB index in 0.3 s), so the program's memory stays bounded. Past it the
-    /// oldest packs go, as past the limit. At today's sizes (13 KB a small photo) it is about 39 GB of pictures.
+    /// 148 MB at 3 million, opened from its 108 MB index in 0.3 s), so the program's memory stays bounded. Past it packs
+    /// go in the same order as past the limit. At today's sizes (13 KB a small photo) it is about 39 GB of pictures.
     /// </summary>
     public const int MaxRecords = 3_000_000;
     /// <summary>
@@ -186,10 +202,43 @@ public sealed class ThumbStore : IDisposable
     // A large index is saved less often, so writing it costs about this much disk work a minute at most.
     internal const long IndexBytesPerMinute = 20_000_000;
 
-    sealed class Pack(int number, string path, long length)
+    /// <summary>
+    /// Which thumbnails a pack holds: byte 6 of each record's header (zero, and never read, in 1.7.30 and 1.7.31). The
+    /// first three match <see cref="ThumbKeepGroup"/>.
+    /// </summary>
+    internal enum PackGroup : byte
+    {
+        /// <summary>Written by 1.7.31 or earlier (or a pack whose first record can't be read): no group known.</summary>
+        Earlier = 0,
+        Pictures = 1,
+        Videos = 2,
+        Documents = 3,
+        /// <summary>Records without a picture ("nothing to show", "crashed", "suspect"): 32 bytes each.</summary>
+        NoPicture = 4,
+    }
+
+    const int GroupCount = 5;
+
+    /// <summary>
+    /// The order packs are dropped in when the store is over its limit, lowest first: earlier versions' packs, then
+    /// documents, videos, pictures. Records without a picture go with the pictures, by age: a "crashed" record lost
+    /// early would let a file that kills the program be tried again, and they take next to no room.
+    /// </summary>
+    static int DropRank(PackGroup group) => group switch
+    {
+        PackGroup.Documents => 1,
+        PackGroup.Videos => 2,
+        PackGroup.Pictures or PackGroup.NoPicture => 3,
+        _ => 0,
+    };
+
+    sealed class Pack(int number, string path, long length, PackGroup group = PackGroup.Earlier)
     {
         public readonly int Number = number;
         public readonly string Path = path;
+        public readonly PackGroup Group = group;
+        // Written to since it was last flushed (under _io).
+        public bool Dirty;
         // Physical bytes: what the pack takes on disk, counted toward the size and the cap.
         public long Length = length;
         // Where the last record that passed the checks ends. The index saves this, not Length, so a pack with a damaged
@@ -206,11 +255,12 @@ public sealed class ThumbStore : IDisposable
     // 24 bytes: an offset inside a pack fits an int (a pack ends near PackBytes), which keeps the map small.
     readonly record struct Entry(int Pack, int Offset, int Length, uint Check, ushort Width, ushort Height, StoredKind Kind);
 
-    sealed class Pending(ulong hash, uint check, StoredKind kind, ushort width, ushort height, byte[] payload)
+    sealed class Pending(ulong hash, uint check, StoredKind kind, ushort width, ushort height, byte[] payload, PackGroup group)
     {
         public readonly ulong Hash = hash;
         public readonly uint Check = check;
         public readonly StoredKind Kind = kind;
+        public readonly PackGroup Group = group;
         public readonly ushort Width = width;
         public readonly ushort Height = height;
         public readonly byte[] Payload = payload;
@@ -265,14 +315,17 @@ public sealed class ThumbStore : IDisposable
             return true;
         }
 
-        /// <summary>Removes the shard's records that point into packs up to <paramref name="number"/>; how many went.</summary>
-        public int RemovePacksUpTo(int index, int number)
+        /// <summary>Removes the shard's records that point into the packs marked in <paramref name="gone"/> (pack number minus <paramref name="first"/>); how many went.</summary>
+        public int RemovePacks(int index, bool[] gone, int first)
         {
             var shard = _shards[index];
             int removed = 0;
             // Removing while enumerating is allowed for Dictionary since .NET Core 3.0.
             foreach (var (hash, e) in shard)
-                if (e.Pack <= number && shard.Remove(hash)) removed++;
+            {
+                uint at = (uint)(e.Pack - first);
+                if (at < (uint)gone.Length && gone[at] && shard.Remove(hash)) removed++;
+            }
             _count -= removed;
             return removed;
         }
@@ -311,7 +364,10 @@ public sealed class ThumbStore : IDisposable
     readonly SortedDictionary<int, Pack> _packs = [];
     readonly AutoResetEvent _wake = new(false);
     readonly Thread? _writer;
-    Pack? _current;
+    // The pack each group appends to now, by PackGroup (none for earlier versions). Changed under _io and _gate.
+    readonly Pack?[] _currents = new Pack?[GroupCount];
+    // What each group's packs take, by PackGroup: written under _gate, read without a lock (Split).
+    readonly long[] _groupBytes = new long[GroupCount];
     int _nextNumber = 1;
     int _packFloor; // Packs below this number were cleared, even if something still holds them on disk.
     int _generation;
@@ -417,7 +473,7 @@ public sealed class ThumbStore : IDisposable
                     // the program may have been ended from outside (a logoff, Task Manager, a crash elsewhere); found in
                     // flight again, it is the file that kills it.
                     var crashed = leftovers.Select(e => new Pending(e.Hash64, e.Check32, marker.KindForLeftover(e,
-                        store.Has(e.Hash64, e.Check32, StoredKind.Suspect) ? StoredKind.Crashed : StoredKind.Suspect), 0, 0, [])).ToList();
+                        store.Has(e.Hash64, e.Check32, StoredKind.Suspect) ? StoredKind.Crashed : StoredKind.Suspect), 0, 0, [], PackGroup.NoPicture)).ToList();
                     var missing = crashed.Where(p => !store.Has(p.Hash, p.Check, p.Kind)).ToList();
                     lock (store._gate)
                         foreach (var p in missing)
@@ -464,7 +520,7 @@ public sealed class ThumbStore : IDisposable
     /// <summary>Keys the last session was making when it died, recorded as Crashed at open.</summary>
     public int CrashedAtOpen { get; private set; }
 
-    /// <summary>The cap on the packs' total size; lowering it deletes the oldest packs soon after (on the writer thread).</summary>
+    /// <summary>The cap on the packs' total size; lowering it deletes packs soon after, in the order of <see cref="DropRank"/>, (on the writer thread).</summary>
     public long CapBytes
     {
         get { lock (_gate) return _cap; }
@@ -483,10 +539,19 @@ public sealed class ThumbStore : IDisposable
 
     /// <summary>
     /// Whether the store is full: true from the moment a pack was dropped because the limit (or <see cref="MaxRecords"/>)
-    /// was reached, until the limit is raised, the store is cleared, or it is opened again with room. Any thread; never waits.
+    /// was reached, until the limit is raised, the store is cleared, a group dropped (<see cref="DropGroup"/>) leaves it
+    /// below the limit, or it is opened again with room. Any thread; never waits.
     /// Lowering the limit makes it full too, as packs are dropped to fit.
     /// </summary>
     public bool IsFull => _full;
+
+    /// <summary>
+    /// Whether a thumbnail of <paramref name="group"/>, handed to <see cref="Put"/> now, would be thrown away because the
+    /// store is full and holds nothing that goes before it (a full store of pictures refuses documents and videos). Any
+    /// thread; never waits. False for <see cref="ThumbKeepGroup.None"/> and for a store that stores nothing.
+    /// </summary>
+    public bool Refuses(ThumbKeepGroup group)
+        => _enabled && group is (ThumbKeepGroup.Pictures or ThumbKeepGroup.Videos or ThumbKeepGroup.Documents) && RefusesNow((PackGroup)group);
 
     /// <summary>
     /// Raised once each time <see cref="IsFull"/> turns true, on the store's writer thread (never under a lock of the
@@ -505,6 +570,16 @@ public sealed class ThumbStore : IDisposable
     /// <summary>What the packs take on disk now, in bytes. Never waits (Settings reads it on the UI thread while the writer may hold the store's lock).</summary>
     public long SizeBytes => Interlocked.Read(ref _total) + Interlocked.Read(ref _undeletedBytes);
 
+    /// <summary>
+    /// What the packs of each group take now, from the figures the store keeps in memory (packs that couldn't be deleted
+    /// yet are in <see cref="SizeBytes"/> only). Never waits.
+    /// </summary>
+    public ThumbStoreSplit Split => new(Interlocked.Read(ref _groupBytes[(int)PackGroup.Pictures]), Interlocked.Read(ref _groupBytes[(int)PackGroup.Videos]),
+        Interlocked.Read(ref _groupBytes[(int)PackGroup.Documents]), Interlocked.Read(ref _groupBytes[(int)PackGroup.Earlier]));
+
+    /// <summary>The packs and their groups, oldest first (tests).</summary>
+    internal (int Number, PackGroup Group)[] PackGroups { get { lock (_gate) return [.. _packs.Values.Select(p => (p.Number, p.Group))]; } }
+
     /// <summary>Keys the store can answer (records written; queued ones not counted).</summary>
     public int Count { get { lock (_gate) return _map.Count; } }
 
@@ -514,6 +589,10 @@ public sealed class ThumbStore : IDisposable
     /// <summary>Passes over the whole map to drop evicted packs' records (tests: many packs at once cost one pass).</summary>
     internal int EvictionPasses => Volatile.Read(ref _evictionPasses);
     int _evictionPasses;
+
+    /// <summary>Thumbnails not written because the full store would have dropped them first (tests).</summary>
+    internal int RefusedWhileFull { get { lock (_gate) return _refusedWhileFull; } }
+    int _refusedWhileFull;
 
     /// <summary>Records the last open took from index.bin (tests: the index was used, not a scan of the packs).</summary>
     internal int IndexEntriesLoaded { get; private set; }
@@ -716,21 +795,23 @@ public sealed class ThumbStore : IDisposable
 
     /// <summary>
     /// Stores the master picture of <paramref name="key"/> (Jpeg or Png, <paramref name="width"/> × <paramref name="height"/>).
-    /// The store keeps <paramref name="payload"/>: don't change it afterwards. Readable at once; written soon after. False
-    /// when not stored (disabled, closed, too much queued, a kind other than Jpeg or Png, or sizes out of range).
+    /// The store keeps <paramref name="payload"/>: don't change it afterwards. Readable at once; written soon after.
+    /// <paramref name="group"/> is the file's group (<see cref="ThumbKeep.GroupOf"/>): pictures are kept longest. False
+    /// when not stored (disabled, closed, too much queued, a kind other than Jpeg or Png, sizes out of range, or no group).
     /// </summary>
-    public bool Put(in ThumbKey key, StoredKind kind, int width, int height, byte[] payload)
+    public bool Put(in ThumbKey key, StoredKind kind, int width, int height, byte[] payload, ThumbKeepGroup group = ThumbKeepGroup.Pictures)
     {
         if (kind is not (StoredKind.Jpeg or StoredKind.Png) || payload == null || payload.Length == 0 || payload.Length > MaxPayloadBytes
-            || width is <= 0 or > ushort.MaxValue || height is <= 0 or > ushort.MaxValue) return false;
-        return Enqueue(new Pending(key.Hash64, key.Check32, kind, (ushort)width, (ushort)height, payload));
+            || width is <= 0 or > ushort.MaxValue || height is <= 0 or > ushort.MaxValue
+            || group is not (ThumbKeepGroup.Pictures or ThumbKeepGroup.Videos or ThumbKeepGroup.Documents)) return false;
+        return Enqueue(new Pending(key.Hash64, key.Check32, kind, (ushort)width, (ushort)height, payload, (PackGroup)group));
     }
 
     /// <summary>Records that nothing can make a picture of this file (only when every source answered cleanly).</summary>
-    public bool PutNone(in ThumbKey key) => Enqueue(new Pending(key.Hash64, key.Check32, StoredKind.None, 0, 0, []));
+    public bool PutNone(in ThumbKey key) => Enqueue(new Pending(key.Hash64, key.Check32, StoredKind.None, 0, 0, [], PackGroup.NoPicture));
 
     /// <summary>Records that making this file's picture killed the program.</summary>
-    public bool PutCrashed(in ThumbKey key) => Enqueue(new Pending(key.Hash64, key.Check32, StoredKind.Crashed, 0, 0, []));
+    public bool PutCrashed(in ThumbKey key) => Enqueue(new Pending(key.Hash64, key.Check32, StoredKind.Crashed, 0, 0, [], PackGroup.NoPicture));
 
     bool Enqueue(Pending p)
     {
@@ -858,10 +939,18 @@ public sealed class ThumbStore : IDisposable
     {
         lock (_gate)
         {
+            // A full store would drop a picture of a kind ranked below everything it holds first, at the next eviction:
+            // a whole pass over the map to free a few records, again and again while such thumbnails keep coming.
+            // So it isn't written at all. Records without a picture always are (a "crashed" one must stay).
             // Records put again since (or cleared) are not written.
             batch = batch.Where(p =>
             {
-                if (_pending.TryGetValue(p.Hash, out var q) && ReferenceEquals(q, p)) return true;
+                if (_pending.TryGetValue(p.Hash, out var q) && ReferenceEquals(q, p))
+                {
+                    if (p.Payload.Length == 0 || !RefusesNow(p.Group)) return true;
+                    _pending.Remove(p.Hash);
+                    _refusedWhileFull++;
+                }
                 _queuedBytes -= p.Bytes;
                 return false;
             }).ToList();
@@ -883,16 +972,19 @@ public sealed class ThumbStore : IDisposable
             batch = batch.Where(p => p.Payload.Length == 0).ToList();
             if (batch.Count == 0) return;
         }
+        // Each group goes to its own pack: the records of one group one after another (a stable sort keeps their order).
+        if (batch.Exists(p => p.Group != batch[0].Group)) batch = [.. batch.OrderBy(p => p.Group)];
         int i = 0;
         while (i < batch.Count)
         {
-            var pack = WritablePack(batch[i].Bytes);
+            var group = batch[i].Group;
+            var pack = WritablePack(batch[i].Bytes, group);
             if (pack == null) { Unqueue(batch.GetRange(i, batch.Count - i)); return; }
-            // As many records as fit in this pack go in one write.
+            // As many records of this group as fit in its pack go in one write.
             long room = Math.Max(_options.PackBytes - pack.Length, batch[i].Bytes);
             int end = i;
             long bytes = 0;
-            while (end < batch.Count && bytes + batch[end].Bytes <= room) bytes += batch[end++].Bytes;
+            while (end < batch.Count && batch[end].Group == group && bytes + batch[end].Bytes <= room) bytes += batch[end++].Bytes;
             var buffer = new byte[bytes];
             var entries = new Entry[end - i];
             long offset = pack.Length;
@@ -918,11 +1010,13 @@ public sealed class ThumbStore : IDisposable
                 Unqueue(batch.GetRange(i, batch.Count - i));
                 return;
             }
+            pack.Dirty = true;
             lock (_gate)
             {
                 pack.Length += bytes;
                 if (pack.Verified == offset) pack.Verified = pack.Length;
                 _total += bytes;
+                _groupBytes[(int)pack.Group] += bytes;
                 for (int k = i; k < end; k++)
                 {
                     var p = batch[k];
@@ -936,6 +1030,21 @@ public sealed class ThumbStore : IDisposable
             if (picture) _diskLowRefused = false;
             i = end;
         }
+    }
+
+    /// <summary>
+    /// Whether a thumbnail of <paramref name="group"/>, handed in now, would not be written (see <see cref="WriteBatch"/>).
+    /// The writer (under _gate) and <see cref="Refuses"/> (any thread, no lock) both ask this.
+    /// </summary>
+    bool RefusesNow(PackGroup group) => _full && DropRank(group) < LowestRankHeld();
+
+    /// <summary>The lowest <see cref="DropRank"/> among the groups whose packs take any space; 0 when none do. Needs no lock.</summary>
+    int LowestRankHeld()
+    {
+        int lowest = int.MaxValue;
+        for (int g = 0; g < GroupCount; g++)
+            if (Interlocked.Read(ref _groupBytes[g]) > 0) lowest = Math.Min(lowest, DropRank((PackGroup)g));
+        return lowest == int.MaxValue ? 0 : lowest;
     }
 
     void Unqueue(List<Pending> dropped)
@@ -959,7 +1068,7 @@ public sealed class ThumbStore : IDisposable
         lock (_gate)
         {
             pack.Writable = false;
-            if (ReferenceEquals(_current, pack)) _current = null;
+            if (ReferenceEquals(_currents[(int)pack.Group], pack)) _currents[(int)pack.Group] = null;
             if (pack.Made && pack.Length == 0 && _packs.TryGetValue(pack.Number, out var still) && ReferenceEquals(still, pack))
             {
                 _packs.Remove(pack.Number);
@@ -977,13 +1086,13 @@ public sealed class ThumbStore : IDisposable
         }
     }
 
-    /// <summary>The pack the next record of <paramref name="bytes"/> goes to: the current one while it has room, else a new one. Under _io.</summary>
-    Pack? WritablePack(int bytes)
+    /// <summary>The pack the next record of <paramref name="bytes"/> in <paramref name="group"/> goes to: the group's current one while it has room, else a new one. Under _io.</summary>
+    Pack? WritablePack(int bytes, PackGroup group)
     {
-        var current = _current;
+        var current = _currents[(int)group];
         if (current != null && current.Handle != null && current.Writable && (current.Length == 0 || current.Length + bytes <= _options.PackBytes))
             return current;
-        if (current != null && current.Writable) FlushCurrent();
+        if (current != null && current.Writable) FlushPack(current);
         for (int attempt = 0; attempt < 16; attempt++)
         {
             int number = _nextNumber++;
@@ -991,11 +1100,11 @@ public sealed class ThumbStore : IDisposable
             try
             {
                 var handle = File.OpenHandle(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
-                var pack = new Pack(number, path, 0) { Handle = handle, Writable = true, Made = true };
+                var pack = new Pack(number, path, 0, group) { Handle = handle, Writable = true, Made = true };
                 lock (_gate)
                 {
                     _packs[number] = pack;
-                    _current = pack;
+                    _currents[(int)group] = pack;
                 }
                 return pack;
             }
@@ -1005,12 +1114,19 @@ public sealed class ThumbStore : IDisposable
         return null;
     }
 
+    /// <summary>Flushes the packs being written that have changed since. Under _io.</summary>
     void FlushCurrent()
     {
-        var pack = _current;
         _lastFlush = Environment.TickCount64;
         _unflushed = false;
-        if (pack?.Handle == null) return;
+        foreach (var pack in _currents)
+            if (pack is { Dirty: true }) FlushPack(pack);
+    }
+
+    static void FlushPack(Pack pack)
+    {
+        pack.Dirty = false;
+        if (pack.Handle == null) return;
         try { RandomAccess.FlushToDisk(pack.Handle); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ObjectDisposedException) { }
     }
@@ -1026,9 +1142,12 @@ public sealed class ThumbStore : IDisposable
     }
 
     /// <summary>
-    /// Deletes the oldest packs while the store is over its cap or holds more than <see cref="ThumbStoreOptions.MaxRecords"/>
-    /// records (never the pack being written while there are others). Every pack that has to go is chosen first, so their
-    /// records leave the map in one pass, whatever their number. Under _io.
+    /// Deletes packs while the store is over its cap or holds more than <see cref="ThumbStoreOptions.MaxRecords"/> records:
+    /// earlier versions' packs first, then documents, videos and pictures (<see cref="DropRank"/>), the oldest first within
+    /// each, so no picture goes while a document or video thumbnail is left. A group's open pack goes in its turn (the
+    /// group starts a new one); the last pack holding anything only when it alone is over. Every pack that has to go is
+    /// chosen first, so their records leave the map in one pass, whatever their number. While full, WriteBatch doesn't
+    /// write what this would drop first. Under _io.
     /// </summary>
     void EnforceCap()
     {
@@ -1045,16 +1164,24 @@ public sealed class ThumbStore : IDisposable
         {
             long bytes = _total + _undeletedBytes, packsBytes = _total;
             int records = _map.Count;
-            foreach (var pack in _packs.Values)
+            if (bytes <= _cap && records <= _maxRecords) return false;
+            // _packs is by number (age); the stable sort keeps that order within each rank.
+            var order = _packs.Values.OrderBy(p => DropRank(p.Group)).ToList();
+            int holding = 0;
+            foreach (var pack in order) if (pack.Length > 0) holding++;
+            foreach (var pack in order)
             {
                 if (bytes <= _cap && records <= _maxRecords) break;
-                if (ReferenceEquals(pack, _current))
+                if (ReferenceEquals(pack, _currents[(int)pack.Group]))
                 {
-                    // Keep writing to this pack unless it alone is over the cap or the ceiling. A held file still takes its space.
-                    if (evict.Count != _packs.Count - 1 || pack.Length == 0 || (packsBytes <= _cap && records <= _maxRecords)) break;
-                    _current = null;
+                    // Empty: deleting it frees nothing. The last pack holding anything is kept unless it alone is over the
+                    // cap or the ceiling (a held file still takes its space).
+                    if (pack.Length == 0) continue;
+                    if (holding == 1 && packsBytes <= _cap && records <= _maxRecords) break;
+                    _currents[(int)pack.Group] = null;
                 }
                 evict.Add(pack);
+                if (pack.Length > 0) holding--;
                 bytes -= pack.Length;
                 packsBytes -= pack.Length;
                 records -= pack.Live;
@@ -1064,6 +1191,7 @@ public sealed class ThumbStore : IDisposable
             {
                 _packs.Remove(pack.Number);
                 _total -= pack.Length;
+                _groupBytes[(int)pack.Group] -= pack.Length;
             }
             _indexDirty = true;
             if (!_full)
@@ -1072,14 +1200,7 @@ public sealed class ThumbStore : IDisposable
                 Interlocked.Exchange(ref _becameFullPending, 1);
             }
         }
-        // The evicted packs are the oldest: every record pointing at one of them, or below, goes. One shard at a time, so
-        // readers wait for one shard, not the whole map; a reader in between finds the pack gone and misses.
-        int upTo = evict[^1].Number;
-        for (int i = 0; i < EntryMap.ShardCount; i++)
-        {
-            lock (_gate) _map.RemovePacksUpTo(i, upTo);
-            LetWaitersIn();
-        }
+        RemoveRecordsOf(evict);
         Interlocked.Increment(ref _evictionPasses);
         bool held = false;
         foreach (var pack in evict)
@@ -1104,6 +1225,88 @@ public sealed class ThumbStore : IDisposable
         long until = System.Diagnostics.Stopwatch.GetTimestamp() + System.Diagnostics.Stopwatch.Frequency / 20_000;
         Thread.Yield();
         while (System.Diagnostics.Stopwatch.GetTimestamp() < until) Thread.SpinWait(20);
+    }
+
+    /// <summary>
+    /// Removes every record that points into <paramref name="gone"/> (packs already out of the pack list) in one pass over
+    /// the map, one shard at a time, so readers wait for one shard, not the whole map; a reader in between finds the pack
+    /// gone and misses. Under _io.
+    /// </summary>
+    void RemoveRecordsOf(List<Pack> gone)
+    {
+        int first = int.MaxValue, last = int.MinValue;
+        foreach (var pack in gone)
+        {
+            first = Math.Min(first, pack.Number);
+            last = Math.Max(last, pack.Number);
+        }
+        // Pack numbers only grow, and those between the first and last that stay are few: a small table, read per record.
+        var marked = new bool[last - first + 1];
+        foreach (var pack in gone) marked[pack.Number - first] = true;
+        for (int i = 0; i < EntryMap.ShardCount; i++)
+        {
+            lock (_gate) _map.RemovePacks(i, marked, first);
+            LetWaitersIn();
+        }
+    }
+
+    /// <summary>
+    /// Deletes every saved thumbnail of <paramref name="group"/> (the user switched that kind off): its packs, and what is
+    /// queued for it. Thumbnails saved by 1.7.31 and earlier carry no group and stay until they are dropped for room.
+    /// Safe while thumbnails are read and written; does nothing for a group with nothing saved. A large group takes a
+    /// while (one pass over the map, then the files): call it off the UI thread. Makes the store not full when the drop
+    /// leaves it below its limit and the ceiling. Returns how many packs went. Throws only on a fault of the program
+    /// itself, such as memory running out, after letting go of the marker; the service catches it.
+    /// </summary>
+    public int DropGroup(ThumbKeepGroup group)
+    {
+        if (!_enabled || group is not (ThumbKeepGroup.Pictures or ThumbKeepGroup.Videos or ThumbKeepGroup.Documents)) return 0;
+        var g = (PackGroup)group;
+        List<Pack> drop;
+        lock (_io)
+        {
+            lock (_gate)
+            {
+                // A closing store has let go of the folder, or is about to: its files are not this one's to delete.
+                if (_closed || _stopping) return 0;
+                // Queued for this group: not written (the writer skips a record that is no longer the pending one, and
+                // counts its bytes off then).
+                List<ulong>? unqueue = null;
+                foreach (var (hash, p) in _pending)
+                    if (p.Group == g) (unqueue ??= []).Add(hash);
+                if (unqueue != null) foreach (var hash in unqueue) _pending.Remove(hash);
+                drop = [.. _packs.Values.Where(p => p.Group == g)];
+                if (drop.Count == 0) return 0;
+                // One more holder of the marker until the deletes are done, as Clear is.
+                Interlocked.Increment(ref _markerHolders);
+                foreach (var pack in drop)
+                {
+                    _packs.Remove(pack.Number);
+                    _total -= pack.Length;
+                    _groupBytes[(int)g] -= pack.Length;
+                }
+                _currents[(int)g] = null;
+                _indexDirty = true;
+            }
+            try { RemoveRecordsOf(drop); }
+            catch (Exception)
+            {
+                LetGoOfMarker(null);
+                throw;
+            }
+        }
+        try
+        {
+            foreach (var pack in drop)
+            {
+                pack.Handle?.Dispose();
+                if (!TryDelete(pack.Path)) KeepUndeleted(pack);
+            }
+        }
+        finally { LetGoOfMarker(null); }
+        lock (_gate)
+            if (_full && _total + _undeletedBytes < _cap && _map.Count < _maxRecords) _full = false;
+        return drop.Count;
     }
 
     /// <summary>Tries again to delete the packs the cap or Clear let go whose files couldn't be deleted then. The writer and Clear may both run it.</summary>
@@ -1153,7 +1356,8 @@ public sealed class ThumbStore : IDisposable
                 _map.Clear();
                 packs = [.. _packs.Values];
                 _packs.Clear();
-                _current = null;
+                Array.Clear(_currents);
+                Array.Clear(_groupBytes);
                 _total = 0;
                 _indexDirty = true;
                 _unflushed = false;
@@ -1476,14 +1680,15 @@ public sealed class ThumbStore : IDisposable
     /// <summary>Finds the packs, loads the index for what it covers and scans the rest. Under _io, before the writer starts.</summary>
     void Load()
     {
-        var onDisk = new SortedDictionary<int, (long Length, bool ZeroHead)>();
+        var onDisk = new SortedDictionary<int, (long Length, bool ZeroHead, PackGroup Group)>();
         foreach (var path in Directory.EnumerateFiles(_folder, PackPrefix + "*" + PackSuffix))
         {
             if (!TryParsePackName(Path.GetFileName(path), out int number)) continue;
             // Reserve the number even for a foreign file. Only the store's own packs are counted or deleted.
             _nextNumber = Math.Max(_nextNumber, number + 1);
-            if (OwnFile(path, out bool zeroHead) != true) continue;
-            try { onDisk[number] = (new FileInfo(path).Length, zeroHead); }
+            // The pack's group comes with the look at its head that tells it is the store's own: no more reads at open.
+            if (OwnFile(path, out bool zeroHead, out var group) != true) continue;
+            try { onDisk[number] = (new FileInfo(path).Length, zeroHead, group); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
         // A save the last session didn't finish; only when it is surely the store's own (one that can't be read stays).
@@ -1491,12 +1696,12 @@ public sealed class ThumbStore : IDisposable
         if (OwnFile(temp) == true) TryDelete(temp);
         var covered = LoadIndex(onDisk);
         _nextNumber = Math.Max(_nextNumber, _packFloor);
-        Pack? last = null;
-        bool lastClean = false;
+        // The newest pack of each group, and whether it ended cleanly.
+        var newest = new (Pack Pack, bool Clean)?[GroupCount];
         foreach (var (number, file) in onDisk)
         {
             long length = file.Length;
-            var pack = new Pack(number, Path.Combine(_folder, PackName(number)), length);
+            var pack = new Pack(number, Path.Combine(_folder, PackName(number)), length, file.Group);
             if (number < _packFloor)
             {
                 if (!TryDelete(pack.Path)) KeepUndeleted(pack);
@@ -1510,20 +1715,22 @@ public sealed class ThumbStore : IDisposable
             {
                 _packs[number] = pack;
                 _total += length;
+                _groupBytes[(int)pack.Group] += length;
             }
-            last = pack;
-            lastClean = clean;
+            newest[(int)pack.Group] = (pack, clean);
         }
         lock (_gate) RecountLive();
-        // Appending goes on in the newest pack only when it ended cleanly: records after a damaged one would never be
-        // found by a scan.
-        if (last != null && lastClean && last.Length < _options.PackBytes)
+        // Each group goes on appending to its newest pack, only when that ended cleanly: records after a damaged one would
+        // never be found by a scan. Earlier versions' packs are never appended to: new records go to a group's own packs.
+        for (int g = 1; g < GroupCount; g++)
         {
+            if (newest[g] is not { Clean: true } n || n.Pack.Length >= _options.PackBytes) continue;
+            var last = n.Pack;
             try
             {
                 last.Handle = File.OpenHandle(last.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
                 last.Writable = true;
-                _current = last;
+                _currents[g] = last;
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
@@ -1535,7 +1742,7 @@ public sealed class ThumbStore : IDisposable
     /// again if the checksum at the end is wrong, so a damaged index costs a scan of the packs, as before. Under _io,
     /// before the packs are scanned (the map holds nothing else yet).
     /// </summary>
-    Dictionary<int, long> LoadIndex(SortedDictionary<int, (long Length, bool ZeroHead)> onDisk)
+    Dictionary<int, long> LoadIndex(SortedDictionary<int, (long Length, bool ZeroHead, PackGroup Group)> onDisk)
     {
         var covered = new Dictionary<int, long>();
         bool filled = false;
@@ -1661,14 +1868,16 @@ public sealed class ThumbStore : IDisposable
         public int Length => RecordHeaderBytes + PayloadLength;
     }
 
-    // A record: magic (4) "RPTH", version (1), kind (1), reserved (2), hash (8), second hash (4), width (2), height (2),
-    // payload length (4), CRC-32C of the payload (4), then the payload. Little-endian.
+    // A record: magic (4) "RPTH", version (1), kind (1), group (1, PackGroup; 0 before this version), reserved (1),
+    // hash (8), second hash (4), width (2), height (2), payload length (4), CRC-32C of the payload (4), then the payload.
+    // Little-endian.
     static void Encode(Span<byte> s, Pending p)
     {
         BinaryPrimitives.WriteUInt32LittleEndian(s, RecordMagic);
         s[4] = RecordVersion;
         s[5] = (byte)p.Kind;
-        s[6] = 0;
+        // Was reserved (zero) and is never read by 1.7.31 and earlier, which keeps their reading of these packs unchanged.
+        s[6] = (byte)p.Group;
         s[7] = 0;
         BinaryPrimitives.WriteUInt64LittleEndian(s[8..], p.Hash);
         BinaryPrimitives.WriteUInt32LittleEndian(s[16..], p.Check);
@@ -1956,30 +2165,39 @@ public sealed class ThumbStore : IDisposable
     /// </summary>
     static bool? OwnFile(string path) => OwnFile(path, out _);
 
-    static bool? OwnFile(string path, out bool zeroHead)
+    static bool? OwnFile(string path, out bool zeroHead) => OwnFile(path, out zeroHead, out _);
+
+    /// <summary><see cref="OwnFile(string)"/>, and for a pack the group its first record names (<see cref="PackGroup.Earlier"/> when it names none).</summary>
+    static bool? OwnFile(string path, out bool zeroHead, out PackGroup group)
     {
         zeroHead = false;
+        group = PackGroup.Earlier;
         string name = Path.GetFileName(path);
-        ReadOnlySpan<byte> mark = name.Equals(MarkerName, StringComparison.OrdinalIgnoreCase) ? ThumbMarker.Magic
-            : name.Equals(IndexName, StringComparison.OrdinalIgnoreCase) || name.Equals(IndexTempName, StringComparison.OrdinalIgnoreCase) ? IndexMagic
-            : "RPTH"u8; // a pack's first record
+        bool marker = name.Equals(MarkerName, StringComparison.OrdinalIgnoreCase);
+        bool index = name.Equals(IndexName, StringComparison.OrdinalIgnoreCase) || name.Equals(IndexTempName, StringComparison.OrdinalIgnoreCase);
+        bool pack = !marker && !index;
+        ReadOnlySpan<byte> mark = marker ? ThumbMarker.Magic : index ? IndexMagic : "RPTH"u8; // a pack's first record
         Span<byte> head = stackalloc byte[8];
-        int n = 0;
+        // A pack's head is read as far as its group byte; only the mark decides whether it is the store's own.
+        int want = pack ? 7 : mark.Length, n = 0;
         try
         {
             if (!File.Exists(path)) return null;
             using var f = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            while (n < mark.Length)
+            while (n < want)
             {
-                int got = RandomAccess.Read(f, head[n..mark.Length], n);
+                int got = RandomAccess.Read(f, head[n..want], n);
                 if (got <= 0) break;
                 n += got;
             }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+        int m = Math.Min(n, mark.Length);
         // A crash can leave the file at its new length before any of the header reaches disk.
-        zeroHead = n > 0 && !head[..n].ContainsAnyExcept((byte)0);
-        return zeroHead || head[..n].SequenceEqual(mark[..n]);
+        zeroHead = m > 0 && !head[..m].ContainsAnyExcept((byte)0);
+        bool own = zeroHead || head[..m].SequenceEqual(mark[..m]);
+        if (own && pack && n >= 7 && m == mark.Length && !zeroHead && head[4] == RecordVersion && head[6] < GroupCount) group = (PackGroup)head[6];
+        return own;
     }
 
     /// <summary>Whether a file name is one of the store's own files (a pack, the index, its temporary copy, the marker).</summary>

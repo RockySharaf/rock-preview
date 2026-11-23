@@ -11,7 +11,8 @@ internal static class ResultSorter
         public int Id;
     }
 
-    readonly struct ItemComparer(FileIndex index, bool descending) : IComparer<Item>
+    // Ascending only: descending turns this order round (Descend), as the presorted order does, so both agree exactly.
+    readonly struct ItemComparer(FileIndex index) : IComparer<Item>
     {
         public int Compare(Item a, Item b)
         {
@@ -24,15 +25,51 @@ internal static class ResultSorter
             {
                 c = NameOrder.CompareWithTieBreak(index.Name(a.Id), index.Name(b.Id));
             }
-            if (c != 0) return descending ? -c : c;
-            return a.Id.CompareTo(b.Id); // deterministic tie-break, same in both directions
+            return c != 0 ? c : a.Id.CompareTo(b.Id); // deterministic tie-break
+        }
+    }
+
+    /// <summary>
+    /// Keys whose equal values stay in name order, A to Z, whichever way the column is sorted, as in File Explorer (files
+    /// with the same date, size or type). Name and Path are the name order themselves: descending turns it round whole.
+    /// </summary>
+    internal static bool TiesByName(SortKey sort) => sort is not (SortKey.Name or SortKey.Path);
+
+    /// <summary>
+    /// Turns an ascending order round for descending. With <paramref name="sameKey"/> (neighbours with equal keys) each
+    /// run of equal keys keeps its ascending order inside, so ties stay A to Z; without it the order is reversed whole.
+    /// </summary>
+    internal static void Descend<T>(T[] order, Func<T, T, bool>? sameKey)
+    {
+        Array.Reverse(order);
+        if (sameKey == null) return;
+        int start = 0;
+        for (int i = 1; i <= order.Length; i++)
+        {
+            if (i < order.Length && sameKey(order[i - 1], order[i])) continue;
+            if (i - start > 1) Array.Reverse(order, start, i - start);
+            start = i;
         }
     }
 
     public static void Sort(FileIndex index, SearchContext ctx, int[] ids, SortKey sort, bool descending, CancellationToken ct)
+        => Sort(index, ctx, ids, sort, descending, ct, runs: null);
+
+    /// <summary>
+    /// As <see cref="Sort(FileIndex, SearchContext, int[], SortKey, bool, CancellationToken)"/>; ascending, it can also fill
+    /// <paramref name="runs"/> (as long as <paramref name="ids"/>) with a number per position that neighbours share exactly when
+    /// their keys are equal, so the presorted order can turn round for descending without comparing keys again.
+    /// </summary>
+    internal static void Sort(FileIndex index, SearchContext ctx, int[] ids, SortKey sort, bool descending, CancellationToken ct,
+        int[]? runs)
     {
         int n = ids.Length;
-        if (n <= 1) return;
+        if (runs != null && descending) throw new ArgumentException("Runs are numbered in ascending order.", nameof(runs));
+        if (n <= 1)
+        {
+            if (runs != null && n == 1) runs[0] = 0;
+            return;
+        }
         var items = new Item[n];
 
         Dictionary<string, int>? extRank = null;
@@ -75,8 +112,19 @@ internal static class ResultSorter
         if (n < 65536) for (int i = 0; i < n; i++) Fill(i);
         else Parallel.For(0, n, new ParallelOptions { CancellationToken = ct }, Fill);
 
-        ParallelSort(items, new ItemComparer(index, descending), ct);
+        ParallelSort(items, new ItemComparer(index), ct);
+        if (descending) Descend<Item>(items, TiesByName(sort) ? static (a, b) => a.K1 == b.K1 && a.K2 == b.K2 : null);
         for (int i = 0; i < n; i++) ids[i] = items[i].Id;
+        if (runs != null)
+        {
+            int r = 0;
+            runs[0] = 0;
+            for (int i = 1; i < n; i++)
+            {
+                if (items[i].K1 != items[i - 1].K1 || items[i].K2 != items[i - 1].K2) r++;
+                runs[i] = r;
+            }
+        }
     }
 
     static int ExtRank(Dictionary<string, int> ranks, FileIndex index, int id)

@@ -21,20 +21,21 @@ public class SortTests
     string[] Names(SortKey key, bool desc) =>
         _engine.Search(_t.Index, "", new SearchOptions(), key, desc, CancellationToken.None).Ids.Select(_t.Index.Name).ToArray();
 
+    // Descending turns the order round, but items with the same value (the folders' sizes and dates, files of one type)
+    // stay in name order, A to Z, as in File Explorer; Name and Path are the name order themselves and turn round whole.
     [Theory]
-    [InlineData(SortKey.Name, "a,b,X:,alpha.doc,Beta.txt,gamma,Zeta.txt")]
-    [InlineData(SortKey.Path, "X:,a,b,gamma,alpha.doc,Beta.txt,Zeta.txt")]
-    [InlineData(SortKey.Size, "a,b,X:,gamma,alpha.doc,Beta.txt,Zeta.txt")]
-    [InlineData(SortKey.Extension, "a,b,gamma,X:,alpha.doc,Beta.txt,Zeta.txt")]
-    [InlineData(SortKey.Type, "a,b,X:,gamma,alpha.doc,Beta.txt,Zeta.txt")]
-    [InlineData(SortKey.DateModified, "a,b,X:,Beta.txt,alpha.doc,Zeta.txt,gamma")]
-    [InlineData(SortKey.DateCreated, "a,b,X:,Zeta.txt,Beta.txt,alpha.doc,gamma")]
-    [InlineData(SortKey.Attributes, "Beta.txt,a,b,X:,Zeta.txt,alpha.doc,gamma")]
-    public void Sorts_ascending_and_descending(SortKey key, string expectedAscending)
+    [InlineData(SortKey.Name, "a,b,X:,alpha.doc,Beta.txt,gamma,Zeta.txt", "Zeta.txt,gamma,Beta.txt,alpha.doc,X:,b,a")]
+    [InlineData(SortKey.Path, "X:,a,b,gamma,alpha.doc,Beta.txt,Zeta.txt", "Zeta.txt,Beta.txt,alpha.doc,gamma,b,a,X:")]
+    [InlineData(SortKey.Size, "a,b,X:,gamma,alpha.doc,Beta.txt,Zeta.txt", "Zeta.txt,Beta.txt,alpha.doc,gamma,a,b,X:")]
+    [InlineData(SortKey.Extension, "a,b,gamma,X:,alpha.doc,Beta.txt,Zeta.txt", "Beta.txt,Zeta.txt,alpha.doc,a,b,gamma,X:")]
+    [InlineData(SortKey.Type, "a,b,X:,gamma,alpha.doc,Beta.txt,Zeta.txt", "Beta.txt,Zeta.txt,alpha.doc,gamma,a,b,X:")]
+    [InlineData(SortKey.DateModified, "a,b,X:,Beta.txt,alpha.doc,Zeta.txt,gamma", "gamma,Zeta.txt,alpha.doc,Beta.txt,a,b,X:")]
+    [InlineData(SortKey.DateCreated, "a,b,X:,Zeta.txt,Beta.txt,alpha.doc,gamma", "gamma,alpha.doc,Beta.txt,Zeta.txt,a,b,X:")]
+    [InlineData(SortKey.Attributes, "Beta.txt,a,b,X:,Zeta.txt,alpha.doc,gamma", "gamma,alpha.doc,Zeta.txt,a,b,X:,Beta.txt")]
+    public void Sorts_ascending_and_descending(SortKey key, string expectedAscending, string expectedDescending)
     {
-        var asc = expectedAscending.Split(',');
-        Assert.Equal(asc, Names(key, false));
-        Assert.Equal(asc.Reverse(), Names(key, true));
+        Assert.Equal(expectedAscending.Split(','), Names(key, false));
+        Assert.Equal(expectedDescending.Split(','), Names(key, true));
     }
 
     [Fact]

@@ -357,6 +357,8 @@ public sealed class SearchHelpTests
         Assert.Contains("In the list of results, drag from an empty part to select with a box, holding Ctrl to add.", how);
         Assert.Contains("Type how much space it may use in Keep at most (in GB), choose where with Change location, and " +
             "tick the kinds of files under Keep thumbnails of.", how);
+        Assert.Contains("When it is full, thumbnails of documents are dropped first, then videos, then the oldest pictures; " +
+            "switching a kind off deletes its saved thumbnails.", how);
         Assert.Contains($"click {SearchScope.EverythingInsteadLink} in the empty list.", how);
         Assert.Contains("A switch stays as you set it: new tabs, new windows and the next start begin with it.", how);
         Assert.Contains("Go to Home, as in File Explorer (This PC on a Windows without Home).", keys);

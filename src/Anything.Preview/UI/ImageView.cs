@@ -377,10 +377,42 @@ internal sealed class ImageView : Control
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-        if (e.Control && e.KeyCode is Keys.D0 or Keys.NumPad0) { ZoomToFit(); e.Handled = true; }
-        else if (e.Control && e.KeyCode is Keys.D1 or Keys.NumPad1) { ZoomActual(); e.Handled = true; }
-        else if (e.Control && e.KeyCode is Keys.Oemplus or Keys.Add) { SetZoom(Effective(out _) * 1.25f, new Point(ClientSize.Width / 2, ClientSize.Height / 2)); e.Handled = true; }
-        else if (e.Control && e.KeyCode is Keys.OemMinus or Keys.Subtract) { SetZoom(Effective(out _) / 1.25f, new Point(ClientSize.Width / 2, ClientSize.Height / 2)); e.Handled = true; }
+        if (HandleZoomKey(e.KeyData)) e.Handled = true;
+    }
+
+    internal enum ZoomKey { None, Fit, Actual, In, Out }
+
+    /// <summary>The picture's zoom keys: Ctrl+0 fit, Ctrl+1 actual size, Ctrl+plus and Ctrl+minus. Ctrl alone, so
+    /// Ctrl+Shift+1 and the like stay the window's.</summary>
+    internal static ZoomKey ZoomKeyOf(Keys keyData)
+    {
+        if ((keyData & Keys.Modifiers) != Keys.Control) return ZoomKey.None;
+        return (keyData & Keys.KeyCode) switch
+        {
+            Keys.D0 or Keys.NumPad0 => ZoomKey.Fit,
+            Keys.D1 or Keys.NumPad1 => ZoomKey.Actual,
+            Keys.Oemplus or Keys.Add => ZoomKey.In,
+            Keys.OemMinus or Keys.Subtract => ZoomKey.Out,
+            _ => ZoomKey.None,
+        };
+    }
+
+    /// <summary>Zooms for one of the picture's zoom keys; false for any other key. The preview pane calls it before the
+    /// window, which would take these keys for its text size and sort order.</summary>
+    internal bool HandleZoomKey(Keys keyData)
+    {
+        var key = ZoomKeyOf(keyData);
+        if (key == ZoomKey.None) return false;
+        if (Current == null) return true; // no picture yet: the key is still the picture's, not the window's
+        var centre = new Point(ClientSize.Width / 2, ClientSize.Height / 2);
+        switch (key)
+        {
+            case ZoomKey.Fit: ZoomToFit(); break;
+            case ZoomKey.Actual: ZoomActual(); break;
+            case ZoomKey.In: SetZoom(Effective(out _) * 1.25f, centre); break;
+            case ZoomKey.Out: SetZoom(Effective(out _) / 1.25f, centre); break;
+        }
+        return true;
     }
 
     protected override void Dispose(bool disposing)

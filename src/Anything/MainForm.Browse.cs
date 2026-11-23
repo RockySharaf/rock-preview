@@ -883,6 +883,7 @@ internal sealed partial class MainForm
             _tabStrip.TabsChanged();
             return;
         }
+        _addressLookups.Drop(); // another folder opened: a typed address still being looked for no longer opens
         bool wasBrowsing = _browsing;
         _browsing = true;
         if (_zapActive) ExitZap(rerun: false);
@@ -930,6 +931,7 @@ internal sealed partial class MainForm
     bool OpenAddress(string text)
     {
         string typed = text.Trim();
+        _addressLookups.Drop(); // a display-name lookup still going answers too late now
         if (typed.Length == 0) { GoHome(); return true; }
         // What the bar itself shows for the open folder means that folder, so Enter on it keeps the folder open; the
         // Desktop's is just "Desktop", which would otherwise open a folder of that name inside the Desktop. With results
@@ -954,8 +956,70 @@ internal sealed partial class MainForm
         }
         if (ShellNative.CanParse(expanded) || ShellNative.CanParse(expanded + (expanded.Length == 2 && expanded[1] == ':' ? "\\" : "")))
             return RememberTyped(typed, OpenFolder(typed));
-        return AddressCommand.Parse(typed, folder) is { } run && StartAddress(run, typed, quiet: false);
+        // A program Windows finds by its name ("cmd", "notepad notes.txt", "code .") starts at once, as before.
+        var run = AddressCommand.Parse(typed, folder);
+        if (run is { } program && IsKnownProgram(program.File)) return StartAddress(program, typed, quiet: false);
+        // The names folders show ("This PC\Downloads", "Documents"), which Windows can't parse as a path: opened here, as
+        // File Explorer does, before handing the text to Windows (which would open a bare "Downloads" in a window of its own).
+        // Only text that begins with such a name is looked for, off the window's thread; the rest is answered at once.
+        if (AddressCommand.DisplayNameParts(expanded) is { } names && AddressCommand.WorthLookingFor(names, BreadcrumbBar.PlaceNames()))
+        {
+            OpenDisplayPath(names, run, typed);
+            return false; // not yet: the lookup opens it, or says it can't
+        }
+        return StartOrSayCantFind(run, typed);
     }
+
+    readonly AddressCommand.Lookups _addressLookups = new();
+
+    /// <summary>The place a path of display names stands for, looked for on a thread of its own; opened when it answers,
+    /// unless another address was typed or another folder opened meanwhile.</summary>
+    async void OpenDisplayPath(IReadOnlyList<string> names, AddressCommand.Run? run, string typed)
+    {
+        try
+        {
+            int lookup = _addressLookups.Begin();
+            var tab = _tab;
+            string? place = await BreadcrumbBar.ResolveDisplayPathAsync(names);
+            if (!_addressLookups.IsCurrent(lookup) || tab != _tab || IsDisposed) return;
+            _addressLookups.Drop();
+            bool opened = place != null ? RememberTyped(typed, OpenFolder(place)) : StartOrSayCantFind(run, typed);
+            if (opened && !_search.ContainsFocus) FocusList(); // as Enter does, unless the user went on to search
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException) { }
+    }
+
+    bool StartOrSayCantFind(AddressCommand.Run? run, string typed)
+    {
+        if (run is { } other) return StartAddress(other, typed, quiet: false);
+        SayCantFind(typed);
+        return false;
+    }
+
+    /// <summary>A program Windows finds by its name: in its own folders or PATH (with PATHEXT's extensions), or registered
+    /// under App Paths (as many installed programs are).</summary>
+    static bool IsKnownProgram(string file)
+    {
+        if (file.Length == 0 || file.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return false;
+        string? path = Environment.GetEnvironmentVariable("PATH");
+        var folders = new List<string> { Environment.SystemDirectory, Environment.GetFolderPath(Environment.SpecialFolder.Windows) };
+        if (path != null) folders.AddRange(path.Split(';').Select(Environment.ExpandEnvironmentVariables));
+        if (AddressCommand.FindsProgram(file, folders, Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")) return true;
+        string key = @"Software\Microsoft\Windows\CurrentVersion\App Paths\" + (Path.HasExtension(file) ? file : file + ".exe");
+        try
+        {
+            using var user = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(key);
+            if (user != null) return true;
+            using var machine = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(key);
+            return machine != null;
+        }
+        catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException)
+        {
+            return false;
+        }
+    }
+
+    void SayCantFind(string typed) => _statusRight.Text = $"Can't find \"{typed}\": it isn't a folder here or a program Windows knows.";
 
     /// <summary>A typed address that opened a place goes to the top of the typed addresses (the drop-down, the suggestions).</summary>
     bool RememberTyped(string address, bool opened)
@@ -985,7 +1049,7 @@ internal sealed partial class MainForm
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or FileNotFoundException)
         {
-            if (!quiet) _statusRight.Text = $"Can't find \"{typed}\": it isn't a folder here or a program Windows knows.";
+            if (!quiet) SayCantFind(typed);
             SyncAddress();
             return false;
         }
@@ -1313,7 +1377,7 @@ internal sealed partial class MainForm
         bool on = !ThumbnailMode;
         SetViewMode(on ? _lastThumbSize : 0);
         if (on) _app.Tried(GettingStarted.Thumbnails);
-        FocusList();
+        FocusFiles(); // not FocusList: with nothing selected it would select the first file (and preview it)
     }
 
     /// <summary>The folders "every file in..." covers: the open folder, or the folders selected in the results.</summary>

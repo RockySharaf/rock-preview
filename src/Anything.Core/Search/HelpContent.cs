@@ -128,7 +128,8 @@ public static class HelpContent
                 Row("Instant thumbnails", "Off unless you turn it on in Settings › Thumbnails. It keeps small copies of " +
                     "thumbnails on disk, so thumbnails you have seen before appear at once, also after a restart. Type how " +
                     "much space it may use in Keep at most (in GB), choose where with Change location, and tick the kinds " +
-                    "of files under Keep thumbnails of."),
+                    "of files under Keep thumbnails of. When it is full, thumbnails of documents are dropped first, then " +
+                    "videos, then the oldest pictures; switching a kind off deletes its saved thumbnails."),
             ], null),
 
             new("Files", null,
@@ -183,7 +184,8 @@ public static class HelpContent
                 Key("Ctrl+P", "Print the selected files."),
                 Key("Ctrl+S", "Save the list of results as a file (Everything file list, CSV or text)."),
                 Key("F5", "Refresh."),
-                Key(["Ctrl++", "Ctrl+-", "Ctrl+0"], "The window's text larger / smaller / back to its usual size."),
+                Key(["Ctrl++", "Ctrl+-", "Ctrl+0"], "The window's text larger / smaller / back to its usual size (in a " +
+                    "picture in the preview you have clicked in, they zoom the picture)."),
                 Key("Ctrl+,", "Open Settings."),
                 Key("Alt+F4", "Close the window."),
                 Key("Ctrl+Q", "Exit Rock Preview."),
@@ -216,7 +218,8 @@ public static class HelpContent
                 Key("Up", "On the first result: back to the search box."),
                 Key("Any letter", "Typing in the results goes on in the search box."),
                 Key("Ctrl+1 .. 9", "Sort the results by name, path, size, extension, type, date modified, date created, " +
-                    "attributes; 9 by date recently changed."),
+                    "attributes; 9 by date recently changed (in a picture in the preview you have clicked in, Ctrl+1 shows the " +
+                    "picture at its actual size)."),
             ], null),
 
             new("Thumbnails and layout", null,
@@ -246,6 +249,8 @@ public static class HelpContent
                 Key(["PageDown", "PageUp"], "Next / previous page of a preview with several pages, once you have clicked in it " +
                     "(Right and Left too)."),
                 Key(["F3", "Shift+F3"], "Next / previous match of the search words, once you have clicked in the preview."),
+                Key(["Ctrl++", "Ctrl+-", "Ctrl+0", "Ctrl+1"], "In a picture or PDF page, once you have clicked in it: zoom in / " +
+                    "zoom out / fit the pane / actual size."),
                 Key(["Ctrl+A", "Ctrl+C"], "In a text preview: select all / copy."),
             ], null),
 

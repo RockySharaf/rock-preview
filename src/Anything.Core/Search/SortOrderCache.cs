@@ -21,6 +21,10 @@ internal sealed class SortOrderCache(SortKey key)
     long _pathVersion = -1;  // FileIndex.PathVersion the order was built with (Path order)
     int[] _order = [];
     int[] _rank = [];      // rank[id] = position in _order, -1 when absent
+    // runs[pos]: the same number for neighbours with equal keys, so descending keeps ties A to Z without comparing keys
+    // on every search (that cost up to 300 ms on millions). Null for Name and Path, which turn round whole.
+    int[]? _runs;
+    int _nextRun;
     readonly List<int> _touched = [];
 
     public int Count => _order.Length;
@@ -60,8 +64,11 @@ internal sealed class SortOrderCache(SortKey key)
         int k = 0;
         for (int i = 0; i < n && k < ids.Length; i++) if (index.IsAlive(i)) ids[k++] = i;
         if (k != ids.Length) Array.Resize(ref ids, k);
-        ResultSorter.Sort(index, ctx, ids, Key, descending: false, ct);
+        var runs = ResultSorter.TiesByName(Key) ? new int[ids.Length] : null;
+        ResultSorter.Sort(index, ctx, ids, Key, descending: false, ct, runs);
         _order = ids;
+        _runs = runs;
+        _nextRun = runs is { Length: > 0 } ? runs[^1] + 1 : 0;
         BuildRank(n);
         _index = new WeakReference<FileIndex>(index);
         _generation = index.Generation;
@@ -86,22 +93,28 @@ internal sealed class SortOrderCache(SortKey key)
         }
         positions.Sort();
 
-        // Existing order without the touched entries.
+        // Existing order without the touched entries. Kept entries keep their run numbers: their keys didn't change, and
+        // entries between two kept ones with equal keys had that key too (the order was sorted), so they shared a run.
+        var oldRuns = _runs;
         var kept = new int[_order.Length - positions.Count];
+        var keptRuns = oldRuns == null ? null : new int[kept.Length];
         int src = 0, dst = 0;
         foreach (int pos in positions)
         {
             int len = pos - src;
             Array.Copy(_order, src, kept, dst, len);
+            if (keptRuns != null) Array.Copy(oldRuns!, src, keptRuns, dst, len);
             dst += len;
             src = pos + 1;
         }
         Array.Copy(_order, src, kept, dst, _order.Length - src);
+        if (keptRuns != null) Array.Copy(oldRuns!, src, keptRuns, dst, _order.Length - src);
 
         // Insert the touched live entries at their sorted positions.
         var adds = add.ToArray();
         Array.Sort(adds, cmp);
         var merged = new int[kept.Length + adds.Length];
+        var mergedRuns = keptRuns == null ? null : new int[merged.Length];
         int from = 0, outPos = 0;
         foreach (int a in adds)
         {
@@ -112,14 +125,38 @@ internal sealed class SortOrderCache(SortKey key)
                 if (cmp.Compare(kept[mid], a) <= 0) lo = mid + 1; else hi = mid;
             }
             Array.Copy(kept, from, merged, outPos, lo - from);
+            if (mergedRuns != null) Array.Copy(keptRuns!, from, mergedRuns, outPos, lo - from);
             outPos += lo - from;
+            if (mergedRuns != null)
+            {
+                // The run of an equal neighbour (the one before, or the kept one after), else a new one.
+                mergedRuns[outPos] = outPos > 0 && cmp.CompareKeys(merged[outPos - 1], a) == 0 ? mergedRuns[outPos - 1]
+                    : lo < kept.Length && cmp.CompareKeys(kept[lo], a) == 0 ? keptRuns![lo]
+                    : _nextRun++;
+            }
             merged[outPos++] = a;
             from = lo;
         }
         Array.Copy(kept, from, merged, outPos, kept.Length - from);
+        if (mergedRuns != null) Array.Copy(keptRuns!, from, mergedRuns, outPos, kept.Length - from);
 
         _order = merged;
+        _runs = mergedRuns;
+        if (mergedRuns != null && _nextRun > int.MaxValue / 2) RenumberRuns(mergedRuns);
         BuildRank(index.Count);
+    }
+
+    // Run numbers only grow with merges: numbered again from 0 long before they could overflow.
+    void RenumberRuns(int[] runs)
+    {
+        int r = -1, last = 0;
+        for (int i = 0; i < runs.Length; i++)
+        {
+            if (i == 0 || runs[i] != last) r++;
+            last = runs[i];
+            runs[i] = r;
+        }
+        _nextRun = r + 1;
     }
 
     void BuildRank(int indexCount)
@@ -132,8 +169,36 @@ internal sealed class SortOrderCache(SortKey key)
     /// <summary>Every live entry in order (a fresh array the caller owns).</summary>
     public int[] All(bool descending)
     {
-        var result = (int[])_order.Clone();
-        if (descending) Array.Reverse(result);
+        if (!descending) return (int[])_order.Clone();
+        if (_runs == null)
+        {
+            var whole = (int[])_order.Clone();
+            Array.Reverse(whole);
+            return whole;
+        }
+        return Descend(_order, _runs, _order.Length);
+    }
+
+    /// <summary>
+    /// The first <paramref name="count"/> ids of an ascending order turned round as <see cref="ResultSorter.Descend"/> does,
+    /// each run of equal keys (equal numbers in <paramref name="runs"/>, which runs alongside) kept A to Z: a fresh array.
+    /// </summary>
+    static int[] Descend(int[] ascending, int[] runs, int count)
+    {
+        var result = new int[count];
+        int outPos = 0;
+        for (int end = count - 1; end >= 0;)
+        {
+            int start = end;
+            while (start > 0 && runs[start - 1] == runs[end]) start--;
+            if (end - start < 16) for (int i = start; i <= end; i++) result[outPos++] = ascending[i]; // most runs are short
+            else
+            {
+                Array.Copy(ascending, start, result, outPos, end - start + 1);
+                outPos += end - start + 1;
+            }
+            end = start - 1;
+        }
         return result;
     }
 
@@ -144,28 +209,28 @@ internal sealed class SortOrderCache(SortKey key)
         if (k <= 1) return ids;
         if (k >= _order.Length / 16)
         {
-            // Dense: walk the presorted order and keep the members of the subset.
+            // Dense: walk the presorted order and keep the members of the subset (and their run numbers, for descending).
             var member = new ulong[(_rank.Length + 63) >> 6];
             foreach (int id in ids) if ((uint)id < (uint)_rank.Length) member[id >> 6] |= 1UL << (id & 63);
             var result = new int[k];
+            var runs = descending ? _runs : null;
+            var resultRuns = runs == null ? null : new int[k];
             int j = 0;
-            if (!descending)
+            for (int i = 0; i < _order.Length && j < k; i++)
             {
-                for (int i = 0; i < _order.Length && j < k; i++)
+                int id = _order[i];
+                if ((member[id >> 6] & (1UL << (id & 63))) != 0)
                 {
-                    int id = _order[i];
-                    if ((member[id >> 6] & (1UL << (id & 63))) != 0) result[j++] = id;
+                    if (resultRuns != null) resultRuns[j] = runs![i];
+                    result[j++] = id;
                 }
             }
-            else
+            if (j == k)
             {
-                for (int i = _order.Length - 1; i >= 0 && j < k; i--)
-                {
-                    int id = _order[i];
-                    if ((member[id >> 6] & (1UL << (id & 63))) != 0) result[j++] = id;
-                }
+                if (resultRuns != null) return Descend(result, resultRuns, k);
+                if (descending) Array.Reverse(result);
+                return result;
             }
-            if (j == k) return result;
             // Fall through if some ids were not in the order (should not happen).
         }
         var keys = new int[k];
@@ -175,8 +240,15 @@ internal sealed class SortOrderCache(SortKey key)
             keys[i] = (uint)id < (uint)_rank.Length && _rank[id] >= 0 ? _rank[id] : int.MaxValue;
         }
         Array.Sort(keys, ids);
-        if (descending) Array.Reverse(ids);
-        return ids;
+        if (!descending) return ids;
+        if (_runs == null)
+        {
+            Array.Reverse(ids);
+            return ids;
+        }
+        var subsetRuns = new int[k];
+        for (int i = 0; i < k; i++) subsetRuns[i] = keys[i] == int.MaxValue ? -1 - i : _runs[keys[i]]; // missing: a run each
+        return Descend(ids, subsetRuns, k);
     }
 
     /// <summary>
@@ -188,7 +260,16 @@ internal sealed class SortOrderCache(SortKey key)
         public int Compare(int a, int b)
         {
             if (a == b) return 0;
-            int c = key switch
+            int c = CompareKeys(a, b);
+            if (c == 0)
+            {
+                c = NameOrder.CompareWithTieBreak(index.Name(a), index.Name(b));
+            }
+            return c != 0 ? c : a.CompareTo(b);
+        }
+
+        /// <summary>The sort key alone, without the name and id that break its ties.</summary>
+        public int CompareKeys(int a, int b) => key switch
             {
                 SortKey.Name => Group(a).CompareTo(Group(b)),
                 SortKey.Path => Group(a) != Group(b) ? Group(a).CompareTo(Group(b)) : ComparePaths(index.Parent(a), index.Parent(b)),
@@ -203,12 +284,6 @@ internal sealed class SortOrderCache(SortKey key)
                 SortKey.DateRun => (ctx.Runs?.Get(a).LastRun ?? 0).CompareTo(ctx.Runs?.Get(b).LastRun ?? 0),
                 _ => 0,
             };
-            if (c == 0)
-            {
-                c = NameOrder.CompareWithTieBreak(index.Name(a), index.Name(b));
-            }
-            return c != 0 ? c : a.CompareTo(b);
-        }
 
         int Group(int id) => index.IsDirectory(id) ? 0 : 1;
 

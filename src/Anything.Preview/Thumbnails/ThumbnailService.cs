@@ -29,8 +29,9 @@ namespace Anything.Preview.Thumbnails;
 //   Changing the location:      await Shared.UseStore(() => ThumbStore.Open(newFolder, ...)); then remove the old folder.
 //   Changing the limit:         Shared.StoreCapBytes = ThumbStore.CapBytesFor(mb) (applies at once, and to a store opened later).
 //   What is kept:               Shared.StoreKeep = the user's ThumbKeep (asked with ThumbKinds.KeepOnDisk, for pictures made
-//                               from then on; what is saved already stays).
-//   Full:                       Shared.StoreBecameFull is raised on a worker when the store starts dropping its oldest
+//                               from then on). A group switched off has its saved thumbnails deleted in the background;
+//                               types left out stay until dropped for room. Each picture is saved with its group (ThumbKeep.GroupOf).
+//   Full:                       Shared.StoreBecameFull is raised on a worker when the store starts dropping
 //                               thumbnails (marshal to the UI); Shared.StoreIsFull and StoreDiskLow say how it is now.
 //   Clear:                      Shared.ClearStore() empties the store (the grid clears its own memory cache itself).
 //   Settings' line:             Shared.CurrentStore (null until the first request opens it) has Problem, Folder, IsEnabled;
@@ -716,22 +717,51 @@ internal sealed class ThumbnailService : IDisposable
 
     /// <summary>
     /// Which thumbnails the store keeps, as the user chose (asked in addition to <see cref="ThumbKinds.KeepOnDisk"/>):
-    /// pictures made from now on that it doesn't keep are shown but not saved, and the idle step skips them. Any thread.
+    /// pictures made from now on that it doesn't keep are shown but not saved, and the idle step skips them. A group
+    /// switched off has its saved thumbnails deleted, in the background (a store opened later does it when it opens).
+    /// Types left out are not deleted: the store doesn't keep types apart. Any thread; never waits.
     /// </summary>
     public ThumbKeep StoreKeep
     {
         get => _keep;
-        set => _keep = value ?? ThumbKeep.All;
+        set
+        {
+            var keep = value ?? ThumbKeep.All;
+            var before = _keep;
+            _keep = keep;
+            if (_store is { IsEnabled: true } s) DropUnkept(s, keep, before);
+        }
     }
 
     /// <summary>
-    /// The store in use started dropping its oldest thumbnails to stay within its limit. Raised on a worker thread (the
+    /// Deletes, on the thread pool, the saved thumbnails of each group <paramref name="keep"/> doesn't tick (only those
+    /// <paramref name="before"/> ticked, when given). Skipped for a group ticked again meanwhile, or a store replaced.
+    /// </summary>
+    private void DropUnkept(ThumbStore store, ThumbKeep keep, ThumbKeep? before)
+    {
+        var groups = new List<ThumbKeepGroup>(3);
+        foreach (var g in new[] { ThumbKeepGroup.Pictures, ThumbKeepGroup.Videos, ThumbKeepGroup.Documents })
+            if (!keep.Has(g) && (before == null || before.Has(g))) groups.Add(g);
+        if (groups.Count == 0) return;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            foreach (var g in groups)
+            {
+                if (_keep.Has(g) || !ReferenceEquals(_store, store)) continue;
+                try { store.DropGroup(g); }
+                catch { /* only on a fault such as memory running out: the next open of the store drops the group again */ }
+            }
+        });
+    }
+
+    /// <summary>
+    /// The store in use started dropping thumbnails to stay within its limit. Raised on a worker thread (the
     /// store's writer or the thread pool), never under a lock of the service or the store: marshal to the UI thread. May
     /// be raised again for the same filling (once by the store, once when a store that opened full is published).
     /// </summary>
     public event Action? StoreBecameFull;
 
-    /// <summary>Whether the store in use is full now (it drops the oldest as new ones are saved). Any thread; cheap.</summary>
+    /// <summary>Whether the store in use is full now (it drops thumbnails as new ones are saved). Any thread; cheap.</summary>
     public bool StoreIsFull => _store is { IsEnabled: true } s && s.IsFull;
 
     /// <summary>Whether the store in use refuses new pictures now because its drive is nearly full. Any thread; cheap.</summary>
@@ -1334,8 +1364,9 @@ internal sealed class ThumbnailService : IDisposable
     {
         if (!Resolve(w)) return new Outcome { None = true };
         // Idle work for a kind never kept on disk (text pages) has nothing to make: it only fills the store.
-        // So is idle work for a kind the user chose not to keep.
-        if (IdleOnly(w) && (!ThumbKinds.KeepOnDisk(w.Path, w.IsFolder) || !_keep.Keeps(w.Path, w.IsFolder))) return new Outcome { Skip = true };
+        // So is idle work for a kind the user chose not to keep, and for a kind the full store would not save now.
+        if (IdleOnly(w) && (!ThumbKinds.KeepOnDisk(w.Path, w.IsFolder) || !_keep.Keeps(w.Path, w.IsFolder)
+            || _store is { } refusing && refusing.Refuses(ThumbKeep.GroupOf(w.Path, w.IsFolder)))) return new Outcome { Skip = true };
         lock (_failed)
         {
             if (_failed.Contains(w.RealKey) || _hung.Contains(w.RealKey)) return new Outcome { Next = Stage.Icon };
@@ -1912,7 +1943,8 @@ internal sealed class ThumbnailService : IDisposable
                 if (!ThumbGuards.MayStore(w.RealKey.Stamp, readNow, now)) return;
             }
             var bytes = ThumbSources.Encode(master, Ext(w), w.SizeClass, out var kind);
-            if (bytes != null && store.Put(w.RealKey, kind, master.Width, master.Height, bytes))
+            // The file's group goes with it: the store keeps pictures longest and deletes a group switched off.
+            if (bytes != null && store.Put(w.RealKey, kind, master.Width, master.Height, bytes, ThumbKeep.GroupOf(w.Path, w.IsFolder)))
                 Interlocked.Increment(ref _finalsStored);
         }
         catch
@@ -2009,6 +2041,8 @@ internal sealed class ThumbnailService : IDisposable
                 // a filling during the open is not missed.
                 s.BecameFull += () => { if (ReferenceEquals(_store, s)) RaiseStoreBecameFull(); };
                 if (s.IsFull) RaiseStoreBecameFull();
+                // A group switched off while no store was open (or in an earlier run) goes now; nothing to do once empty.
+                DropUnkept(s, _keep, null);
             }
             // A location that can't be used keeps the store idle: no idle step, whose pictures would go nowhere.
             foreach (var c in clients) c.Queue.AllowIdle = s.IsEnabled;

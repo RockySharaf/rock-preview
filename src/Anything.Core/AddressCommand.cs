@@ -39,6 +39,74 @@ public static class AddressCommand
         return new Run(file, args, where);
     }
 
+    /// <summary>
+    /// The parts of a path of display names, as File Explorer takes one typed into its address bar ("This PC\Downloads",
+    /// "Documents": the names folders show, from the desktop down); null for what can't be one: a path from a drive or a
+    /// network share, a "shell:" or "::{...}" name, a web address, an empty part.
+    /// </summary>
+    public static IReadOnlyList<string>? DisplayNameParts(string text)
+    {
+        string t = text.Trim().Trim('"').Trim().TrimEnd('\\');
+        if (t.Length == 0 || Path.IsPathRooted(t) || t.Contains("::") || t.Contains('/') || IsWebAddress(t)
+            || t.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) || t.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+            return null;
+        var parts = t.Split('\\');
+        for (int i = 0; i < parts.Length; i++)
+        {
+            parts[i] = parts[i].Trim();
+            if (parts[i] is "" or "." or "..") return null;
+        }
+        return parts;
+    }
+
+    /// <summary>
+    /// Whether a path of display names is worth looking for (which lists folders, and may wait on a network drive): only
+    /// when its first part is "This PC" or one of <paramref name="placeNames"/> (the desktop's, This PC's, Home's and the
+    /// user's own folders' names). Anything else ("notepda", "tools\x.exe", "ms-settings:display") is answered at once.
+    /// </summary>
+    public static bool WorthLookingFor(IReadOnlyList<string> parts, IEnumerable<string> placeNames)
+        => parts.Count > 0 && (parts[0].Equals("This PC", StringComparison.OrdinalIgnoreCase)
+                               || placeNames.Any(n => parts[0].Equals(n, StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>
+    /// Whose answer still counts, for a lookup that finishes later: each new one, and anything else typed or opened
+    /// meanwhile (<see cref="Drop"/>), makes the earlier ones late.
+    /// </summary>
+    public sealed class Lookups
+    {
+        int _now;
+
+        /// <summary>A new lookup; its number, to ask <see cref="IsCurrent"/> with when it answers.</summary>
+        public int Begin() => ++_now;
+
+        /// <summary>Something else happened (another address, another folder): the lookup going on is late.</summary>
+        public void Drop() => _now++;
+
+        public bool IsCurrent(int lookup) => lookup == _now;
+    }
+
+    /// <summary>
+    /// Whether a program named <paramref name="file"/> ("cmd", "notepad.exe", "code") is in one of <paramref name="folders"/>
+    /// (Windows' own and those of PATH), as itself or with one of the extensions of <paramref name="pathExt"/> (PATHEXT,
+    /// ".COM;.EXE;.BAT"...). Lets a typed program start at once, without first looking for a folder of that name.
+    /// </summary>
+    public static bool FindsProgram(string file, IEnumerable<string> folders, string? pathExt)
+    {
+        if (file.Length == 0 || file.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return false; // a bare name only
+        var exts = (pathExt ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(e => e.Length > 1 && e[0] == '.').ToList();
+        var names = new List<string>(exts.Count + 1);
+        if (Path.HasExtension(file)) names.Add(file);
+        foreach (var e in exts) names.Add(file + e);
+        foreach (var dir in folders)
+        {
+            string d = dir.Trim().Trim('"');
+            if (d.Length == 0 || d.IndexOfAny(Path.GetInvalidPathChars()) >= 0 || !Path.IsPathFullyQualified(d)) continue;
+            foreach (var n in names) if (File.Exists(Path.Combine(d, n))) return true;
+        }
+        return false;
+    }
+
     /// <summary>A web address (http, https, ftp, mailto): opened in its app rather than looked for as a folder.</summary>
     public static bool IsWebAddress(string text)
     {

@@ -162,6 +162,7 @@ internal sealed class BreadcrumbBar : Control
     public void BeginEdit()
     {
         CloseMenu();
+        QueuePlaceNames(); // ready, most likely, by the time Enter is pressed
         if (!_editing) FocusBeforeEdit = Native.GetFocus();
         _editing = true;
         _hover = _pressed = default;
@@ -450,6 +451,198 @@ internal sealed class BreadcrumbBar : Control
             Release(enumObj);
             Release(folderObj);
             if (parentPidl != IntPtr.Zero) ShellNative.ILFree(parentPidl);
+        }
+    }
+
+    // ---- a path of display names, typed ---------------------------------------------------------
+
+    /// <summary>
+    /// The place a path of display names stands for, as File Explorer reads one typed into its address bar ("This
+    /// PC\Downloads", "Documents"): each part is the name a folder shows inside the one before, from the desktop (whose own
+    /// name, "Desktop", is the desktop itself); a first part that isn't on the desktop is looked for in This PC. Its parsing
+    /// name, to open, or null. On a thread of its own, never the window's: This PC's drives can be slow to name (a network
+    /// drive that is away), so after a few seconds the answer is null.
+    /// </summary>
+    internal static Task<string?> ResolveDisplayPathAsync(IReadOnlyList<string> parts)
+    {
+        var answer = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (parts.Count == 0) { answer.SetResult(null); return answer.Task; }
+        var thread = new Thread(() =>
+        {
+            string? found = null;
+            try { found = WalkDisplayPath(parts); }
+            catch (Exception) { }
+            answer.TrySetResult(found);
+        })
+        { IsBackground = true, Name = "Address display names" };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ => answer.TrySetResult(null), TaskScheduler.Default);
+        return answer.Task;
+    }
+
+    static volatile string[]? s_placeNames;
+    static int s_placeNamesAsked;
+
+    /// <summary>
+    /// The names a typed path of display names may begin with: the desktop's, This PC's, Home's and the user's own
+    /// folders', as they show (in the user's language), and the English ones. Asked once, on a thread of its own (a
+    /// folder moved to a network drive may be slow to name); the English names until it answers.
+    /// </summary>
+    internal static IReadOnlyList<string> PlaceNames()
+    {
+        QueuePlaceNames();
+        return s_placeNames ?? EnglishPlaceNames;
+    }
+
+    static readonly string[] EnglishPlaceNames = ["Desktop", "This PC", "Home", "Documents", "Downloads", "Pictures", "Music", "Videos"];
+
+    static void QueuePlaceNames()
+    {
+        if (Interlocked.Exchange(ref s_placeNamesAsked, 1) != 0) return;
+        var thread = new Thread(() =>
+        {
+            var names = new List<string>(EnglishPlaceNames);
+            IntPtr root = Marshal.AllocCoTaskMem(2);
+            try
+            {
+                Marshal.WriteInt16(root, 0); // the desktop
+                names.Add(ShellNative.NameOf(root, SIGDN.NormalDisplay) ?? "");
+                foreach (var parsing in new[] { ThisPcParsingName, HomeParsingName })
+                {
+                    if (Native.SHParseDisplayName(parsing, IntPtr.Zero, out var pidl, 0, out _) != ShellNative.S_OK || pidl == IntPtr.Zero) continue;
+                    names.Add(ShellNative.NameOf(pidl, SIGDN.NormalDisplay) ?? "");
+                    ShellNative.ILFree(pidl);
+                }
+                foreach (var id in UserFolders)
+                {
+                    var rfid = id;
+                    if (Native.SHGetKnownFolderIDList(ref rfid, KnownFolderDontVerify, IntPtr.Zero, out var pidl) != ShellNative.S_OK || pidl == IntPtr.Zero) continue;
+                    names.Add(ShellNative.NameOf(pidl, SIGDN.NormalDisplay) ?? "");
+                    ShellNative.ILFree(pidl);
+                }
+            }
+            catch (Exception) { }
+            finally { Marshal.FreeCoTaskMem(root); }
+            s_placeNames = [.. names.Where(n => n.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase)];
+        })
+        { IsBackground = true, Name = "Address place names" };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+    }
+
+    const string HomeParsingName = "::{F874310E-B6B7-47DC-BC84-B9E6B38F5903}";
+    const uint KnownFolderDontVerify = 0x4000; // KF_FLAG_DONT_VERIFY: the folder isn't checked on the disk
+
+    static string? WalkDisplayPath(IReadOnlyList<string> parts)
+    {
+        IntPtr root = Marshal.AllocCoTaskMem(2), current = IntPtr.Zero, pc = IntPtr.Zero;
+        try
+        {
+            Marshal.WriteInt16(root, 0); // the empty ID list: the desktop, the namespace's root
+            if (Native.SHParseDisplayName(ThisPcParsingName, IntPtr.Zero, out pc, 0, out _) != ShellNative.S_OK) pc = IntPtr.Zero;
+            if (string.Equals(parts[0], ShellNative.NameOf(root, SIGDN.NormalDisplay), StringComparison.OrdinalIgnoreCase))
+                current = Native.ILClone(root);
+            else if ((current = FindChild(root, parts[0])) == IntPtr.Zero && pc != IntPtr.Zero)
+                current = FindChild(pc, parts[0]);
+            if (current == IntPtr.Zero) current = KnownFolder(parts[0]);
+            for (int i = 1; i < parts.Count && current != IntPtr.Zero; i++)
+            {
+                IntPtr child = FindChild(current, parts[i]);
+                // Windows 11's This PC no longer lists Documents, Downloads and the like, but File Explorer still opens
+                // "This PC\Downloads": below the desktop or This PC, a part may be one of those folders.
+                if (child == IntPtr.Zero && (ShellNative.ILGetSize(current) <= 2 || (pc != IntPtr.Zero && Native.ILIsEqual(current, pc))))
+                    child = KnownFolder(parts[i]);
+                ShellNative.ILFree(current);
+                current = child;
+            }
+            return current == IntPtr.Zero ? null : ShellNative.NameOf(current, SIGDN.DesktopAbsoluteParsing);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(root);
+            if (current != IntPtr.Zero) ShellNative.ILFree(current);
+            if (pc != IntPtr.Zero) ShellNative.ILFree(pc);
+        }
+    }
+
+    const string ThisPcParsingName = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+
+    // The user's own folders (KnownFolders.h): Desktop, Documents, Downloads, Music, Pictures, Videos, 3D Objects.
+    static readonly Guid[] UserFolders =
+    [
+        new("B4BFCC3A-DB2C-424C-B029-7FE99A87C641"), new("FDD39AD0-238F-46AF-ADB4-6C85480369C7"),
+        new("374DE290-123F-4565-9164-39C4925E467B"), new("4BD8D571-6D19-48D3-BE97-422220080E43"),
+        new("33E28130-4E1E-4676-835A-98395C3BC3BB"), new("18989B1D-99B5-455B-841C-AB7C74E4DDFC"),
+        new("31C0DD25-9439-4F12-BF41-7FF4EDA38722"),
+    ];
+
+    /// <summary>One of the user's own folders by the name it shows (in the user's language: "Documents"), or by its
+    /// "shell:" name ("shell:Downloads"); its absolute ID list for the caller to free, or zero.</summary>
+    static IntPtr KnownFolder(string name)
+    {
+        foreach (var id in UserFolders)
+        {
+            var rfid = id;
+            if (Native.SHGetKnownFolderIDList(ref rfid, 0, IntPtr.Zero, out var pidl) != ShellNative.S_OK || pidl == IntPtr.Zero) continue;
+            if (string.Equals(ShellNative.NameOf(pidl, SIGDN.NormalDisplay), name, StringComparison.OrdinalIgnoreCase)) return pidl;
+            ShellNative.ILFree(pidl);
+        }
+        if (name.IndexOfAny([':', '\\']) < 0
+            && Native.SHParseDisplayName("shell:" + name, IntPtr.Zero, out var known, 0, out _) == ShellNative.S_OK && known != IntPtr.Zero)
+            return known;
+        return IntPtr.Zero;
+    }
+
+    /// <summary>The folder inside <paramref name="parent"/> (an absolute ID list) shown as <paramref name="name"/>, or named so
+    /// for parsing ("C:" for Local Disk (C:)); its absolute ID list for the caller to free, or zero.</summary>
+    static IntPtr FindChild(IntPtr parent, string name)
+    {
+        object? desktopObj = null, folderObj = null, enumObj = null;
+        try
+        {
+            if (Native.SHGetDesktopFolder(out var pDesktop) != ShellNative.S_OK || pDesktop == IntPtr.Zero) return IntPtr.Zero;
+            desktopObj = Marshal.GetObjectForIUnknown(pDesktop);
+            Marshal.Release(pDesktop);
+            var folder = (IBreadcrumbShellFolder)desktopObj;
+            if (ShellNative.ILGetSize(parent) > 2) // not the desktop itself
+            {
+                var iid = Native.IID_IShellFolder;
+                if (folder.BindToObject(parent, IntPtr.Zero, ref iid, out var pFolder) != ShellNative.S_OK || pFolder == IntPtr.Zero) return IntPtr.Zero;
+                folderObj = Marshal.GetObjectForIUnknown(pFolder);
+                Marshal.Release(pFolder);
+                folder = (IBreadcrumbShellFolder)folderObj;
+            }
+            if (folder.EnumObjects(IntPtr.Zero, (uint)(SHCONTF.FOLDERS | SHCONTF.INCLUDEHIDDEN), out var pEnum) != ShellNative.S_OK || pEnum == IntPtr.Zero)
+                return IntPtr.Zero;
+            enumObj = Marshal.GetObjectForIUnknown(pEnum);
+            Marshal.Release(pEnum);
+            var items = (IBreadcrumbEnumIDList)enumObj;
+            string bare = name.TrimEnd('\\');
+            while (items.Next(1, out var child, out uint fetched) == ShellNative.S_OK && fetched == 1 && child != IntPtr.Zero)
+            {
+                IntPtr abs = Native.ILCombine(parent, child);
+                Marshal.FreeCoTaskMem(child);
+                if (abs == IntPtr.Zero) continue;
+                if (string.Equals(ShellNative.NameOf(abs, SIGDN.NormalDisplay), name, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(ShellNative.NameOf(abs, SIGDN.ParentRelativeParsing)?.TrimEnd('\\'), bare, StringComparison.OrdinalIgnoreCase))
+                    return abs;
+                ShellNative.ILFree(abs);
+            }
+            // Not listed: the folder may still know the name (some shell folders don't list every item they hold).
+            if (folder.ParseDisplayName(IntPtr.Zero, IntPtr.Zero, name, IntPtr.Zero, out var rel, IntPtr.Zero) == ShellNative.S_OK && rel != IntPtr.Zero)
+            {
+                IntPtr abs = Native.ILCombine(parent, rel);
+                Marshal.FreeCoTaskMem(rel);
+                return abs;
+            }
+            return IntPtr.Zero;
+        }
+        finally
+        {
+            Release(enumObj);
+            Release(folderObj);
+            Release(desktopObj);
         }
     }
 
@@ -1142,6 +1335,9 @@ internal sealed class BreadcrumbBar : Control
 
         [DllImport("shell32.dll")] public static extern int SHGetDesktopFolder(out IntPtr ppshf);
         [DllImport("shell32.dll")] public static extern IntPtr ILCombine(IntPtr pidl1, IntPtr pidl2);
+        [DllImport("shell32.dll")] public static extern IntPtr ILClone(IntPtr pidl);
+        [DllImport("shell32.dll")] public static extern bool ILIsEqual(IntPtr pidl1, IntPtr pidl2);
+        [DllImport("shell32.dll")] public static extern int SHGetKnownFolderIDList(ref Guid rfid, uint dwFlags, IntPtr hToken, out IntPtr ppidl);
         [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
         [DllImport("user32.dll")] public static extern IntPtr GetFocus();
         [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)] public static extern int StrCmpLogicalW(string psz1, string psz2);

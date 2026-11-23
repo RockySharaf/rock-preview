@@ -714,12 +714,20 @@ public sealed class PreviewPane : UserControl
             if (keyData is Keys.PageDown or Keys.Right) { GoToPage(_pageIndex + 1); return true; }
             if (keyData is Keys.PageUp or Keys.Left) { GoToPage(_pageIndex - 1); return true; }
         }
+        // Ctrl+0, Ctrl+1, Ctrl+plus and Ctrl+minus zoom the picture while it has the keyboard; the window would take
+        // them first for its text size and sort order (this runs before the window's ProcessCmdKey).
+        if (_imageView != null && PictureTakesZoomKey(_active == _imageView, _imageView.ContainsFocus, keyData) && _imageView.HandleZoomKey(keyData))
+            return true;
         // F3 / Shift+F3: the next or previous match, before the window's own F3 gets it.
         if ((keyData & Keys.KeyCode) == Keys.F3 && (keyData & (Keys.Control | Keys.Alt)) == 0 && ContainsFocus
             && FindNextMatch((keyData & Keys.Shift) != 0))
             return true;
         return base.ProcessCmdKey(ref msg, keyData);
     }
+
+    /// <summary>Whether a key goes to the picture as one of its zoom keys: only while the picture shows and has the keyboard.</summary>
+    internal static bool PictureTakesZoomKey(bool pictureShown, bool pictureFocused, Keys keyData)
+        => pictureShown && pictureFocused && ImageView.ZoomKeyOf(keyData) != ImageView.ZoomKey.None;
 
     protected override void OnLayout(LayoutEventArgs e)
     {

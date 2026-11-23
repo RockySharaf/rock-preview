@@ -16,7 +16,8 @@ public class ContentTypesTests
     [InlineData("logo.psd", ContentKind.Design), InlineData("logo.ai", ContentKind.Design), InlineData("book.indd", ContentKind.Design)]
     [InlineData("book.idml", ContentKind.Design), InlineData("art.eps", ContentKind.Design)]
     [InlineData("photo.jpg", ContentKind.Picture), InlineData("photo.HEIC", ContentKind.Picture), InlineData("scan.tiff", ContentKind.Picture)]
-    [InlineData("old.doc", ContentKind.None), InlineData("old.xls", ContentKind.None), InlineData("raw.dng", ContentKind.None)]
+    [InlineData("old.doc", ContentKind.Office), InlineData("old.xls", ContentKind.Office), InlineData("old.PPT", ContentKind.Office)]
+    [InlineData("raw.dng", ContentKind.None)]
     [InlineData("archive.zip", ContentKind.None), InlineData("app.log", ContentKind.None), InlineData("noext", ContentKind.None)]
     [InlineData(".pdf", ContentKind.None), InlineData("a.", ContentKind.None), InlineData("", ContentKind.None)]
     public void Kinds_by_extension(string name, ContentKind kind) => Assert.Equal(kind, ContentTypes.KindOf(name));

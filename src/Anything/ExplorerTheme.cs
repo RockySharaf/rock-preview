@@ -335,11 +335,35 @@ internal sealed class ExplorerToolStrip : ToolStrip
 
     bool MenuShowing => _otherMenus > 0 || Items.OfType<ToolStripDropDownItem>().Any(d => d.HasDropDown && d.DropDown.Visible);
 
-    void MenuOpened(object? sender, EventArgs e) => TipsOff(waitForRelease: true);
+    void MenuOpened(object? sender, EventArgs e)
+    {
+        TipsOff(waitForRelease: true);
+        if (sender is ToolStripDropDownItem { DropDown: { } menu })
+        {
+            menu.Closed -= MenuClosedBy; // once per menu
+            menu.Closed += MenuClosedBy;
+        }
+    }
 
     void MenuClosed(object? sender, EventArgs e)
     {
         if (!MenuShowing) TipsOn(); // another of the bar's menus may have opened as this one closed
+    }
+
+    // Esc on one of the bar's menus: WinForms closes it but, as the bar can't take the focus, leaves the bar in menu mode
+    // with the menu's button selected (ToolStripDropDown.SelectPreviousToolStrip), and every key goes on to the bar: F4
+    // opened the menu again instead of going to the address bar. The bar's own Esc ends that and gives the keyboard back
+    // to where it was, so it is sent once the menu has gone. Left and Right, which go on to the next menu, leave one open.
+    // Only for Esc itself (down while its message closes the menu): Alt and F10 also close a menu "by the keyboard", and
+    // must stay free to open the window's own menu.
+    void MenuClosedBy(object? sender, ToolStripDropDownClosedEventArgs e)
+    {
+        if (e.CloseReason != ToolStripDropDownCloseReason.Keyboard || !Interop.Native.IsKeyDown(Keys.Escape)
+            || sender is not ToolStripDropDown { OwnerItem: { } item }) return;
+        BeginInvoke(() =>
+        {
+            if (!IsDisposed && !MenuShowing && item.Selected && item.Owner == this) ProcessDialogKey(Keys.Escape);
+        });
     }
 
     void TipsOff(bool waitForRelease)

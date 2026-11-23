@@ -105,8 +105,27 @@ internal static class LegacyExcel
     internal static IReadOnlyList<LegacyExcelSheet>? Parse(byte[] stream, int maxRows, int maxColumns,
         Func<IReadOnlyList<LegacyExcelSheet>, int>? choose, CancellationToken ct, Action<long>? onStep, out ParseCounts counts)
     {
-        var book = new Book(stream, ct, onStep);
+        var book = new Book(stream, ct, onStep, null);
         var sheets = book.Read(Math.Max(0, maxRows), Math.Max(0, maxColumns), choose);
+        counts = book.Counts;
+        return sheets;
+    }
+
+    /// <summary>
+    /// Every sheet for the text index, keeping about keptChars characters of cells (each counted with the tab or line end
+    /// after it; the cell that reaches the cap is kept, so what is kept fills a text limit of keptChars - 1) and twice that
+    /// of shared strings, as OoxmlReader caps its own. Slots are charged for every row up to a sheet's last and every
+    /// column up to a row's last cell, empty or not, so they allow twice keptChars plus maxRows (about 2.1 million for a
+    /// 1 MB text limit): a sparse or wide sheet isn't cut long before its text fills the limit, and the characters have
+    /// their own cap. So a big numeric workbook keeps what the index can store, not every cell up to Excel's grid.
+    /// </summary>
+    internal static IReadOnlyList<LegacyExcelSheet>? Parse(byte[] stream, int maxRows, int maxColumns, long keptChars, CancellationToken ct,
+        out ParseCounts counts)
+    {
+        maxRows = Math.Max(0, maxRows);
+        keptChars = Math.Max(1, keptChars);
+        var book = new Book(stream, ct, null, Math.Min(2 * keptChars + maxRows, MaxSlots), keptChars, Math.Min(2 * keptChars, MaxSharedChars));
+        var sheets = book.Read(maxRows, Math.Max(0, maxColumns), null);
         counts = book.Counts;
         return sheets;
     }
@@ -180,7 +199,8 @@ internal static class LegacyExcel
     }
 
     /// <summary>One workbook stream's walk.</summary>
-    sealed class Book(byte[] d, CancellationToken ct, Action<long>? onStep)
+    sealed class Book(byte[] d, CancellationToken ct, Action<long>? onStep, long? slotLimit,
+        long keptChars = long.MaxValue, long sharedChars = MaxSharedChars)
     {
         readonly List<int> _xfFormat = [];
         readonly Dictionary<int, DateKind> _customFormatKind = [];
@@ -190,7 +210,7 @@ internal static class LegacyExcel
         Encoding _codePage = Encoding.Latin1;
         long _work;
         readonly long _workLimit = 2L * d.Length + (1 << 20);
-        Slots _slots = new(0);
+        Slots _slots = new(0, 0);
         long _steps, _numbers;
         int _untilCheck = CancelCheckSteps, _sstPieces;
 
@@ -227,7 +247,7 @@ internal static class LegacyExcel
             int version = U16(bof.Start);
             if (version is not (0x0600 or 0x0500)) return null;
             _biff8 = version == 0x0600;
-            _slots = new Slots(SlotLimit(maxRows, maxColumns));
+            _slots = new Slots(slotLimit ?? SlotLimit(maxRows, maxColumns), keptChars);
             if (!Globals(bof.Next)) return null;
 
             // The sheets that will be returned, settled before any cells are read so an index means the same sheet to the
@@ -349,7 +369,7 @@ internal static class LegacyExcel
             for (uint i = 0; i < unique; i++)
             {
                 if ((i & 4095) == 0) ct.ThrowIfCancellationRequested();
-                if (_sst!.Count >= MaxSharedStrings || chars >= MaxSharedChars) return;
+                if (_sst!.Count >= MaxSharedStrings || chars >= sharedChars) return;
                 var s = p.UnicodeString(MaxCellChars, out bool complete);
                 if (s == null) return;
                 _sst.Add(s.Length == 0 ? null : s);
@@ -633,11 +653,15 @@ internal static class LegacyExcel
         }
     }
 
-    /// <summary>The cell slots still free over all sheets (see SlotLimit); Spent once a cell did not fit.</summary>
-    sealed class Slots(long limit)
+    /// <summary>
+    /// The cell slots still free over all sheets (see SlotLimit), and the characters of cells still to keep (no cap for the
+    /// preview); Spent once a cell did not fit.
+    /// </summary>
+    sealed class Slots(long limit, long chars)
     {
         public long Limit { get; } = limit;
         public long Left { get; set; } = limit;
+        public long CharsLeft { get; set; } = chars;
         public bool Spent { get; set; }
     }
 
@@ -669,8 +693,9 @@ internal static class LegacyExcel
             if (had <= col) size = Math.Max(Math.Min(Math.Max(col + 1, had * 2), maxColumns), col + 1);
             // Charged for the width used, not the array's doubled capacity (at most twice the width).
             long need = Math.Max(0, row + 1 - _rows.Count) + Math.Max(0, col + 1 - width);
-            if (need > slots.Left) { slots.Spent = true; Truncated = true; return; }
+            if (need > slots.Left || slots.CharsLeft <= 0) { slots.Spent = true; Truncated = true; return; }
             slots.Left -= need;
+            slots.CharsLeft -= text.Length + 1L;
             while (_rows.Count <= row) { _rows.Add(null); _widths.Add(0); }
             if (size != had)
             {

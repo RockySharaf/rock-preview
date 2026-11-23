@@ -11,16 +11,18 @@ internal static class SnippetFormatter
 
     enum Places : byte { None, Pages, Slides, Sheets, Lines }
 
-    static readonly HashSet<string> Presentations = new(["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "odp", "otp"], StringComparer.OrdinalIgnoreCase);
-    static readonly HashSet<string> Workbooks = new(["xlsx", "xlsm", "xltx", "xltm", "ods", "ots"], StringComparer.OrdinalIgnoreCase);
-    static readonly HashSet<string> PagedFiles = new(["pdf", "ai"], StringComparer.OrdinalIgnoreCase);
+    static readonly HashSet<string> Presentations = new(["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "odp", "otp", "ppt", "pps", "pot"], StringComparer.OrdinalIgnoreCase);
+    static readonly HashSet<string> Workbooks = new(["xlsx", "xlsm", "xltx", "xltm", "ods", "ots", "xls", "xlt"], StringComparer.OrdinalIgnoreCase);
+    static readonly HashSet<string> OldOfficeNames = new(["xls", "xlt", "ppt", "pps", "pot"], StringComparer.OrdinalIgnoreCase);
+    static readonly HashSet<string> PagedFiles =new(["pdf", "ai"], StringComparer.OrdinalIgnoreCase);
     static readonly HashSet<string> LinedFiles = new(["txt", "text", "md", "markdown"], StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// The snippet of a stored document, or null when nothing in it matches. The caller (IContentIndex.GetSnippet) passes
     /// the file's extension (no dot, any case) from its path and the row's page count, which ends up in ContentSnippet.Pages.
-    /// The extension picks the prefix within a kind: "Slide 3 ·" for presentations (pptx family, odp, otp), "Sheet "2024" ·"
-    /// with Sheet set for workbooks (xlsx family, ods, ots), none for other Office documents, "p. 4 ·" for PDF and AI; Line
+    /// The extension picks the prefix within a kind: "Slide 3 ·" for presentations (pptx and ppt families, odp, otp), "Sheet "2024" ·"
+    /// with Sheet set for workbooks (xlsx family, xls, xlt, ods, ots; an xls, xlt, ppt, pps or pot with no page count was read
+    /// as text and gets none), none for other Office documents, "p. 4 ·" for PDF and AI; Line
     /// (and "Line 120 ·") only for txt, text, md, markdown and a Text-kind extension ContentTypes doesn't know (a user
     /// extra), never for rtf, htm, html, csv or tsv. The prefix itself is <see cref="ContentPresentation.SnippetPrefix"/>, never part of Text.
     /// The body is searched first, then the fields in order, then picture details matched by numbers.
@@ -32,7 +34,7 @@ internal static class SnippetFormatter
         ArgumentNullException.ThrowIfNull(highlighter);
         maxChars = Math.Max(maxChars, 20);
         string ext = extension.TrimStart('.').ToString();
-        var places = PlacesOf(kind, ext);
+        var places = PlacesOf(kind, ext, pages);
 
         if (highlighter.HasBodyWords && doc.Body.Length > 0)
         {
@@ -55,9 +57,11 @@ internal static class SnippetFormatter
         return null;
     }
 
-    static Places PlacesOf(ContentKind kind, string ext)
+    static Places PlacesOf(ContentKind kind, string ext, int pages)
     {
         if (PagedFiles.Contains(ext)) return Places.Pages;
+        // An old Office name read as text (not a real workbook or presentation) has no page count: no sheet or slide.
+        if (kind == ContentKind.Office && pages <= 0 && OldOfficeNames.Contains(ext)) return Places.None;
         if (kind == ContentKind.Office) return Presentations.Contains(ext) ? Places.Slides : Workbooks.Contains(ext) ? Places.Sheets : Places.None;
         if (kind == ContentKind.Text && (LinedFiles.Contains(ext) || ContentTypes.KindOfExtension(ext) == ContentKind.None)) return Places.Lines;
         return Places.None;

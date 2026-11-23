@@ -351,6 +351,44 @@ public sealed class ThumbKindsTests
         Assert.Equal(ThumbRoute.Shell, ThumbKinds.RouteOf("webm"));
     }
 
+    [Theory]
+    // Documents and presentations, old and new, and OpenDocument.
+    [InlineData("pptx", true)] [InlineData("docx", true)] [InlineData("xlsx", true)] [InlineData("ppsx", true)] [InlineData("odp", true)]
+    [InlineData("doc", true)] [InlineData("xls", true)]
+    // Pages only Windows pictures: old PowerPoint, binary Excel, XPS, Visio, Publisher.
+    [InlineData("ppt", true)] [InlineData("pps", true)] [InlineData("pot", true)] [InlineData("sldx", true)] [InlineData("xlsb", true)]
+    [InlineData("xps", true)] [InlineData("oxps", true)] [InlineData("vsd", true)] [InlineData("vsdx", true)] [InlineData("pub", true)]
+    // PDF, vector and design files, fonts, flat pictures (screenshots).
+    [InlineData("pdf", true)] [InlineData("ai", true)] [InlineData("eps", true)] [InlineData("dwg", true)] [InlineData("emf", true)]
+    [InlineData("indd", true)] [InlineData("afdesign", true)] [InlineData("ttf", true)] [InlineData("otf", true)]
+    [InlineData("png", true)] [InlineData("gif", true)] [InlineData("bmp", true)]
+    // Photos, camera files, PSD, videos: no outline.
+    [InlineData("jpg", false)] [InlineData("heic", false)] [InlineData("webp", false)] [InlineData("tif", false)] [InlineData("cr2", false)]
+    [InlineData("psd", false)] [InlineData("mp4", false)] [InlineData("mov", false)]
+    // Icons are shapes, text pages draw their own border, and what has no picture of its own.
+    [InlineData("ico", false)] [InlineData("cur", false)] [InlineData("txt", false)] [InlineData("cs", false)] [InlineData("svg", false)]
+    [InlineData("csv", false)] [InlineData("mp3", false)] [InlineData("zip", false)] [InlineData("exe", false)] [InlineData("", false)]
+    public void Page_like_kinds_get_an_outline(string ext, bool pageLike)
+    {
+        Assert.Equal(pageLike, ThumbKinds.IsPageLike(ext));
+        Assert.Equal(pageLike, ThumbKinds.IsPageLike("." + ext.ToUpperInvariant()) && ext.Length > 0);
+        Assert.Equal(pageLike, ThumbKinds.IsPageLike(@"D:\Work\Slides 2024." + ext) && ext.Length > 0);
+    }
+
+    [Fact]
+    public void Page_like_reads_the_extension_as_the_other_kind_questions_do()
+    {
+        Assert.True(ThumbKinds.IsPageLike(@"D:\a.b\Report.v2.PDF"));
+        Assert.True(ThumbKinds.IsPageLike("D:/scans/letter.Png"));
+        // A name without an extension, in a folder whose name has a dot; a name ending in a dot.
+        Assert.False(ThumbKinds.IsPageLike(@"D:\slides.pptx\README"));
+        Assert.False(ThumbKinds.IsPageLike(@"D:\Work\report."));
+        Assert.False(ThumbKinds.IsPageLike(""));
+        // Every page-like kind is one Rock Preview or Windows pictures: never a kind that only shows its icon.
+        foreach (var ext in new[] { "pptx", "pdf", "ttf", "png", "dwg", "doc" })
+            Assert.True(ThumbKinds.HasOwnDecoder(ext), ext);
+    }
+
     [Fact]
     public void Some_icons_belong_to_the_file()
     {

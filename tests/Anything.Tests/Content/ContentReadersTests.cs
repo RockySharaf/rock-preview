@@ -164,10 +164,11 @@ public class ContentReadersTests
     [Fact]
     public void Readers_by_extension()
     {
-        Assert.Equal(11, ContentReaders.All.Count);
+        Assert.Equal(12, ContentReaders.All.Count);
         Assert.IsType<PdfTextReader>(ContentReaders.For("pdf"));
         Assert.IsType<PdfTextReader>(ContentReaders.For("AI"));
         Assert.IsType<OoxmlReader>(ContentReaders.For("DOCX"));
+        Assert.IsType<LegacyOfficeReader>(ContentReaders.For("XLS"));
         Assert.IsType<PlainTextReader>(ContentReaders.For("md"));
         Assert.IsType<PictureReader>(ContentReaders.For("heic"));
         Assert.Null(ContentReaders.For("xyz"));

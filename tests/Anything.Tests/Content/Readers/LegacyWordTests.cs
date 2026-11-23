@@ -817,9 +817,12 @@ public class LegacyWordTests
     // ------------------------------------------------------------------ the public method, on files
 
     /// <summary>A small Word 97-2003 file written by OLE, one 8-bit piece of text ('\r' ends a paragraph), for other tests.</summary>
-    internal static byte[] DocFile(string text)
+    internal static byte[] DocFile(string text) => DocFile(text, encrypted: false);
+
+    /// <summary>The same, with the FIB's fEncrypted flag set when asked (a password or XOR obfuscation).</summary>
+    internal static byte[] DocFile(string text, bool encrypted)
     {
-        var d = Build([A(text)], flags: 0x0200);
+        var d = Build([A(text)], flags: (ushort)(0x0200 | (encrypted ? 0x0100 : 0)));
         return CfbFixtures.Ole(root =>
         {
             CfbFixtures.Stream(root, "WordDocument", d.WordDocument);

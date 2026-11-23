@@ -252,7 +252,7 @@ internal sealed partial class AnythingApp
 
     /// <summary>
     /// The limit changed: saved, and the open store keeps to it at once. Raised, the "store is full" bar goes; lowered
-    /// below what the store holds, the user knows it will drop the oldest, so the bar doesn't say so again in this run.
+    /// below what the store holds, the user knows it will drop thumbnails, so the bar doesn't say so again in this run.
     /// </summary>
     public void SetThumbStoreLimit(int megabytes)
     {
@@ -285,8 +285,9 @@ internal sealed partial class AnythingApp
     }
 
     /// <summary>
-    /// Settings' "Keep thumbnails of" and the types never kept: saved, used for thumbnails made from now on (those saved
-    /// already stay until newer ones replace them or the store is cleared), and the estimate counted again in the background.
+    /// Settings' "Keep thumbnails of" and the types never kept: saved, used for thumbnails made from now on, and the
+    /// estimate counted again in the background. A kind switched off has its saved thumbnails deleted by the service in
+    /// the background; those of a type left out stay until the store needs their room or is cleared.
     /// </summary>
     public void SetThumbStoreKeep(ThumbKeep keep)
     {
@@ -302,7 +303,7 @@ internal sealed partial class AnythingApp
     bool ThumbFullDue => ThumbOption.ShouldTellFull(Settings.ThumbnailStoreMegabytes, Settings.ThumbnailStoreFullToldMegabytes, _thumbFullTold);
 
     /// <summary>
-    /// The store started dropping its oldest thumbnails (UI thread). Said once per run, in a window showing thumbnails now
+    /// The store started dropping thumbnails (UI thread). Said once per run, in a window showing thumbnails now
     /// or the next one that does, and never again for a limit the user answered at.
     /// </summary>
     void OnThumbStoreFull()

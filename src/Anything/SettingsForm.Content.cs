@@ -119,7 +119,7 @@ internal sealed partial class SettingsForm
         foreach (var (kind, label, detail, tip) in new (ContentKinds, string, string, string?)[]
         {
             (ContentKinds.Pdf, "PDF", "Their text, never the pictures in them.", null),
-            (ContentKinds.Office, "Word, Excel and PowerPoint (2007 and later), OpenDocument", "docx, xlsx, pptx, odt, ods, odp and their templates.", null),
+            (ContentKinds.Office, "Word, Excel and PowerPoint (97 and later), OpenDocument", "docx, xlsx, pptx, doc, xls, ppt, odt, ods, odp and their templates.", null),
             (ContentKinds.Text, "Text", "txt, md, csv, tsv, rtf, htm and html, and the extensions below.", null),
             (ContentKinds.Mail, "Saved emails", "eml and msg: subject, sender, text and attachment names.", null),
             (ContentKinds.Design, "Design files", "psd, ai, idml: their text. indd, eps: title, keywords, fonts and plates.",

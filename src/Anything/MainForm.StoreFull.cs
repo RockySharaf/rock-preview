@@ -4,7 +4,7 @@ namespace Anything;
 
 /// <summary>
 /// The bar saying "Instant thumbnails" is full: shown above the thumbnails once per run, when the store starts dropping
-/// its oldest thumbnails while this window shows thumbnails (or the next time it does), and never again for a limit the
+/// thumbnails while this window shows thumbnails (or the next time it does), and never again for a limit the
 /// user answered it at (Raise the limit, or OK). It never takes the focus, and it goes when the limit is raised, the store
 /// is cleared, the option is turned off, or the thumbnails go.
 /// </summary>

@@ -201,6 +201,20 @@ public sealed class ThumbOptionTests
         Assert.Equal("", ThumbOption.SizeNowText(-1, 500));
     }
 
+    [Fact]
+    public void The_size_now_says_what_each_kind_takes_when_more_than_one_holds_something()
+    {
+        Assert.Equal("1.2 GB of 2 GB: pictures 900 MB, videos 100 MB, documents 200 MB",
+            ThumbOption.SizeNowText(1_200_000_000, 2000, new ThumbStoreSplit(900_000_000, 100_000_000, 200_000_000, 0)));
+        // Thumbnails from before this version carry no kind: they are said apart, and kinds holding nothing are not named.
+        Assert.Equal("400 MB of 500 MB: pictures 100 MB, saved by an earlier version 300 MB",
+            ThumbOption.SizeNowText(400_000_000, 500, new ThumbStoreSplit(100_000_000, 0, 0, 300_000_000)));
+        // One kind alone: nothing to split.
+        Assert.Equal("123 MB of 500 MB", ThumbOption.SizeNowText(123_456_789, 500, new ThumbStoreSplit(123_456_789, 0, 0, 0)));
+        Assert.Equal("0 MB of 500 MB", ThumbOption.SizeNowText(0, 500, default));
+        Assert.Equal("", ThumbOption.SizeNowText(-1, 500, new ThumbStoreSplit(1, 1, 0, 0)));
+    }
+
     const string Gain = "Thumbnails you have seen before appear at once, also after a restart, because small copies are kept on disk. ";
 
     [Fact]

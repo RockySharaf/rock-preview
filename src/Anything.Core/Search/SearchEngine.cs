@@ -106,12 +106,11 @@ public sealed class SearchEngine : ISearchEngine
                         if (_order?.Key != sort && found.Length < index.LiveCount / 4 && found.Length <= DirectSortLimit)
                         {
                             // A new sort key and a small result (a click on another column header): building the order
-                            // of every entry takes seconds on millions, sorting the few results doesn't. Sorted ascending
-                            // and turned round, as the presorted order is, so both ways agree with it exactly. A big result
-                            // (a whole folder scope, ext:jpg) builds the order instead: sorting it again on every keystroke
-                            // and refresh would cost more than building the order once.
-                            ResultSorter.Sort(index, ctx, found, sort, descending: false, cancellationToken);
-                            if (descending) Array.Reverse(found);
+                            // of every entry takes seconds on millions, sorting the few results doesn't. Turned round for
+                            // descending as the presorted order is (ResultSorter.Descend), so both ways agree with it exactly.
+                            // A big result (a whole folder scope, ext:jpg) builds the order instead: sorting it again on
+                            // every keystroke and refresh would cost more than building the order once.
+                            ResultSorter.Sort(index, ctx, found, sort, descending, cancellationToken);
                             if (options.FoldersFirst) found = FoldersFirst(index, found);
                             return Content.Search.ContentSearch.Results(found, matcher, ctx, sw, cancellationToken);
                         }

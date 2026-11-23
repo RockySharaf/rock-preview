@@ -492,9 +492,7 @@ internal sealed partial class MainForm
 
     void FocusList()
     {
-        if (ExplorerShown) { _explorer.FocusView(); return; }
-        if (ThumbnailMode) _grid.Focus();
-        else _list.Focus();
+        if (!FocusFiles()) return;
         if (_ids.Length == 0) return;
         if (_list.SelectedIndices.Count == 0)
         {
@@ -502,6 +500,18 @@ internal sealed partial class MainForm
             _list.Items[0].Focused = true;
             _list.EnsureVisible(0);
         }
+    }
+
+    /// <summary>
+    /// The keyboard to the files on show, their selection left as it is (switching between the list and Thumbnails
+    /// selects nothing the user didn't). False for the folder view, which has its own.
+    /// </summary>
+    bool FocusFiles()
+    {
+        if (ExplorerShown) { _explorer.FocusView(); return false; }
+        if (ThumbnailMode) _grid.Focus();
+        else _list.Focus();
+        return true;
     }
 
     void OnListKeyDown(object? sender, KeyEventArgs e)

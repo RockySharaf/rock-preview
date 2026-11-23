@@ -7,7 +7,7 @@ public static class ContentTypes
     [
         (ContentKind.Pdf, ["pdf"]),
         (ContentKind.Office, ["docx", "docm", "dotx", "dotm", "xlsx", "xlsm", "xltx", "xltm", "pptx", "pptm", "ppsx", "ppsm", "potx", "potm",
-            "odt", "ott", "ods", "ots", "odp", "otp"]),
+            "odt", "ott", "ods", "ots", "odp", "otp", "doc", "dot", "xls", "xlt", "ppt", "pps", "pot"]),
         (ContentKind.Text, ["txt", "text", "md", "markdown", "csv", "tsv", "rtf", "htm", "html"]),
         (ContentKind.Mail, ["eml", "msg"]),
         (ContentKind.Design, ["psd", "psb", "ai", "indd", "idml", "eps"]),

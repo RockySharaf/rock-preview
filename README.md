@@ -134,7 +134,7 @@ documents; the first pass takes about 2 minutes in the background"):
 | Choice | What is read |
 |---|---|
 | Search files by name | Nothing: names only, as before |
-| Also search inside documents | The words in PDF, Word, Excel and PowerPoint (2007 and later), OpenDocument, text, RTF, HTML, saved emails (EML, MSG: subject, sender, recipients, text and attachment names) and design files (PSD's text layers; the text of AI and IDML files; InDesign and EPS files' title, description, keywords, fonts and plates, not their layout's text). Only the text: never the pictures in a PDF, a document's layout or a design's pixels; at most the first 1 MB of text per file |
+| Also search inside documents | The words in PDF, Word, Excel and PowerPoint (97 and later: .doc, .xls and .ppt as well as .docx, .xlsx and .pptx), OpenDocument, text, RTF, HTML, saved emails (EML, MSG: subject, sender, recipients, text and attachment names) and design files (PSD's text layers; the text of AI and IDML files; InDesign and EPS files' title, description, keywords, fonts and plates, not their layout's text). Only the text: never the pictures in a PDF, a document's layout or a design's pixels; at most the first 1 MB of text per file |
 | Also search inside documents and pictures' details | Also pictures' size in pixels, resolution (DPI), colour mode (RGB or CMYK), date taken, camera, place, title and keywords, read from their headers only |
 
 - It reads your own folders (Desktop, Documents, Downloads, Pictures and OneDrive) unless you add drives, folders or
@@ -270,9 +270,11 @@ Thumbnails** also adds extensions of your own, like `md` or `json`; **Reset** br
 **Instant thumbnails** (**Settings › Thumbnails**, off until you turn it on) keeps small copies on disk of the
 thumbnails you have seen, so they appear at once, also after a restart; the card says how much space that would take
 for the files on your PC. You type the limit in GB, as much as you want to give it (**Enough for everything** fills in the
-estimate), and choose the folder. When it is full, the oldest thumbnails are dropped as new ones are saved, and a bar
-says so once, with **Raise the limit**. You also choose what is kept: pictures, videos and documents, and file types
-never to keep (`pdf`, for example). **Clear** empties it; turning it off deletes it.
+estimate), and choose the folder. When it is full, thumbnails are dropped as new ones are saved, and a bar says so
+once, with **Raise the limit**. You also choose what is kept: pictures, videos and documents, and file types never to
+keep (`pdf`, for example). Pictures are kept longest: when it is full, thumbnails of documents are dropped first, then
+videos, then the oldest pictures, and switching a kind off deletes its saved thumbnails. **Clear** empties it; turning
+it off deletes it.
 
 At **Home**, Thumbnails shows the files you opened lately (Windows' Recent files), as pictures.
 
@@ -414,7 +416,7 @@ The [Microsoft Store version](#microsoft-store-version-coming-soon) doesn't do a
 | `Alt+Enter` | Properties |
 | `Ctrl+P` | Print the selected files |
 | `F5` | Refresh |
-| `Ctrl+I` `Ctrl+B` `Ctrl+U` `Ctrl+R` | Match case / whole word / path / regex |
+| `Ctrl+I` `Ctrl+B` `Ctrl+U` `Ctrl+M` `Ctrl+R` | Match case / whole word / path / diacritics / regex |
 | `Ctrl+1` … `Ctrl+8`, `Ctrl+9` | Sort by Name, Path, Size, Extension, Type, Date Modified, Date Created, Attributes; Date Recently Changed |
 | `Ctrl+D` | Bookmark the current search |
 | `Ctrl+,` | Settings (also the gear on the command bar; its arrow has the rest of Explorer's **⋯** menu) |

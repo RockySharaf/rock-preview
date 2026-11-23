@@ -21,7 +21,7 @@ public static class ContentPresentation
     public const string LookingInside = "Looking inside files…";
 
     /// <summary>The kinds of document read, in the words setup and Settings use.</summary>
-    public const string KindsDescription = "PDF, Word, Excel and PowerPoint (2007 and later), text, saved emails and design files (PSD, AI, InDesign)";
+    public const string KindsDescription = "PDF, Word, Excel and PowerPoint (97 and later), text, saved emails and design files (PSD, AI, InDesign)";
 
     /// <summary>What is read from pictures (the third choice).</summary>
     public const string PictureDetailsDescription =

@@ -148,7 +148,8 @@ internal static class ThumbHost
 
     /// <summary>
     /// Which thumbnails are kept on disk, as the user chose (the Instant thumbnails card in Settings): for pictures made
-    /// from now on, and for the grids' idle planning (<see cref="Keep"/>). A service started later takes it then.
+    /// from now on, and for the grids' idle planning (<see cref="Keep"/>). A kind switched off has its saved thumbnails
+    /// deleted in the background, now or when the store opens. A service started later takes it then.
     /// </summary>
     public static void SetKeep(ThumbKeep keep)
     {
@@ -160,8 +161,9 @@ internal static class ThumbHost
     public static ThumbKeep Keep => _keep;
 
     /// <summary>
-    /// The store in use started dropping its oldest thumbnails. Raised on a worker thread, not the UI's: the program
-    /// posts it to the UI thread before touching a window. Only once the service has started (no store is open before).
+    /// The store in use started dropping thumbnails to stay within its limit. Raised on a worker thread, not the UI's:
+    /// the program posts it to the UI thread before touching a window. Only once the service has started (no store is
+    /// open before).
     /// </summary>
     public static event Action? StoreBecameFull;
 

@@ -17,6 +17,8 @@ internal sealed partial class SettingsForm
     readonly CheckBox _keepPictures = new(), _keepVideos = new(), _keepDocuments = new();
     readonly TextBox _keepSkip = new();
     readonly NoteLabel _keepNote = new();
+    // The open store holds thumbnails an earlier version saved: the note under the boxes says they are the exception.
+    bool _keepEarlier;
     readonly NoteLabel _thumbStoreNote = new();
     readonly System.Windows.Forms.Timer _thumbStoreTimer = new() { Interval = 2000 };
     SettingCard? _thumbStoreCard;
@@ -68,7 +70,8 @@ internal sealed partial class SettingsForm
         rows.Controls.Add(KeepRow(s.ThumbnailStoreKeep));
         // The path must always be read whole too, however long: this row's second line wraps as well.
         rows.Controls.Add(_thumbStoreWhere = new SubRow("Where they're kept", _thumbStoreMove, detail: "", wrapDetail: true));
-        rows.Controls.Add(_thumbStoreNow = new SubRow("Saved now", _thumbStoreClear, detail: ""));
+        // With what each kind takes the line can be long: it wraps too.
+        rows.Controls.Add(_thumbStoreNow = new SubRow("Saved now", _thumbStoreClear, detail: "", wrapDetail: true));
         rows.Controls.Add(_thumbStoreNote);
         _thumbStore.Checked = s.ThumbnailStore;
         _thumbStoreCard = Card("Instant thumbnails",
@@ -103,7 +106,8 @@ internal sealed partial class SettingsForm
 
     /// <summary>
     /// "Keep thumbnails of": the three groups the space estimate counts, ticked by default, and the file types never kept;
-    /// under them what happens to thumbnails already saved for a type switched off.
+    /// under them which kinds go first when the store is full, and what happens to thumbnails already saved for a kind
+    /// or a type switched off.
     /// </summary>
     StackRow KeepRow(ThumbKeep keep)
     {
@@ -151,7 +155,7 @@ internal sealed partial class SettingsForm
             _keepVideos.Checked = keep.Videos;
             _keepDocuments.Checked = keep.Documents;
             _keepSkip.Text = string.Join(" ", keep.Skipped);
-            _keepNote.Text = ThumbOption.KeepNote(keep);
+            _keepNote.Text = ThumbOption.KeepNote(keep, _keepEarlier);
         }
         finally { _keepShowing = false; }
     }
@@ -385,16 +389,17 @@ internal sealed partial class SettingsForm
         // Opened now (on a worker) so that a location that can't be used says so here, not later while browsing.
         var service = on ? ThumbHost.Service : null;
         var leftovers = s.ThumbnailStoreLeftovers.ToList();
-        var (free, size, problem, usable, isPrivate, leftoverBytes, full, diskLow) = await Task.Run(() =>
+        var (free, size, problem, usable, isPrivate, leftoverBytes, full, diskLow, split) = await Task.Run(() =>
         {
             long freeBytes = ThumbOption.FreeBytes(folder);
             long left = 0;
             foreach (var f in leftovers) left += ThumbStore.MeasureFolder(f);
-            if (service == null) return (freeBytes, -1L, ThumbStoreProblem.None, false, true, left, false, false);
+            if (service == null) return (freeBytes, -1L, ThumbStoreProblem.None, false, true, left, false, false, default(ThumbStoreSplit));
             var store = ThumbHost.OpenNow(service);
+            // What each kind takes comes from figures the open store keeps in memory: no disk is read for it.
             if (store is { IsEnabled: true })
-                return (freeBytes, store.SizeBytes, ThumbStoreProblem.None, true, ThumbHost.StoreIsPrivate, left, store.IsFull, store.DiskLow);
-            return (freeBytes, ThumbStore.MeasureFolder(folder), store?.Problem ?? ThumbStoreProblem.None, false, true, left, false, false);
+                return (freeBytes, store.SizeBytes, ThumbStoreProblem.None, true, ThumbHost.StoreIsPrivate, left, store.IsFull, store.DiskLow, store.Split);
+            return (freeBytes, ThumbStore.MeasureFolder(folder), store?.Problem ?? ThumbStoreProblem.None, false, true, left, false, false, default(ThumbStoreSplit));
         });
         if (IsDisposed || look != _thumbStoreLook) return;
         // Under the limit: the free space on its drive, and whether the limit is more than that leaves room for.
@@ -404,9 +409,20 @@ internal sealed partial class SettingsForm
         // The row holds only the path (the free space is under the limit); it wraps, so a longer path makes the card taller.
         _thumbStoreWhere?.SetDetail(folder);
         // Saved thumbnails an earlier turn-off couldn't delete are said, not hidden behind "nothing is kept".
-        _thumbStoreNow?.SetDetail(on ? ThumbOption.SizeNowText(Math.Max(0, size), cap)
+        string now = on ? ThumbOption.SizeNowText(Math.Max(0, size), cap, split)
             : leftoverBytes > 0 ? ThumbOption.LeftoverText(leftoverBytes, leftovers[0])
-            : "Nothing is kept while this is off");
+            : "Nothing is kept while this is off";
+        // This row wraps now (what each kind takes can make it long): a new text may change its height.
+        changed |= _thumbStoreNow?.DetailLabel?.Text != now;
+        _thumbStoreNow?.SetDetail(now);
+        // Known only once the store is open: whether it holds thumbnails an earlier version saved, which the rules above don't cover.
+        bool earlier = on && split.Earlier > 0;
+        if (earlier != _keepEarlier)
+        {
+            _keepEarlier = earlier;
+            _keepNote.Text = ThumbOption.KeepNote(_app.Settings.ThumbnailStoreKeep, earlier);
+            changed = true;
+        }
         // Clear empties the store in use: not one another copy of Rock Preview holds, or that can't be used where it is.
         if (_thumbStoreClear != null) _thumbStoreClear.Enabled = on && usable && size > 0;
         string note = on ? ThumbOption.ProblemText(problem) : "";

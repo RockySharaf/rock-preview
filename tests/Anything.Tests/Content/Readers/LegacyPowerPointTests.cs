@@ -87,6 +87,29 @@ public class LegacyPowerPointTests
         public byte[] ToArray() => _bytes.ToArray();
     }
 
+    /// <summary>
+    /// A PowerPoint 97-2003 file written by OLE, for other tests: each slide's text as outline text (no persist directory,
+    /// so the outline is all there is), and a Current User stream with the encrypted token when asked.
+    /// </summary>
+    internal static byte[] PptFile(string[] slides, bool encrypted = false)
+    {
+        var s = new Stream();
+        var list = new List<byte[]>();
+        for (int i = 0; i < slides.Length; i++)
+        {
+            list.Add(Persist((uint)(i + 3), (uint)(256 + i)));
+            list.Add(Header(0));
+            list.Add(Chars(slides[i]));
+        }
+        s.Add(DocumentContainer(SlideList(0, [.. list])));
+        var document = s.ToArray();
+        return CfbFixtures.Ole(root =>
+        {
+            CfbFixtures.Stream(root, "PowerPoint Document", document);
+            if (encrypted) CfbFixtures.Stream(root, "Current User", CurrentUser(0, 0xF3D1C4DF));
+        });
+    }
+
     static byte[] CurrentUser(int editAt, uint token = 0xE391C05F)
         => Atom(CurrentUserAtom, [.. U32s(0x14, token, (uint)editAt), 0, 0, 0xF4, 0x03, 3, 0, 0, 0]);
 

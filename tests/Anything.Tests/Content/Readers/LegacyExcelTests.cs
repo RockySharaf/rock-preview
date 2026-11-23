@@ -90,11 +90,20 @@ public class LegacyExcelTests
     /// </summary>
     internal static byte[] XlsFile(params (string Name, bool Hidden, (int Row, int Col, string Text)[] Labels, (int Row, int Col, double Value)[] Numbers)[] sheets)
     {
-        var book = Book([Xf(0)], sheets.Select(s => new Sheet(s.Name,
-            [.. s.Labels.Select(l => Label(l.Row, l.Col, l.Text)), .. s.Numbers.Select(n => Number(n.Row, n.Col, n.Value))],
-            Hidden: (byte)(s.Hidden ? 1 : 0))).ToArray());
+        var book = XlsStream(sheets);
         return CfbFixtures.Ole(root => CfbFixtures.Stream(root, "Workbook", book));
     }
+
+    /// <summary>The Workbook stream of <see cref="XlsFile"/>, for tests that parse it directly.</summary>
+    internal static byte[] XlsStream(params (string Name, bool Hidden, (int Row, int Col, string Text)[] Labels, (int Row, int Col, double Value)[] Numbers)[] sheets)
+        => Book([Xf(0)], sheets.Select(s => new Sheet(s.Name,
+            [.. s.Labels.Select(l => Label(l.Row, l.Col, l.Text)), .. s.Numbers.Select(n => Number(n.Row, n.Col, n.Value))],
+            Hidden: (byte)(s.Hidden ? 1 : 0))).ToArray());
+
+    /// <summary>A one-sheet Excel 97-2003 file written by OLE whose globals hold a FILEPASS record (an encrypted workbook), for other tests.</summary>
+    internal static byte[] EncryptedXlsFile()
+        => CfbFixtures.Ole(root => CfbFixtures.Stream(root, "Workbook",
+            Book([R(0x002F, U16(1), new byte[52]), Xf(0)], [new Sheet("S", [Label(0, 0, "secret cell")])])));
 
     static byte[] OneSheet(byte[][] globals, params byte[][] cells) => Book(globals, [new Sheet("S", cells)]);
     static byte[] OneSheet(params byte[][] cells) => OneSheet([Xf(0)], cells);

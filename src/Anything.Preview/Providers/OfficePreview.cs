@@ -11,6 +11,7 @@ using System.Xml;
 using System.Xml.Linq;
 using Anything.Core.Content.Extract;
 using Anything.Preview.Util;
+using LegacyExcel = Anything.Core.Content.Extract.Office.LegacyExcel;
 
 namespace Anything.Preview;
 
@@ -410,6 +411,8 @@ internal static class OfficePreview
     internal const int FirstRowsMaxSharedIndex = 200_000;
     // workbook.xml and its relationships are small in real files; a larger part is not read further.
     private const long FirstRowsMaxPartBytes = 4L << 20;
+    /// <summary>Most uncompressed XML read from xl/styles.xml for <see cref="XlsxFirstRows"/>' dates; a larger part leaves numbers as numbers.</summary>
+    internal const long FirstRowsMaxStylesBytes = 2L << 20;
 
     /// <summary>
     /// The first rows of a workbook's first visible sheet (as <see cref="RenderXlsx"/> picks it with no sheet named), for a
@@ -418,11 +421,14 @@ internal static class OfficePreview
     /// for an empty cell, trailing empty cells and trailing empty rows cut (an empty list: nothing to show). The sheet's
     /// XML is read up to row <paramref name="maxRows"/> or <see cref="FirstRowsMaxSheetBytes"/>, whichever comes first
     /// (the rows found by then are kept); the shared strings only up to the highest index those cells use. Cell text
-    /// follows RenderXlsx (shared and inline strings, numbers, booleans, errors, formula strings), but styles are not read:
-    /// a date or a time shows as its serial number. Null when the workbook can't be read (not a zip, no workbook part, no
-    /// sheet part, broken XML), or when a cell needs a shared string past <see cref="FirstRowsMaxSharedIndex"/> or past
-    /// <see cref="FirstRowsMaxSharedBytes"/> of shared strings. May throw IOException or UnauthorizedAccessException for a
-    /// file that can't be opened, and OperationCanceledException.
+    /// follows RenderXlsx (shared and inline strings, numbers, booleans, errors, formula strings), except that a number whose
+    /// cell style is a date, a time, both or an elapsed time shows as the old-format reader shows it (LegacyExcel's kinds
+    /// and text, in the workbook's 1900 or 1904 system): the styles' number formats are read only when a sheet has numbers,
+    /// and not at all past <see cref="FirstRowsMaxStylesBytes"/> or when broken (numbers then show as numbers, as before).
+    /// Null when the workbook can't be read (not a zip, no workbook part, no sheet part, broken XML), or when a cell needs
+    /// a shared string past <see cref="FirstRowsMaxSharedIndex"/> or past <see cref="FirstRowsMaxSharedBytes"/> of shared
+    /// strings. May throw IOException or UnauthorizedAccessException for a file that can't be opened, and
+    /// OperationCanceledException.
     /// </summary>
     public static List<string?[]>? XlsxFirstRows(string path, int maxRows, int maxColumns, CancellationToken ct)
     {
@@ -437,7 +443,7 @@ internal static class OfficePreview
         {
             try
             {
-                string? target = FirstVisibleSheetPart(z);
+                string? target = FirstVisibleSheetPart(z, out bool date1904);
                 if (target == null) return null;
                 var se = Entry(z, target);
                 if (se == null) return null;
@@ -446,6 +452,8 @@ internal static class OfficePreview
                 // Cells by row number, then column; shared-string cells hold their index until the strings are read.
                 var rows = new SortedDictionary<int, Dictionary<int, string>>();
                 var sharedCells = new List<(int Row, int Col, int Index)>();
+                // Number cells with their style, shown as dates afterwards when their style says so.
+                var numberCells = new List<(int Row, int Col, string Value, int Style)>();
                 int maxShared = -1;
                 using (var s = new CappedStream(se.Open(), FirstRowsMaxSheetBytes))
                 {
@@ -497,7 +505,9 @@ internal static class OfficePreview
                                     text = v ?? "";
                                     break;
                                 default:
-                                    text = FormatNumber(v, false); // no styles for a thumbnail: a date stays a number
+                                    text = FormatNumber(v, false);
+                                    if (text.Length > 0 && type is null or "n")
+                                        numberCells.Add((curRow, col, v!, int.TryParse((string?)c.Attribute("s"), out int style) ? style : 0));
                                     break;
                             }
                             if (text.Length == 0) continue;
@@ -508,6 +518,16 @@ internal static class OfficePreview
                     catch (XmlException) when (s.Capped)
                     {
                         // The sheet's XML ended at the cap mid-way: the rows found before it are kept.
+                    }
+                }
+
+                if (numberCells.Count > 0 && CellDateKinds(z) is { } kinds)
+                {
+                    foreach (var (row, col, value, style) in numberCells)
+                    {
+                        if (style < 0 || style >= kinds.Length || kinds[style] == LegacyExcel.DateKind.None) continue;
+                        if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double serial)) continue;
+                        if (LegacyExcel.DateText(serial, kinds[style], date1904) is { } date) rows[row][col] = date;
                     }
                 }
 
@@ -546,10 +566,12 @@ internal static class OfficePreview
 
     /// <summary>
     /// The part of the first visible sheet (as RenderXlsx picks it), from xl/workbook.xml and its relationships read as
-    /// streams; null when the workbook lists no sheet.
+    /// streams; null when the workbook lists no sheet. <paramref name="date1904"/>: the workbook counts dates from 1904
+    /// (workbookPr, which comes before the sheets).
     /// </summary>
-    private static string? FirstVisibleSheetPart(ZipArchive z)
+    private static string? FirstVisibleSheetPart(ZipArchive z, out bool date1904)
     {
+        date1904 = false;
         var wb = Entry(z, "xl/workbook.xml");
         if (wb == null) return null;
         string? firstId = null, visibleId = null;
@@ -559,7 +581,13 @@ internal static class OfficePreview
         {
             while (xr.Read())
             {
-                if (xr.NodeType != XmlNodeType.Element || xr.LocalName != "sheet" || xr.NamespaceURI != S.NamespaceName) continue;
+                if (xr.NodeType != XmlNodeType.Element || xr.NamespaceURI != S.NamespaceName) continue;
+                if (xr.LocalName == "workbookPr")
+                {
+                    date1904 = xr.GetAttribute("date1904") is "1" or "true";
+                    continue;
+                }
+                if (xr.LocalName != "sheet") continue;
                 string? state = xr.GetAttribute("state");
                 string? rid = xr.GetAttribute("id", R.NamespaceName);
                 if (!any) { any = true; firstId = rid; }
@@ -647,6 +675,66 @@ internal static class OfficePreview
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// What each cell style (by its index in cellXfs, the s of a cell) shows of a serial date, by the old-format reader's
+    /// rules (LegacyExcel: a custom format of the workbook by its letters, else the built-in format's kind), from
+    /// xl/styles.xml read as a stream up to the end of cellXfs. Null when there is no styles part, or when it is larger
+    /// than <see cref="FirstRowsMaxStylesBytes"/> uncompressed, or broken: the numbers then show as numbers.
+    /// </summary>
+    private static LegacyExcel.DateKind[]? CellDateKinds(ZipArchive z)
+    {
+        var e = Entry(z, "xl/styles.xml");
+        if (e == null || e.Length > FirstRowsMaxStylesBytes) return null;
+        var custom = new Dictionary<int, LegacyExcel.DateKind>();
+        var formats = new List<int>();
+        string ns = S.NamespaceName;
+        CappedStream? s = null;
+        try
+        {
+            // Opened inside the try: a damaged entry (bad header, unknown compression) costs the dates, not the page.
+            // One byte over the cap is let through: a part of exactly the cap reads to its end without counting as cut.
+            s = new CappedStream(e.Open(), FirstRowsMaxStylesBytes + 1);
+            using var xr = OfficeXml.Create(s, ignoreWhitespace: true, maxCharacters: 0);
+            // Only the numFmts and cellXfs straight under the root: a dxf and cellStyleXfs have numFmt and xf elements too.
+            bool inFormats = false, inCellXfs = false;
+            while (xr.Read())
+            {
+                if (xr.NodeType == XmlNodeType.EndElement && xr.Depth == 1)
+                {
+                    if (inCellXfs) break; // the styles after it are not needed
+                    inFormats = false;
+                    continue;
+                }
+                if (xr.NodeType != XmlNodeType.Element || xr.NamespaceURI != ns) continue;
+                if (xr.Depth == 1)
+                {
+                    inFormats = xr.LocalName == "numFmts" && !xr.IsEmptyElement;
+                    inCellXfs = xr.LocalName == "cellXfs" && !xr.IsEmptyElement;
+                }
+                else if (xr.Depth == 2 && inFormats && xr.LocalName == "numFmt")
+                {
+                    if (int.TryParse(xr.GetAttribute("numFmtId"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int id))
+                        custom[id] = LegacyExcel.FormatKind(xr.GetAttribute("formatCode") ?? "");
+                }
+                else if (xr.Depth == 2 && inCellXfs && xr.LocalName == "xf")
+                    formats.Add(int.TryParse(xr.GetAttribute("numFmtId"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int id) ? id : 0);
+            }
+            if (s.Capped) return null; // more than the cap after all (the size the zip gave was wrong)
+        }
+        catch (Exception ex) when (ex is XmlException or InvalidDataException or IOException)
+        {
+            return null; // damaged, broken, refused by the guards, or cut at the cap
+        }
+        finally
+        {
+            s?.Dispose();
+        }
+        var kinds = new LegacyExcel.DateKind[formats.Count];
+        for (int i = 0; i < kinds.Length; i++)
+            kinds[i] = custom.TryGetValue(formats[i], out var kind) ? kind : LegacyExcel.BuiltInKind(formats[i]);
+        return kinds;
     }
 
     /// <summary>A read-only stream that ends after <c>limit</c> bytes of the one it wraps (and owns); Capped says it did.</summary>
