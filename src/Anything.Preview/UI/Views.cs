@@ -1016,9 +1016,36 @@ internal sealed class InfoView : UserControl
             _sub = r?.FormatName ?? "";
             _meta = r?.Metadata ?? new();
             _diag = r?.Diagnostics ?? new();
-            int lines = 2 + _meta.Count + (_diag.Count > 0 ? 1 + _diag.Count : 0);
-            Height = Math.Max(Math.Min(_icon?.Height ?? 0, 128) + 24, 20 + lines * (Font.Height + 4) + 12);
+            _laidOutWidth = -1;
+            UpdateHeight();
             Invalidate();
+        }
+
+        // "Providers tried" lines wrap to the card's width (a busy previewer's advice is long): measured and drawn alike.
+        private const TextFormatFlags DiagFlags = TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl;
+        private int _laidOutWidth = -1;
+
+        /// <summary>The width the text column gets, as OnPaint lays it out.</summary>
+        private int TextWidth() => Math.Max(50, ClientSize.Width - (_icon != null ? 16 + 128 + 20 : 16) - 12);
+
+        private int DiagHeight(string d, int w) =>
+            Math.Max(Font.Height, TextRenderer.MeasureText(d, Font, new Size(w, int.MaxValue), DiagFlags).Height);
+
+        private void UpdateHeight()
+        {
+            int w = TextWidth();
+            _laidOutWidth = ClientSize.Width;
+            int lines = 2 + _meta.Count + (_diag.Count > 0 ? 1 + _diag.Count : 0);
+            int extra = 0;
+            foreach (var d in _diag) extra += DiagHeight(d, w) - Font.Height;
+            Height = Math.Max(Math.Min(_icon?.Height ?? 0, 128) + 24, 20 + lines * (Font.Height + 4) + extra + 12);
+        }
+
+        protected override void OnClientSizeChanged(EventArgs e)
+        {
+            base.OnClientSizeChanged(e);
+            // A new width wraps the lines differently; setting Height alone keeps the width, so this settles at once.
+            if (_diag.Count > 0 && ClientSize.Width != _laidOutWidth) UpdateHeight();
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -1058,8 +1085,9 @@ internal sealed class InfoView : UserControl
                 y += Font.Height + 2;
                 foreach (var d in _diag)
                 {
-                    TextRenderer.DrawText(g, d, Font, new Rectangle(x, y, w, Font.Height + 2), Color.Firebrick, TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
-                    y += Font.Height + 2;
+                    int h = DiagHeight(d, w);
+                    TextRenderer.DrawText(g, d, Font, new Rectangle(x, y, w, h + 2), Color.Firebrick, DiagFlags);
+                    y += h + 2;
                 }
             }
         }

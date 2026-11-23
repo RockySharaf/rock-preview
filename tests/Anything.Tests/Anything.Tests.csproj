@@ -1,7 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- The preview's version of Windows: the thumbnail tests reach Anything.Preview (its own extractor and pages). -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -20,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Anything.Core\Anything.Core.csproj" />
+    <ProjectReference Include="..\..\src\Anything.Preview\Anything.Preview.csproj" />
   </ItemGroup>
 
 </Project>

@@ -51,6 +51,9 @@ public sealed class PreviewPane : UserControl
     private Control? _active;
 
     private PreviewResult? _result;
+    // The result shown in place of a hosted handler that failed, and that handler's name: its footer says so, since the
+    // reason is otherwise only in the tooltip. Tied to the result so it never carries over to the next file.
+    private (PreviewResult Result, string Handler)? _handlerFallback;
     private CancellationTokenSource? _cts;
     private CancellationTokenSource? _pageCts;
     private int _generation;
@@ -305,6 +308,7 @@ public sealed class PreviewPane : UserControl
         _pageBitmap = null;
         _result?.Dispose();
         _result = null;
+        _handlerFallback = null;
         _nav.Visible = false;
         _zoom.Text = "";
         ShowView(null);
@@ -418,6 +422,7 @@ public sealed class PreviewPane : UserControl
                     catch (OperationCanceledException) { return; }
                     if (gen != _generation) { fallback.Dispose(); return; }
                     fallback.Diagnostics.Insert(0, $"PreviewHandler ({r.HandlerName}): {why}");
+                    _handlerFallback = (fallback, string.IsNullOrEmpty(r.HandlerName) ? "The file's own previewer" : r.HandlerName);
                     r.Dispose();
                     _result = null;
                     await DisplayAsync(fallback, gen, ct);
@@ -457,8 +462,8 @@ public sealed class PreviewPane : UserControl
         if (_active != null && _active == _textView && r.Kind == PreviewKind.Text) ApplyTextMatch(r, m, gen, mg);
         else if (_active != null && _active == _docView && r.Kind == PreviewKind.Document)
         {
-            // pptx text has a "Slide N" heading before each slide (RenderPptxText).
-            string? anchor = m is { Page: > 0 } && r.FormatName == "PowerPoint presentation" ? $"Slide {m.Page}" : null;
+            // pptx and ppt text have a "Slide N" heading before each slide (RenderPptxText, RenderPpt).
+            string? anchor = m is { Page: > 0 } && r.FormatName is "PowerPoint presentation" or "PowerPoint 97-2003 presentation" ? $"Slide {m.Page}" : null;
             _docView.Highlight(m?.Find, anchor);
         }
         else if (_active != null && _active == _tableView && r.Kind == PreviewKind.Table) _tableView.Highlight(m?.Find);
@@ -545,6 +550,9 @@ public sealed class PreviewPane : UserControl
             facts = new[] { ShownKey + ": " + window }.Concat(r.Metadata.Where(kv => kv.Key is not ("Lines" or ShownKey)).Select(kv => kv.Key + ": " + kv.Value));
         var list = facts.ToList();
         _footer.Text = string.Join("   ·   ", list);
+        // The info card lists the providers tried itself.
+        if (_handlerFallback is { } f && ReferenceEquals(f.Result, r) && r.Kind != PreviewKind.Info)
+            _footer.Text = $"{f.Handler} could not show this file (hover here to see why)" + (list.Count > 0 ? "   ·   " + _footer.Text : "");
         string tip = string.Join("\n", list);
         if (r.Diagnostics.Count > 0) tip += "\n\nProviders that failed first:\n" + string.Join("\n", r.Diagnostics);
         _tip.SetToolTip(_footer, tip);

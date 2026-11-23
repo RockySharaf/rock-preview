@@ -305,6 +305,38 @@ public static class PreviewRenderer
                     steps.Add(OfficeThumb);
                     steps.Add(ShellThumb);
                 }
+                else if (isOle && LegacyOfficePreview.WordExt.Contains(ext))
+                {
+                    // Word 97-2003: the own reader stands in when Office's previewer is missing, busy or fails.
+                    if (text) steps.Add(BuiltIn("Word 97-2003", () => LegacyOfficePreview.RenderDoc(path, ct), thumbnailFirst: false));
+                    steps.Add(Handler);
+                    if (!text) AddSync("Word 97-2003", () => LegacyOfficePreview.RenderDoc(path, ct));
+                    steps.Add(ShellThumb);
+                    steps.Add(Text);
+                }
+                else if (isOle && LegacyOfficePreview.ExcelExt.Contains(ext))
+                {
+                    if (text) steps.Add(BuiltIn("Excel 97-2003", () => LegacyOfficePreview.RenderXls(path, ct, opt.Sheet), thumbnailFirst: false));
+                    steps.Add(Handler);
+                    if (!text) AddSync("Excel 97-2003", () => LegacyOfficePreview.RenderXls(path, ct, opt.Sheet));
+                    steps.Add(ShellThumb);
+                    steps.Add(Text);
+                }
+                else if (isOle && LegacyOfficePreview.PowerPointExt.Contains(ext))
+                {
+                    if (text)
+                    {
+                        steps.Add(BuiltIn("PowerPoint 97-2003", () => LegacyOfficePreview.RenderPpt(path, ct), thumbnailFirst: false));
+                        steps.Add(Handler);
+                    }
+                    else
+                    {
+                        steps.Add(Handler);
+                        AddSync("PowerPoint 97-2003", () => LegacyOfficePreview.RenderPpt(path, ct));
+                    }
+                    steps.Add(ShellThumb);
+                    steps.Add(Text);
+                }
                 else if (OleExt.Contains(ext) && isOle || OtherHandlerExt.Contains(ext))
                 {
                     steps.Add(Handler);
@@ -393,7 +425,8 @@ public static class PreviewRenderer
     {
         string ext = GetExtension(path);
         return OfficePreview.WordExt.Contains(ext) || OfficePreview.ExcelExt.Contains(ext) || OfficePreview.PowerPointExt.Contains(ext)
-            || OfficePreview.OdfExt.Contains(ext) || ext is ".rtf" or ".json";
+            || OfficePreview.OdfExt.Contains(ext) || ext is ".rtf" or ".json"
+            || LegacyOfficePreview.WordExt.Contains(ext) || LegacyOfficePreview.ExcelExt.Contains(ext) || LegacyOfficePreview.PowerPointExt.Contains(ext);
     }
 
     // ------------------------------------------------------------------ individual steps

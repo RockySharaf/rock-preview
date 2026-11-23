@@ -402,8 +402,288 @@ internal static class OfficePreview
         }
     }
 
+    /// <summary>Most uncompressed XML read from the sheet for <see cref="XlsxFirstRows"/>; the rows found by then are kept.</summary>
+    internal const long FirstRowsMaxSheetBytes = 4L << 20;
+    /// <summary>Most uncompressed XML read from the shared strings for <see cref="XlsxFirstRows"/>; past it, no rows.</summary>
+    internal const long FirstRowsMaxSharedBytes = 8L << 20;
+    /// <summary>Highest shared-string index <see cref="XlsxFirstRows"/> reads up to; a cell needing a later one gives no rows.</summary>
+    internal const int FirstRowsMaxSharedIndex = 200_000;
+    // workbook.xml and its relationships are small in real files; a larger part is not read further.
+    private const long FirstRowsMaxPartBytes = 4L << 20;
+
+    /// <summary>
+    /// The first rows of a workbook's first visible sheet (as <see cref="RenderXlsx"/> picks it with no sheet named), for a
+    /// thumbnail: read as streams and only as far as needed, as <see cref="DocxFirstLines"/> reads a Word document. Rows by
+    /// row number from row 1 up to <paramref name="maxRows"/>, columns from A up to <paramref name="maxColumns"/>; a null
+    /// for an empty cell, trailing empty cells and trailing empty rows cut (an empty list: nothing to show). The sheet's
+    /// XML is read up to row <paramref name="maxRows"/> or <see cref="FirstRowsMaxSheetBytes"/>, whichever comes first
+    /// (the rows found by then are kept); the shared strings only up to the highest index those cells use. Cell text
+    /// follows RenderXlsx (shared and inline strings, numbers, booleans, errors, formula strings), but styles are not read:
+    /// a date or a time shows as its serial number. Null when the workbook can't be read (not a zip, no workbook part, no
+    /// sheet part, broken XML), or when a cell needs a shared string past <see cref="FirstRowsMaxSharedIndex"/> or past
+    /// <see cref="FirstRowsMaxSharedBytes"/> of shared strings. May throw IOException or UnauthorizedAccessException for a
+    /// file that can't be opened, and OperationCanceledException.
+    /// </summary>
+    public static List<string?[]>? XlsxFirstRows(string path, int maxRows, int maxColumns, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (maxRows <= 0 || maxColumns <= 0) return new List<string?[]>();
+        ZipArchive z;
+        FileStream fs;
+        try { z = OpenZip(path, out fs); }
+        catch (InvalidDataException) { return null; }
+        using (fs)
+        using (z)
+        {
+            try
+            {
+                string? target = FirstVisibleSheetPart(z);
+                if (target == null) return null;
+                var se = Entry(z, target);
+                if (se == null) return null;
+                ct.ThrowIfCancellationRequested();
+
+                // Cells by row number, then column; shared-string cells hold their index until the strings are read.
+                var rows = new SortedDictionary<int, Dictionary<int, string>>();
+                var sharedCells = new List<(int Row, int Col, int Index)>();
+                int maxShared = -1;
+                using (var s = new CappedStream(se.Open(), FirstRowsMaxSheetBytes))
+                {
+                    try
+                    {
+                        using var xr = OfficeXml.Create(s, ignoreWhitespace: true, maxCharacters: 0);
+                        int curRow = 0, nextCol = 1;
+                        xr.MoveToContent();
+                        while (!xr.EOF)
+                        {
+                            if (xr.NodeType != XmlNodeType.Element) { xr.Read(); continue; }
+                            if (xr.LocalName == "row")
+                            {
+                                curRow = int.TryParse(xr.GetAttribute("r"), out int rr) ? rr : curRow + 1;
+                                nextCol = 1;
+                                if (curRow > maxRows) break;
+                                if ((curRow & 127) == 0) ct.ThrowIfCancellationRequested();
+                                xr.Read();
+                                continue;
+                            }
+                            if (xr.LocalName != "c" || curRow < 1) { xr.Read(); continue; }
+                            // ReadFrom consumes exactly this element and leaves the reader on the next node.
+                            var c = (XElement)XNode.ReadFrom(xr);
+                            string? refAttr = (string?)c.Attribute("r");
+                            int col = refAttr != null ? ColumnIndex(refAttr) : nextCol;
+                            nextCol = col + 1;
+                            if (col > maxColumns) continue;
+                            string? type = (string?)c.Attribute("t");
+                            string? v = c.Element(S + "v")?.Value;
+                            string text;
+                            switch (type)
+                            {
+                                case "s":
+                                    if (int.TryParse(v, out int si) && si >= 0)
+                                    {
+                                        if (si > FirstRowsMaxSharedIndex) return null;
+                                        sharedCells.Add((curRow, col, si));
+                                        if (si > maxShared) maxShared = si;
+                                    }
+                                    continue;
+                                case "inlineStr":
+                                    text = string.Concat(c.Element(S + "is")?.Descendants(S + "t").Where(t => t.Parent?.Name != S + "rPh").Select(t => t.Value) ?? Array.Empty<string>());
+                                    break;
+                                case "b":
+                                    text = v == "1" ? "TRUE" : "FALSE";
+                                    break;
+                                case "str":
+                                case "e":
+                                    text = v ?? "";
+                                    break;
+                                default:
+                                    text = FormatNumber(v, false); // no styles for a thumbnail: a date stays a number
+                                    break;
+                            }
+                            if (text.Length == 0) continue;
+                            if (!rows.TryGetValue(curRow, out var cells)) rows[curRow] = cells = new Dictionary<int, string>();
+                            cells[col] = text;
+                        }
+                    }
+                    catch (XmlException) when (s.Capped)
+                    {
+                        // The sheet's XML ended at the cap mid-way: the rows found before it are kept.
+                    }
+                }
+
+                if (maxShared >= 0)
+                {
+                    var shared = SharedStringsUpTo(z, maxShared, ct);
+                    if (shared == null) return null;
+                    foreach (var (row, col, index) in sharedCells)
+                    {
+                        string text = index < shared.Count ? shared[index] : "";
+                        if (text.Length == 0) continue;
+                        if (!rows.TryGetValue(row, out var cells)) rows[row] = cells = new Dictionary<int, string>();
+                        cells[col] = text;
+                    }
+                }
+
+                var result = new List<string?[]>();
+                if (rows.Count == 0) return result;
+                int lastRow = rows.Keys.Max();
+                for (int r = 1; r <= lastRow; r++)
+                {
+                    if (!rows.TryGetValue(r, out var cells)) { result.Add(Array.Empty<string?>()); continue; }
+                    var arr = new string?[cells.Keys.Max()];
+                    foreach (var kv in cells) arr[kv.Key - 1] = kv.Value;
+                    result.Add(arr);
+                }
+                return result;
+            }
+            catch (Exception e) when (e is XmlException or InvalidDataException)
+            {
+                // A part that can't be read (broken, or refused by the guards): no rows, as RenderXlsx gives none.
+                return null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The part of the first visible sheet (as RenderXlsx picks it), from xl/workbook.xml and its relationships read as
+    /// streams; null when the workbook lists no sheet.
+    /// </summary>
+    private static string? FirstVisibleSheetPart(ZipArchive z)
+    {
+        var wb = Entry(z, "xl/workbook.xml");
+        if (wb == null) return null;
+        string? firstId = null, visibleId = null;
+        bool any = false, visibleFound = false;
+        using (var s = new CappedStream(wb.Open(), FirstRowsMaxPartBytes))
+        using (var xr = OfficeXml.Create(s, ignoreWhitespace: true, maxCharacters: 0))
+        {
+            while (xr.Read())
+            {
+                if (xr.NodeType != XmlNodeType.Element || xr.LocalName != "sheet" || xr.NamespaceURI != S.NamespaceName) continue;
+                string? state = xr.GetAttribute("state");
+                string? rid = xr.GetAttribute("id", R.NamespaceName);
+                if (!any) { any = true; firstId = rid; }
+                if (state is null or "visible") { visibleFound = true; visibleId = rid; break; }
+            }
+        }
+        if (!any) return null;
+        string? id = visibleFound ? visibleId : firstId;
+        string target = "xl/worksheets/sheet1.xml";
+        var re = Entry(z, "xl/_rels/workbook.xml.rels");
+        if (re != null && id != null)
+        {
+            using var s = new CappedStream(re.Open(), FirstRowsMaxPartBytes);
+            using var xr = OfficeXml.Create(s, ignoreWhitespace: true, maxCharacters: 0);
+            while (xr.Read())
+            {
+                if (xr.NodeType != XmlNodeType.Element || xr.LocalName != "Relationship" || xr.NamespaceURI != PR.NamespaceName) continue;
+                if (xr.GetAttribute("Id") != id) continue;
+                target = PartPath("xl/", xr.GetAttribute("Target") ?? "");
+                break;
+            }
+        }
+        return target;
+    }
+
+    /// <summary>
+    /// Shared strings 0 to <paramref name="last"/> (fewer when the part has fewer), by RenderXlsx's rules (a plain t, else
+    /// the runs' t, phonetic runs left out), read as a stream that stops once the last one needed is read. Null when more
+    /// than <see cref="FirstRowsMaxSharedBytes"/> of the part would have to be read; an empty list when there is no part.
+    /// </summary>
+    private static List<string>? SharedStringsUpTo(ZipArchive z, int last, CancellationToken ct)
+    {
+        var list = new List<string>();
+        var e = Entry(z, "xl/sharedStrings.xml");
+        if (e == null) return list;
+        string ns = S.NamespaceName;
+        using var s = new CappedStream(e.Open(), FirstRowsMaxSharedBytes);
+        try
+        {
+            // Whitespace between elements left out, as ReadSharedStrings loads the part.
+            using var xr = OfficeXml.Create(s, ignoreWhitespace: true, maxCharacters: 0);
+            StringBuilder? direct = null, runs = null, into = null;
+            string? child = null; // the element straight in the si that the reader is in (r, rPh...)
+            int siDepth = -1, tDepth = -1;
+            while (xr.Read())
+            {
+                switch (xr.NodeType)
+                {
+                    case XmlNodeType.Element when xr.NamespaceURI == ns:
+                        if (siDepth < 0)
+                        {
+                            if (xr.LocalName != "si") break;
+                            if (xr.IsEmptyElement) list.Add("");
+                            else { siDepth = xr.Depth; direct = null; runs = null; child = null; }
+                        }
+                        else if (xr.LocalName == "t" && !xr.IsEmptyElement && into == null)
+                        {
+                            // A t straight in the si is the plain string; one in an r (straight in the si) is a run; any
+                            // other t (in a phonetic rPh) is left out.
+                            if (xr.Depth == siDepth + 1) into = direct ??= new StringBuilder();
+                            else if (xr.Depth == siDepth + 2 && child == "r") into = runs ??= new StringBuilder();
+                            if (into != null) tDepth = xr.Depth;
+                        }
+                        else if (xr.Depth == siDepth + 1) child = xr.LocalName;
+                        break;
+                    case XmlNodeType.Text or XmlNodeType.CDATA or XmlNodeType.SignificantWhitespace or XmlNodeType.Whitespace when into != null:
+                        into.Append(xr.Value);
+                        break;
+                    case XmlNodeType.EndElement when siDepth >= 0:
+                        if (into != null && xr.Depth == tDepth) into = null;
+                        else if (xr.Depth == siDepth + 1) child = null;
+                        else if (xr.Depth == siDepth)
+                        {
+                            list.Add(runs is { Length: > 0 } ? runs.ToString() : direct?.ToString() ?? "");
+                            siDepth = -1;
+                            if ((list.Count & 1023) == 0) ct.ThrowIfCancellationRequested();
+                        }
+                        break;
+                }
+                if (list.Count > last) return list;
+            }
+            return list;
+        }
+        catch (XmlException) when (s.Capped)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>A read-only stream that ends after <c>limit</c> bytes of the one it wraps (and owns); Capped says it did.</summary>
+    private sealed class CappedStream(Stream inner, long limit) : Stream
+    {
+        private long _left = limit;
+        public bool Capped { get; private set; }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+        public override int Read(Span<byte> buffer)
+        {
+            if (_left <= 0)
+            {
+                if (buffer.Length > 0) Capped = true;
+                return 0;
+            }
+            int n = inner.Read(buffer[..(int)Math.Min(buffer.Length, _left)]);
+            _left -= n;
+            return n;
+        }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) inner.Dispose();
+            base.Dispose(disposing);
+        }
+    }
+
     /// <summary>The item whose name is <paramref name="name"/> (exactly, else ignoring case, as Excel compares sheet names); null when none.</summary>
-    private static T? ByName<T>(IReadOnlyList<T> items, string? name, Func<T, string?> nameOf) where T : class
+    internal static T? ByName<T>(IReadOnlyList<T> items, string? name, Func<T, string?> nameOf) where T : class
     {
         if (string.IsNullOrEmpty(name)) return null;
         return items.FirstOrDefault(i => string.Equals(nameOf(i), name, StringComparison.Ordinal))

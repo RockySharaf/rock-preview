@@ -120,24 +120,35 @@ public static class ThumbKinds
     static readonly HashSet<string> OwnIcon = Set("exe", "lnk", "url", "ico", "cur", "ani", "scr", "cpl", "msi", "pif", "appref-ms");
 
     // Spreadsheets carry a picture only when saved with a thumbnail, which they mostly aren't (measured: 40 of 40 xlsx
-    // gave none), and Rock Preview draws no page of its own for them: the estimate counts them as nothing.
+    // gave none). Without one, an Excel workbook gets a sheet page of its first cells, which is never kept on disk (like a
+    // text page), and an OpenDocument one its icon: the estimate counts them all as nothing.
     static readonly HashSet<string> Spreadsheets = Set("xlsx", "xlsm", "xltx", "xltm", "ods", "ots");
+
+    // Word and Excel 97-2003 files: Windows is asked first, exactly as for any kind it pictures (the picture the author
+    // saved in the file, when there is one); after a miss Rock Preview draws a page of the first lines or a sheet page of
+    // the first cells, and a file that only carries the extension (RTF, HTML or text named .doc or .xls) goes on to the
+    // text handling as before. Those pages are never kept on disk, and what Windows gives for these kinds stays in memory
+    // as before (the estimate counts them as nothing).
+    static readonly HashSet<string> OldOffice = Set("doc", "dot", "xls", "xlt");
 
     // Own-extractor kinds whose own path renders a PDF page in this process (Windows.Data.Pdf, one page at a time for the
     // whole process, and an access violation at exit on some PCs): Windows is asked first, but its thumbnail cache only,
     // never its extractor (see WindowsCacheOnly); then the own page renderer.
     static readonly HashSet<string> PdfPages = Set("pdf", "ai", "ait");
 
-    // Kinds Windows pictures first: the PDF pages above (its cache only), and fonts. A font's own sample is drawn in this
-    // process with the font loaded into GDI+, which holds the font engine every thread drawing text shares: measured,
-    // the grid's captions took 4 to 5 ms each instead of 0.1 while three workers drew font samples, so a screen of them
-    // took over 100 ms to paint. Windows draws its font thumbnails in a helper process (captions stayed at 0.12 ms).
-    static readonly HashSet<string> ShellFirstKinds = Union(PdfPages, Fonts);
+    // Kinds Windows pictures first: the PDF pages above (its cache only), fonts, and the old Word and Excel files (whose
+    // own picture, when the author saved one, only Windows reads). A font's own sample is drawn in this process with the
+    // font loaded into GDI+, which holds the font engine every thread drawing text shares: measured, the grid's captions
+    // took 4 to 5 ms each instead of 0.1 while three workers drew font samples, so a screen of them took over 100 ms to
+    // paint. Windows draws its font thumbnails in a helper process (captions stayed at 0.12 ms).
+    static readonly HashSet<string> ShellFirstKinds = Union(Union(PdfPages, Fonts), OldOffice);
 
-    // Kinds whose own extractor draws text in this process (text pages, a Word file's page when it has no thumbnail of
-    // its own, a font's sample): one at a time, for the same reason (captions 0.3 ms with one worker drawing pages, 0.9
-    // with three).
+    // Kinds whose own extractor draws text in this process (text pages, a Word file's page and an Excel file's sheet page
+    // when it has no thumbnail of its own, a font's sample): one at a time, for the same reason (captions 0.3 ms with one
+    // worker drawing pages, 0.9 with three). The old Word and Excel files are among them: their own extractor runs only
+    // after Windows had no picture, and then it draws one of those pages.
     static readonly HashSet<string> WordFiles = Set("docx", "docm", "dotx", "dotm");
+    static readonly HashSet<string> ExcelFiles = Set("xlsx", "xlsm", "xltx", "xltm");
 
     /// <summary>The route that makes the Final thumbnail of a file with this extension (a folder: <see cref="ThumbRoute.Shell"/>).</summary>
     public static ThumbRoute RouteOf(string extensionOrPath, bool isFolder = false)
@@ -156,8 +167,9 @@ public static class ThumbKinds
     /// <summary>
     /// Whether Windows is asked before Rock Preview's own extractor for this kind: PDF and Illustrator files (often PDFs
     /// inside), whose own path renders PDF pages in this process, one at a time for the whole program (for them only
-    /// Windows' thumbnail cache is asked: see <see cref="WindowsCacheOnly"/>); and fonts, whose own sample holds the font
-    /// engine the grid's captions need.
+    /// Windows' thumbnail cache is asked: see <see cref="WindowsCacheOnly"/>); fonts, whose own sample holds the font
+    /// engine the grid's captions need; and Word and Excel 97-2003 files (doc, dot, xls, xlt), whose saved picture only
+    /// Windows reads, and which get Rock Preview's own page only when Windows has none.
     /// </summary>
     public static bool ShellFirst(string extensionOrPath) => ShellFirstKinds.Contains(Ext(extensionOrPath));
 
@@ -201,14 +213,14 @@ public static class ThumbKinds
     }
 
     /// <summary>
-    /// Whether Rock Preview's own extractor may draw text for this kind (text pages, Word pages without a thumbnail, font
-    /// samples): such work takes the font engine that every thread drawing text shares, the grid's captions included, so
-    /// the service runs one at a time.
+    /// Whether Rock Preview's own extractor may draw text for this kind (text pages, Word pages and Excel sheet pages
+    /// without a thumbnail, old Word and Excel files, font samples): such work takes the font engine that every thread
+    /// drawing text shares, the grid's captions included, so the service runs one at a time.
     /// </summary>
     public static bool DrawsTextWhenMade(string extensionOrPath)
     {
         string ext = Ext(extensionOrPath);
-        return Text.Contains(ext) || Fonts.Contains(ext) || WordFiles.Contains(ext);
+        return Text.Contains(ext) || Fonts.Contains(ext) || WordFiles.Contains(ext) || ExcelFiles.Contains(ext) || OldOffice.Contains(ext);
     }
 
     /// <summary>
@@ -216,7 +228,8 @@ public static class ThumbKinds
     /// time it is needed and held in memory only. A text page is cheap to make, and a saved one would be a readable
     /// picture of a file's first lines (perhaps a key or a password) that outlives the file, on a store that may lie on a
     /// stick or a shared drive. Files of other kinds can come out as text pages too (an unknown kind that turns out to be
-    /// text, a Word file without a thumbnail): the service knows those only once drawn, and keeps them in memory as well.
+    /// text, a Word file's page or an Excel file's sheet page drawn when it has no thumbnail): the service knows those
+    /// only once drawn, and keeps them in memory as well.
     /// </summary>
     public static bool DrawsText(string extensionOrPath) => Text.Contains(Ext(extensionOrPath));
 
@@ -240,7 +253,8 @@ public static class ThumbKinds
     /// Which kind of stored thumbnail a file of this extension gives, for the space estimate: photos (pictures, PSD,
     /// RAW and the photo-like kinds Rock Preview renders), videos, and documents (flat kinds: PDF, Office, fonts, vector
     /// formats, flat pictures); <see cref="ThumbCost.Nothing"/> for kinds that never give a stored picture: kinds that
-    /// show their icon, text pages (never kept on disk) and spreadsheets (mostly without a thumbnail). Folders count nothing.
+    /// show their icon, text pages (never kept on disk), spreadsheets (mostly without a thumbnail; their sheet page is
+    /// never kept) and the old Word and Excel files (Windows' picture or a page never kept). Folders count nothing.
     /// </summary>
     public static ThumbCost CostOf(string extensionOrPath, bool isFolder = false)
         => isFolder ? ThumbCost.Nothing : CostOfExt(Ext(extensionOrPath));
@@ -251,8 +265,9 @@ public static class ThumbKinds
 
     static ThumbCost CostOfExt(string ext)
     {
-        // Text pages are never stored; spreadsheets almost never have a picture.
-        if (ext.Length == 0 || Text.Contains(ext) || Spreadsheets.Contains(ext)) return ThumbCost.Nothing;
+        // Text pages are never stored; spreadsheets almost never have a picture; the old Word and Excel files counted
+        // nothing when only Windows pictured them, and their own pages are never stored either.
+        if (ext.Length == 0 || Text.Contains(ext) || Spreadsheets.Contains(ext) || OldOffice.Contains(ext)) return ThumbCost.Nothing;
         if (Video.Contains(ext)) return ThumbCost.Video;
         var route = RouteOf(ext);
         if (route == ThumbRoute.Shell) return ThumbCost.Nothing;
@@ -289,11 +304,12 @@ public static class ThumbKinds
 
     /// <summary>
     /// Whether to ask Windows' thumbnail cache (cache only, never an extraction) before anything else: for kinds whose
-    /// real source is Windows itself (video, kinds Rock Preview can't decode, folders), and for any file of 1.5 MB or more.
-    /// A <paramref name="length"/> of 0 or less (not known) counts as small.
+    /// real source is Windows itself (video, kinds Rock Preview can't decode, folders, and the old Word and Excel files,
+    /// whose saved picture only Windows reads), and for any file of 1.5 MB or more. A <paramref name="length"/> of 0 or
+    /// less (not known) counts as small.
     /// </summary>
     public static bool AskWindowsCache(string extensionOrPath, long length, bool isFolder = false)
-        => isFolder || RouteOf(extensionOrPath) == ThumbRoute.Shell || length >= CacheProbeMinBytes;
+        => isFolder || RouteOf(extensionOrPath) == ThumbRoute.Shell || OldOffice.Contains(Ext(extensionOrPath)) || length >= CacheProbeMinBytes;
 
     /// <summary>Whether this kind is flat (documents, text pages, fonts, PDF, vector formats, icons, png/bmp/gif) and so stored as PNG.</summary>
     public static bool IsFlat(string extensionOrPath)
@@ -413,7 +429,8 @@ public static class ThumbKinds
         => containerIsJpeg && frames == 1 && frame == JpegFrame.Baseline;
 
     static bool IsOwnExtractor(string ext)
-        => Vector.Contains(ext) || OtherOwn.Contains(ext) || Office.Contains(ext) || Fonts.Contains(ext) || Text.Contains(ext);
+        => Vector.Contains(ext) || OtherOwn.Contains(ext) || Office.Contains(ext) || OldOffice.Contains(ext) || Fonts.Contains(ext)
+            || Text.Contains(ext);
 
     /// <summary>The extension without its dot, lower-case; empty when there is none.</summary>
     internal static string Ext(string extensionOrPath)

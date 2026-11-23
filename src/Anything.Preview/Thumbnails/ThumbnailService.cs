@@ -512,9 +512,10 @@ internal sealed class ThumbnailService : IDisposable
     private int _warmRunning;
     private volatile bool _warmStopped;              // a warming call hung once: no more warming in this run
     private int _pdfRendering;                      // a decode thread renders a PDF page (one at a time: the page renderer is one for the process)
-    // Jobs drawing text now (text pages, a Word page, a font sample, the text sniff). The font engine is shared by every
-    // thread that draws text, and the grid's captions wait for it (0.1 ms each alone, 0.15 to 0.3 with one worker drawing
-    // pages, 0.5 to 0.9 with three): while the view moves (scrolled in the last 300 ms) one such job runs at a time, else three.
+    // Jobs drawing text now (text pages, a Word page, an Excel sheet page, a font sample, the text sniff). The font engine
+    // is shared by every thread that draws text, and the grid's captions wait for it (0.1 ms each alone, 0.15 to 0.3 with
+    // one worker drawing pages, 0.5 to 0.9 with three): while the view moves (scrolled in the last 300 ms) one such job
+    // runs at a time, else three.
     private int _textJobs;
     private long _viewMovedAt = long.MinValue / 2;
     private long _capOverride = -1;
@@ -1485,7 +1486,8 @@ internal sealed class ThumbnailService : IDisposable
             // With no store chosen, a picture asked for the screen or the look-ahead is asked of Windows too, later, so
             // its cache has it after a restart (as 1.7.27's thumbnails were).
             bool warm = w.Route == ThumbRoute.Picture && NoStoreChosen && !IdleOnly(w);
-            // A page of the file's own text (a text kind, or a Word file without a thumbnail of its own) is never kept.
+            // A page of the file's own text or cells (a text kind, or a Word or Excel file without a thumbnail of its own,
+            // old .doc and .xls included) is never kept.
             bool textPage = ThumbKinds.DrawsText(ext) || ThumbnailProvider.IsTextPage(bmp);
             return new Outcome { Final = ThumbSources.FitClass(bmp, cls), StoreFinal = true, WarmWindows = warm, TextPage = textPage };
         }
@@ -1510,7 +1512,7 @@ internal sealed class ThumbnailService : IDisposable
                 return new Outcome { Final = ThumbSources.FitClass(bmp, w.SizeClass), StoreFinal = true };
         }
         else if (!ThumbRules.IsCleanShellNone(hr)) w.Unclean = true;
-        // A kind asked of Windows first (fonts): Rock Preview's own extractor is next.
+        // A kind asked of Windows first (fonts, old Word and Excel files): Rock Preview's own extractor is next.
         if (ThumbLanes.DecodeAfterShellMiss(w.Route, w.DecodeTried, w.GateToShell)) return new Outcome { Next = Stage.Decode };
         // The text sniff reads the file: not one whose contents would be downloaded.
         if (w.Route == ThumbRoute.Shell && !w.IsFolder && !w.NotHere)
@@ -1627,9 +1629,9 @@ internal sealed class ThumbnailService : IDisposable
         return true;
     }
 
-    // Step 4's first source: Windows for its own kinds and for the kinds asked of it first (the PDF kinds and fonts), else
-    // Rock Preview's own decoder or extractor. For folders, shortcuts and the PDF kinds Windows means its thumbnail cache
-    // only (RunCacheOnly).
+    // Step 4's first source: Windows for its own kinds and for the kinds asked of it first (the PDF kinds, fonts, old Word
+    // and Excel files), else Rock Preview's own decoder or extractor. For folders, shortcuts and the PDF kinds Windows
+    // means its thumbnail cache only (RunCacheOnly).
     private static Stage RouteStage(Work w)
         => w.Route == ThumbRoute.Shell || (w.Route == ThumbRoute.OwnExtractor && !w.ShellTried && ThumbKinds.ShellFirst(w.Path))
             ? Stage.Shell : Stage.Decode;

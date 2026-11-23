@@ -22,7 +22,10 @@ public sealed class ThumbKindsTests
     [InlineData("afphoto", (int)ThumbRoute.OwnExtractor)]
     [InlineData("mp4", (int)ThumbRoute.Shell)]
     [InlineData("mkv", (int)ThumbRoute.Shell)]
-    [InlineData("doc", (int)ThumbRoute.Shell)]
+    [InlineData("doc", (int)ThumbRoute.OwnExtractor)] // Windows first (ShellFirst), then Rock Preview's page
+    [InlineData("XLS", (int)ThumbRoute.OwnExtractor)]
+    [InlineData("ppt", (int)ThumbRoute.Shell)]
+    [InlineData("pps", (int)ThumbRoute.Shell)]
     [InlineData("zip", (int)ThumbRoute.Shell)]
     [InlineData("", (int)ThumbRoute.Shell)]
     public void Each_kind_takes_its_route(string ext, int route) => Assert.Equal((ThumbRoute)route, ThumbKinds.RouteOf(ext));
@@ -213,6 +216,67 @@ public sealed class ThumbKindsTests
         Assert.False(ThumbKinds.DrawsTextWhenMade("jpg"));
         // Still Rock Preview's own kind when Windows has nothing.
         Assert.Equal(ThumbRoute.OwnExtractor, ThumbKinds.RouteOf("pdf"));
+    }
+
+    [Theory]
+    [InlineData("doc")]
+    [InlineData("dot")]
+    [InlineData("xls")]
+    [InlineData("xlt")]
+    [InlineData(".DOC")]
+    [InlineData(@"C:\Files\Budget.Xls")]
+    public void Old_Word_and_Excel_files_ask_Windows_first_then_draw_a_page_never_kept(string kind)
+    {
+        // Windows is asked as before: its cache first whatever the size, then its extractor (the picture the author saved).
+        Assert.True(ThumbKinds.AskWindowsCache(kind, 0));
+        Assert.True(ThumbKinds.ShellFirst(kind));
+        // After a miss, Rock Preview's own extractor draws a page: a text job, one at a time.
+        Assert.Equal(ThumbRoute.OwnExtractor, ThumbKinds.RouteOf(kind));
+        Assert.True(ThumbKinds.HasOwnDecoder(kind));
+        Assert.True(ThumbKinds.DrawsTextWhenMade(kind));
+        Assert.False(ThumbKinds.RendersPdfPage(kind));
+        // Not cache-only (that is folders, shortcuts and the PDF kinds): Windows' extractor is asked, and a miss is
+        // remembered as a failure as it was when only Windows pictured them.
+        Assert.False(ThumbKinds.WindowsCacheOnly(kind));
+        Assert.True(ThumbLanes.RemembersFailure(ThumbKinds.WindowsCacheOnly(kind), decodeTried: true));
+        Assert.True(ThumbLanes.DecodeAfterShellMiss(ThumbKinds.RouteOf(kind), decodeTried: false, gateToShell: false));
+        // Never kept on disk and never counted: not Windows' picture (as before), not the page.
+        Assert.False(ThumbKinds.KeepOnDisk(kind));
+        Assert.False(ThumbKinds.DrawsText(kind)); // a page known only once drawn (marked), like a Word file's
+        Assert.Equal(ThumbCost.Nothing, ThumbKinds.CostOf(kind));
+        var census = ThumbEstimator.Count(["a." + ThumbKinds.Ext(kind)]);
+        Assert.Equal((0L, 0L), (census.Files, census.BytesAt(256)));
+    }
+
+    [Fact]
+    public void Excel_workbooks_draw_their_sheet_page_as_a_text_job_and_PowerPoint_stays_as_it_was()
+    {
+        foreach (var kind in new[] { "xlsx", "xlsm", "xltx", "xltm" })
+        {
+            Assert.Equal(ThumbRoute.OwnExtractor, ThumbKinds.RouteOf(kind));
+            Assert.True(ThumbKinds.DrawsTextWhenMade(kind), kind);
+            Assert.False(ThumbKinds.ShellFirst(kind), kind); // the picture saved inside the zip is read first, by Rock Preview
+            Assert.False(ThumbKinds.AskWindowsCache(kind, 0), kind);
+            Assert.False(ThumbKinds.KeepOnDisk(kind), kind);
+            Assert.Equal(ThumbCost.Nothing, ThumbKinds.CostOf(kind));
+        }
+        // OpenDocument spreadsheets: no sheet page, no text turn.
+        Assert.False(ThumbKinds.DrawsTextWhenMade("ods"));
+        // Old PowerPoint files: only Windows, then the text sniff, as before; new ones: the saved picture, no text turn.
+        foreach (var kind in new[] { "ppt", "pps", "pot" })
+        {
+            Assert.Equal(ThumbRoute.Shell, ThumbKinds.RouteOf(kind));
+            Assert.False(ThumbKinds.ShellFirst(kind), kind);
+            Assert.False(ThumbKinds.DrawsTextWhenMade(kind), kind);
+            Assert.False(ThumbKinds.KeepOnDisk(kind), kind);
+        }
+        foreach (var kind in new[] { "pptx", "pptm", "ppsx", "potx" })
+        {
+            Assert.Equal(ThumbRoute.OwnExtractor, ThumbKinds.RouteOf(kind));
+            Assert.False(ThumbKinds.DrawsTextWhenMade(kind), kind);
+            Assert.False(ThumbKinds.ShellFirst(kind), kind);
+            Assert.Equal(ThumbCost.Document, ThumbKinds.CostOf(kind));
+        }
     }
 
     [Theory]

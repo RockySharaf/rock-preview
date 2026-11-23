@@ -4,7 +4,9 @@ using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+using System.Threading;
 using System.Windows.Forms;
+using Anything.Core;
 using Anything.Preview.Util;
 using Microsoft.Win32;
 
@@ -197,8 +199,8 @@ internal sealed class PreviewHandlerHost : Control
         object? obj = null;
         try
         {
-            obj = Create(clsid);
-            if (obj == null) { Error = "could not create handler"; return false; }
+            obj = Create(clsid, out int localHr, out int inprocHr);
+            if (obj == null) { Error = CreateError(clsid, localHr, inprocHr); return false; }
             bool ok = false;
             if (obj is IInitializeWithFile iwf)
             {
@@ -247,13 +249,56 @@ internal sealed class PreviewHandlerHost : Control
         }
     }
 
-    private static object? Create(Guid clsid)
+    /// <summary>
+    /// Creates the handler, keeping what each attempt answered (0 when it was not made). A program that is just
+    /// starting answers "busy" for a moment, so a busy answer is asked again a few times; this runs on the UI thread,
+    /// so the waits stay under half a second in all. A class that ended busy in the last few seconds gets one attempt
+    /// and no waits (see <see cref="PreviewHandlerRules.CreateAttempts"/>), so arrowing through a folder of its files
+    /// does not stall on each. An object that comes back with a failure code is released.
+    /// </summary>
+    private static object? Create(Guid clsid, out int localHr, out int inprocHr)
     {
         var iid = IID_IUnknown;
+        inprocHr = 0;
+        long? lastBusy = LastBusy.TryGetValue(clsid, out long tick) ? tick : null;
+        int attempts = PreviewHandlerRules.CreateAttempts(lastBusy, Environment.TickCount64);
         // Out-of-proc (prevhost surrogate) keeps a crashing handler from taking the app down.
-        if (CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_LOCAL_SERVER, ref iid, out var o) == 0 && o != null) return o;
-        if (CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_INPROC_SERVER, ref iid, out o) == 0 && o != null) return o;
+        localHr = CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_LOCAL_SERVER, ref iid, out var o);
+        for (int attempt = 1; attempt < attempts && PreviewHandlerRules.IsBusy(localHr); attempt++)
+        {
+            if (o != null) Release(o);
+            Thread.Sleep(BusyRetryDelayMs);
+            localHr = CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_LOCAL_SERVER, ref iid, out o);
+        }
+        // Remember a busy ending (the next few seconds' creations make one attempt); any other answer forgets it.
+        if (PreviewHandlerRules.IsBusy(localHr)) LastBusy[clsid] = Environment.TickCount64;
+        else LastBusy.TryRemove(clsid, out _);
+        if (localHr == 0 && o != null) return o;
+        if (o != null) Release(o);
+        inprocHr = CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_INPROC_SERVER, ref iid, out o);
+        if (inprocHr == 0 && o != null) return o;
+        if (o != null) Release(o);
         return null;
+    }
+
+    private const int BusyRetryDelayMs = 150;
+
+    /// <summary>When a creation for each handler class last ended busy (Environment.TickCount64); shared by every pane
+    /// and thread, hence concurrent.</summary>
+    private static readonly ConcurrentDictionary<Guid, long> LastBusy = new();
+
+    /// <summary>
+    /// The error for a handler that could not be created, in words the user can act on. When its program answered busy
+    /// after the retries, a message it is waiting on is looked for and brought forward (see
+    /// <see cref="WaitingDialogs.BringToFront"/>), and the error says what really happened.
+    /// </summary>
+    private static string CreateError(Guid clsid, int localHr, int inprocHr)
+    {
+        string program = PreviewHandlerRules.ProgramName(WaitingDialogs.LocalServerCommand(clsid));
+        var waiting = PreviewHandlerRules.IsBusy(localHr)
+            ? WaitingDialogs.BringToFront(clsid)
+            : PreviewHandlerRules.WaitingMessage.NotFound;
+        return PreviewHandlerRules.CreateError(localHr, inprocHr, program, waiting);
     }
 
     private RECT ClientRect() => new() { Left = 0, Top = 0, Right = Math.Max(1, ClientSize.Width), Bottom = Math.Max(1, ClientSize.Height) };
