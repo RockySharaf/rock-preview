@@ -13,6 +13,9 @@ internal sealed partial class AnythingApp
     readonly ThumbWaitOccasions _thumbOccasions = new();
     ThumbCensus? _thumbCensus;
     string? _thumbCensusFilter; // the Everyday files filter the estimate was counted with (null: every file)
+    ThumbKeep? _thumbCensusKeep; // the choice of what is kept the estimate was counted with
+    bool _thumbFullTold;        // the "store is full" bar showed in this run (or the user lowered the limit past the size)
+    bool _thumbFullPending;     // the store became full and no window showing thumbnails has said so yet
     bool _thumbCounting;
     readonly CancellationTokenSource _thumbCountCts = new();
 
@@ -21,8 +24,10 @@ internal sealed partial class AnythingApp
     {
         get
         {
-            // "Everyday files only" changed since it was counted: counted again (in the background), the old one meanwhile.
-            if (_thumbCensus is not null && (Settings.EverydayFilesOnly ? Settings.Everyday.Filter : null) != _thumbCensusFilter) EstimateThumbnails();
+            // "Everyday files only" or the choice of what is kept changed since it was counted: counted again (in the
+            // background), the old one meanwhile.
+            if (_thumbCensus is not null && ((Settings.EverydayFilesOnly ? Settings.Everyday.Filter : null) != _thumbCensusFilter
+                                             || !Settings.ThumbnailStoreKeep.Equals(_thumbCensusKeep))) EstimateThumbnails();
             return _thumbCensus;
         }
     }
@@ -43,6 +48,9 @@ internal sealed partial class AnythingApp
     void StartThumbnails()
     {
         if (IsDemo) return;
+        ThumbHost.SetKeep(Settings.ThumbnailStoreKeep);
+        // Raised on the store's writer: the windows hear of it on the UI thread.
+        ThumbHost.StoreBecameFull += () => Post(OnThumbStoreFull);
         _ = ThumbHost.Choose(StoreOpener());
         EstimateThumbnails();
         RemoveThumbLeftovers();
@@ -164,6 +172,7 @@ internal sealed partial class AnythingApp
         string folder = Settings.ThumbnailStoreFolder;
         Settings.ThumbnailStore = false;
         Settings.Save();
+        HideThumbStoreFullBars();
         bool closed;
         try { closed = await ThumbHost.Choose(null); } catch (Exception) { closed = false; }
         var removal = closed ? await Task.Run(() => Reached(ThumbStore.RemoveFolder(folder), folder)) : StoreRemoval.Failed;
@@ -241,9 +250,15 @@ internal sealed partial class AnythingApp
         }), TaskScheduler.Default);
     }
 
-    /// <summary>The limit changed: saved, and the open store keeps to it at once.</summary>
+    /// <summary>
+    /// The limit changed: saved, and the open store keeps to it at once. Raised, the "store is full" bar goes; lowered
+    /// below what the store holds, the user knows it will drop the oldest, so the bar doesn't say so again in this run.
+    /// </summary>
     public void SetThumbStoreLimit(int megabytes)
     {
+        int before = Settings.ThumbnailStoreMegabytes;
+        if (megabytes > before) HideThumbStoreFullBars();
+        else if (megabytes < before && ThumbHost.StoreSizeBytes > ThumbStore.CapBytesFor(megabytes)) _thumbFullTold = true;
         Settings.ThumbnailStoreMegabytes = megabytes;
         Settings.Save();
         ThumbHost.SetCap(megabytes);
@@ -257,6 +272,7 @@ internal sealed partial class AnythingApp
     /// </summary>
     public async Task ClearThumbStore()
     {
+        HideThumbStoreFullBars();
         if (ThumbHost.Started) ThumbHost.ClearStore();
         else
         {
@@ -266,6 +282,62 @@ internal sealed partial class AnythingApp
         }
         ThumbHost.ClearMemory();
         foreach (var w in _windows) w.ClearThumbnails();
+    }
+
+    /// <summary>
+    /// Settings' "Keep thumbnails of" and the types never kept: saved, used for thumbnails made from now on (those saved
+    /// already stay until newer ones replace them or the store is cleared), and the estimate counted again in the background.
+    /// </summary>
+    public void SetThumbStoreKeep(ThumbKeep keep)
+    {
+        if (IsDemo || keep.Equals(Settings.ThumbnailStoreKeep)) return;
+        Settings.ThumbnailStoreKeep = keep;
+        Settings.Save();
+        ThumbHost.SetKeep(keep);
+        EstimateThumbnails();
+        // The idle step plans again: kinds ticked now may have pictures to make.
+        foreach (var w in _windows) w.ThumbStoreChosen();
+    }
+
+    bool ThumbFullDue => ThumbOption.ShouldTellFull(Settings.ThumbnailStoreMegabytes, Settings.ThumbnailStoreFullToldMegabytes, _thumbFullTold);
+
+    /// <summary>
+    /// The store started dropping its oldest thumbnails (UI thread). Said once per run, in a window showing thumbnails now
+    /// or the next one that does, and never again for a limit the user answered at.
+    /// </summary>
+    void OnThumbStoreFull()
+    {
+        if (_exiting || IsDemo || !Settings.ThumbnailStore || !ThumbHost.StoreIsFull || !ThumbFullDue) return;
+        _thumbFullPending = true;
+        foreach (var w in _windows)
+            if (w.ShowThumbStoreFullBar()) break;
+    }
+
+    /// <summary>
+    /// A window showing thumbnails asks whether to say the store is full: true once (then it shows the bar), while the
+    /// store still is and the bar is due.
+    /// </summary>
+    public bool TakeThumbStoreFullNotice()
+    {
+        if (!_thumbFullPending) return false;
+        _thumbFullPending = false;
+        if (IsDemo || !Settings.ThumbnailStore || !ThumbHost.StoreIsFull || !ThumbFullDue) return false;
+        _thumbFullTold = true;
+        return true;
+    }
+
+    /// <summary>The user answered the bar (OK, or Raise the limit): not said again for this limit, and gone from every window.</summary>
+    public void ThumbStoreFullAnswered()
+    {
+        Settings.ThumbnailStoreFullToldMegabytes = Settings.ThumbnailStoreMegabytes;
+        Settings.Save();
+        HideThumbStoreFullBars();
+    }
+
+    void HideThumbStoreFullBars()
+    {
+        _thumbFullPending = false;
+        foreach (var w in _windows) w.HideThumbStoreFullBar();
     }
 
     /// <summary>
@@ -281,13 +353,16 @@ internal sealed partial class AnythingApp
         // the estimate is counted again when that setting changes.
         var only = Settings.EverydayFilesOnly ? Settings.Everyday : null;
         string? filter = only?.Filter;
+        // Only what would be kept counts: the user's choice of kinds and the types never kept.
+        var keep = Settings.ThumbnailStoreKeep;
         // The index's live count then against now, like with like (folders count in both).
-        if (_thumbCensus is { Complete: true } c && filter == _thumbCensusFilter && !ThumbEstimator.ChangedMuch(c.LiveAtCount, index.LiveCount)) return;
+        if (_thumbCensus is { Complete: true } c && filter == _thumbCensusFilter && keep.Equals(_thumbCensusKeep)
+            && !ThumbEstimator.ChangedMuch(c.LiveAtCount, index.LiveCount)) return;
         _thumbCounting = true;
         var ct = _thumbCountCts.Token;
         Task.Run(() =>
         {
-            try { return (ThumbCensus?)ThumbEstimator.CountIndex(index, ct, only); }
+            try { return (ThumbCensus?)ThumbEstimator.CountIndex(index, ct, only, keep); }
             catch (Exception) { return null; }
         }).ContinueWith(t => Post(() =>
         {
@@ -295,10 +370,11 @@ internal sealed partial class AnythingApp
             if (_exiting || t.Result is not { } census) return;
             _thumbCensus = census;
             _thumbCensusFilter = filter;
+            _thumbCensusKeep = keep;
             ThumbEstimateChanged?.Invoke();
-            // "Everyday files only" may have changed while this one counted: then it is counted again (only then: a
-            // count that just finished is not started again for nothing).
-            if ((Settings.EverydayFilesOnly ? Settings.Everyday.Filter : null) != filter) EstimateThumbnails();
+            // "Everyday files only" or the choice of what is kept may have changed while this one counted: then it is
+            // counted again (only then: a count that just finished is not started again for nothing).
+            if ((Settings.EverydayFilesOnly ? Settings.Everyday.Filter : null) != filter || !Settings.ThumbnailStoreKeep.Equals(keep)) EstimateThumbnails();
         }), TaskScheduler.Default);
     }
 

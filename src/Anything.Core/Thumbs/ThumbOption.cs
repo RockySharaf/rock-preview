@@ -8,7 +8,11 @@ namespace Anything.Core.Thumbs;
 //
 //   ThumbOption.StoreFolder(databasePath, chosenPath)    where the store lies: "Thumbs" beside the database, or
 //                                                          "Rock Preview Thumbnails" inside the folder the user chose.
-//   ThumbOption.CapMegabytesFrom(ini value)               the limit, snapped to one of Settings' choices (500 when unknown).
+//   ThumbOption.CapMegabytesFrom(ini value)               the limit, kept within its bounds (500 when unknown).
+//   ThumbOption.TryParseSize(typed text, out megabytes)   a limit typed in a box labelled in GB ("8", "1.5 TB", "500 MB").
+//   ThumbOption.LimitBoxText / LimitTyped / EnoughMegabytes   the limit box: what it shows, what a typed text sets, and
+//                                                          "Enough for everything" (the estimate rounded up to whole GB).
+//   ThumbOption.ShouldTellFull(limit, toldAt, toldThisRun) whether the "store is full" bar may show.
 //   ThumbOption.EstimateText / RecommendationText / SizeNowText / TurnOffQuestion / ProblemText / FreeSpaceText
 //                                                          the sentences, with the real numbers in them.
 //   ThumbOption.ShouldRecommend(...)                      whether the bar may show now.
@@ -72,24 +76,158 @@ public static class ThumbOption
     };
 
     /// <summary>
-    /// The limit from the ini (megabytes): one of <see cref="ThumbStore.CapChoicesMegabytes"/>, the nearest at or below a
-    /// value between them (an edited ini never gets more than it asked for), the smallest for less; 500 when missing or
-    /// not a number.
+    /// The limit from the ini (megabytes): the whole number written there, kept within <see cref="ThumbStore.MinCapMegabytes"/>
+    /// and <see cref="ThumbStore.MaxCapMegabytes"/> (an ini of 1.7.30 or earlier holds one of its choices, read as it is);
+    /// 500 when missing or not a whole number.
     /// </summary>
     public static int CapMegabytesFrom(string? value)
     {
-        if (value is null || !int.TryParse(value.Trim(), NumberStyles.Integer, C, out int mb)) return ThumbStore.DefaultCapMegabytes;
-        var choices = ThumbStore.CapChoicesMegabytes;
-        int pick = choices[0];
-        foreach (int c in choices) if (c <= mb) pick = c;
-        return pick;
+        if (value is null || !long.TryParse(value.Trim(), NumberStyles.Integer, C, out long mb)) return ThumbStore.DefaultCapMegabytes;
+        return (int)Math.Clamp(mb, ThumbStore.MinCapMegabytes, ThumbStore.MaxCapMegabytes);
     }
 
-    /// <summary>A limit as Settings lists it: "250 MB", "500 MB", "1 GB", "8 GB" (decimal: 1 GB is 1,000 MB).</summary>
+    // "1.5 TB", "8 GB", "500 MB", "0.5": a number with a point or a comma, then an optional unit.
+    static readonly System.Text.RegularExpressions.Regex SizePattern = new(
+        @"^\s*(?<n>\d+(?:[.,]\d*)?|[.,]\d+)\s*(?<unit>mb|gb|tb)?\s*$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    // "1,000" or "12,500": a comma that groups thousands, not one before decimals.
+    static readonly System.Text.RegularExpressions.Regex ThousandsPattern = new(
+        @"^\d{1,3},\d{3}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// A limit as a person types it in a box labelled in GB: "8", "8 GB", "8gb", "0.5", "1,5", "500 MB", "1.5 TB" (spaces
+    /// allowed, a point or a comma before the decimals; a bare number is GB). The megabytes are rounded to a whole number
+    /// and kept within <see cref="ThumbStore.MinCapMegabytes"/> and <see cref="ThumbStore.MaxCapMegabytes"/>. False for
+    /// anything else (a minus sign, another unit, two numbers, nothing), and for one to three digits, a comma and exactly
+    /// three digits ("1,000", "250,000 MB"): that may be a thousand or one point nought, so it is not guessed.
+    /// </summary>
+    public static bool TryParseSize(string? text, out int megabytes)
+    {
+        megabytes = 0;
+        if (text is null) return false;
+        var m = SizePattern.Match(text);
+        if (!m.Success || ThousandsPattern.IsMatch(m.Groups["n"].Value)) return false;
+        if (!decimal.TryParse(m.Groups["n"].Value.Replace(',', '.'), NumberStyles.AllowDecimalPoint, C, out decimal n)) return false;
+        decimal per = m.Groups["unit"].Value.ToLowerInvariant() switch { "mb" => 1m, "tb" => 1_000_000m, _ => 1000m };
+        // Huge numbers stop at the bound before they could overflow.
+        decimal mb = n > ThumbStore.MaxCapMegabytes ? ThumbStore.MaxCapMegabytes : Math.Round(n * per, MidpointRounding.AwayFromZero);
+        megabytes = (int)Math.Clamp(mb, ThumbStore.MinCapMegabytes, ThumbStore.MaxCapMegabytes);
+        return true;
+    }
+
+    /// <summary>
+    /// The limit as the box labelled "GB" shows it: a plain number of GB, "0.5", "8", "120", "1.25" (decimal, at most
+    /// three decimals, which is a whole MB).
+    /// </summary>
+    public static string LimitBoxText(int megabytes) => (megabytes / 1000m).ToString("0.###", C);
+
+    /// <summary>
+    /// What the limit becomes when <paramref name="typed"/> is committed in the box (Enter, or the box losing focus):
+    /// the size typed (<see cref="TryParseSize"/>), or <paramref name="current"/> when the text isn't a size.
+    /// </summary>
+    public static int LimitTyped(string? typed, int current) => TryParseSize(typed, out int mb) ? mb : current;
+
+    /// <summary>
+    /// Whether to ask before the limit goes from <paramref name="oldMegabytes"/> to <paramref name="newMegabytes"/>: only
+    /// when it is lowered below what the store holds now (<paramref name="storeBytes"/>; negative when not known, and then
+    /// nothing is asked), since the oldest thumbnails are deleted at once until the store fits.
+    /// </summary>
+    public static bool AskBeforeLowering(int oldMegabytes, int newMegabytes, long storeBytes)
+        => storeBytes >= 0 && newMegabytes < oldMegabytes && storeBytes > ThumbStore.CapBytesFor(newMegabytes);
+
+    /// <summary>
+    /// The question before such a lower limit is applied (<see cref="AskBeforeLowering"/>). The limit is said exactly and
+    /// the store's size rounded up, so the size always reads larger than the limit ("2.1 GB" against "2 GB", never "2.0 GB").
+    /// </summary>
+    public static string LowerLimitQuestion(long storeBytes, int newMegabytes)
+        => $"The store holds {StoreSizeUpText(storeBytes)} now. With a limit of {ExactCapText(newMegabytes)}, the oldest thumbnails are deleted until it fits. Lower the limit?";
+
+    // A limit to the megabyte: "500 MB", "2 GB", "2.05 GB", "1.25 TB" (CapText rounds to a tenth, which could read as more).
+    static string ExactCapText(int megabytes)
+        => megabytes < 1000 ? megabytes.ToString(C) + " MB"
+            : megabytes < 1_000_000 ? (megabytes / 1000m).ToString("0.###", C) + " GB"
+            : (megabytes / 1_000_000m).ToString("0.######", C) + " TB";
+
+    // A store's size laid out as StoreSizeText lays it out, but rounded up: anything over a limit reads over it.
+    static string StoreSizeUpText(long bytes)
+    {
+        static decimal Up(long b, decimal unitBytes, int decimals)
+        {
+            decimal scale = decimals == 0 ? 1m : 10m;
+            return Math.Ceiling(b / unitBytes * scale) / scale;
+        }
+        return bytes <= 0 ? "0 MB"
+            : bytes <= 999 * MB ? Up(bytes, MB, 0).ToString("#,0", C) + " MB"
+            : bytes <= 99_900 * MB ? Up(bytes, 1000m * MB, 1).ToString("0.0", C) + " GB"
+            : bytes <= 999_000 * MB ? Up(bytes, 1000m * MB, 0).ToString("#,0", C) + " GB"
+            : Up(bytes, 1_000_000m * MB, 1).ToString("0.0", C) + " TB";
+    }
+
+    /// <summary>"Enough for everything": the estimate rounded up to the next whole GB, at least 1 GB (and within the bounds).</summary>
+    public static int EnoughMegabytes(long estimateBytes)
+    {
+        long gb = Math.Max(1, (Math.Max(0, estimateBytes) + 1000 * MB - 1) / (1000 * MB));
+        return (int)Math.Clamp(gb * 1000, ThumbStore.MinCapMegabytes, ThumbStore.MaxCapMegabytes);
+    }
+
+    /// <summary>The link beside the limit box: "Enough for everything: 3 GB".</summary>
+    public static string EnoughText(int megabytes) => $"Enough for everything: {CapText(megabytes)}";
+
+    /// <summary>"drive C:" for a folder on a lettered drive, else "this drive" (a network share). Pure: reads no disk.</summary>
+    public static string DriveName(string folder)
+    {
+        string? root = null;
+        try { root = Path.GetPathRoot(folder); }
+        catch (ArgumentException) { }
+        return root is { Length: >= 2 } r && char.IsAsciiLetter(r[0]) && r[1] == ':' ? $"drive {char.ToUpperInvariant(r[0])}:" : "this drive";
+    }
+
+    /// <summary>
+    /// The grey line under the limit, always true for the store's folder: "120 GB free on drive C:." and, when the limit
+    /// is more than that plus what the store holds already, that saving stops when the drive is nearly full. "" when the
+    /// free space is unknown (negative).
+    /// </summary>
+    public static string LimitSpaceText(long freeBytes, string folder, int capMegabytes, long storeBytes)
+    {
+        if (freeBytes < 0) return "";
+        string text = $"{ContentPresentation.Size(freeBytes)} free on {DriveName(folder)}.";
+        if (capMegabytes * MB > freeBytes + Math.Max(0, storeBytes))
+            text += " The limit is more than that: saving stops when the drive is nearly full.";
+        return text;
+    }
+
+    /// <summary>The card's line while the store is full and drops its oldest thumbnails.</summary>
+    public const string FullText = "Full: the oldest thumbnails are dropped as new ones are saved. Raise the limit to keep more.";
+
+    /// <summary>The card's line while new pictures are refused because the drive is nearly full.</summary>
+    public static string DiskLowText(string folder) => $"Not saving new thumbnails now: {DriveName(folder)} is nearly full.";
+
+    /// <summary>The bar above the files when the store has filled up: "Instant thumbnails is full (8 GB). ..."</summary>
+    public static string FullBarText(int capMegabytes)
+        => $"Instant thumbnails is full ({CapText(capMegabytes)}). The oldest are dropped to make room for new ones.";
+
+    /// <summary>
+    /// Whether the "store is full" bar may show: not yet in this run, and not for the limit the user was last told about
+    /// (<paramref name="toldAtMegabytes"/>, 0 when never; a different limit tells again).
+    /// </summary>
+    public static bool ShouldTellFull(int capMegabytes, int toldAtMegabytes, bool toldThisRun)
+        => !toldThisRun && capMegabytes != toldAtMegabytes;
+
+    /// <summary>
+    /// The grey line under "Keep thumbnails of": that nothing new is saved when no box is ticked; otherwise what happens
+    /// to thumbnails already saved for a type switched off (the store's records carry no type, so they can't be picked out).
+    /// </summary>
+    public static string KeepNote(ThumbKeep keep)
+        => keep.KeepsNothing ? "Nothing is being saved."
+            : "If you switch a type off, thumbnails already saved for it stay until newer ones replace them, or until you clear the store.";
+
+    /// <summary>A limit as it reads: "250 MB", "1 GB", "1.5 GB", "120 GB", "2 TB" (decimal: 1 GB is 1,000 MB, 1 TB 1,000 GB).</summary>
     public static string CapText(int megabytes)
-        => megabytes >= 1000 && megabytes % 1000 == 0 ? (megabytes / 1000).ToString(C) + " GB"
-            : megabytes >= 1000 ? (megabytes / 1000.0).ToString("0.#", C) + " GB"
-            : megabytes.ToString(C) + " MB";
+        => megabytes < 1000 ? megabytes.ToString(C) + " MB"
+            // 999,960 MB would read "1000 GB": from there on it is TB.
+            : megabytes < 999_950 ? (megabytes / 1000.0).ToString("0.#", C) + " GB"
+            : (megabytes / 1_000_000.0).ToString("0.#", C) + " TB";
 
     /// <summary>
     /// What the store takes now, against its limit: "123 MB of 500 MB", "1.2 GB of 2 GB", "0 MB of 500 MB" while empty,
@@ -99,24 +237,36 @@ public static class ThumbOption
     public static string SizeNowText(long bytes, int capMegabytes)
         => bytes < 0 ? "" : $"{StoreSizeText(bytes)} of {CapText(capMegabytes)}";
 
-    /// <summary>A store's size, counted as its limit is and rounded down: "0 MB", "less than 1 MB", "123 MB", "1.2 GB".</summary>
+    /// <summary>
+    /// A store's size, counted as its limit is and rounded down: "0 MB", "less than 1 MB", "123 MB", "1.2 GB", "120 GB",
+    /// "1.5 TB" (a tenth below 100 of a unit, whole units from 100 up).
+    /// </summary>
     public static string StoreSizeText(long bytes)
         => bytes <= 0 ? "0 MB"
             : bytes < MB ? "less than 1 MB"
             : bytes < 1000 * MB ? (bytes / MB).ToString("#,0", C) + " MB"
-            : (Math.Floor(bytes / (100.0 * MB)) / 10).ToString("0.0", C) + " GB";
+            : bytes < 100_000 * MB ? (Math.Floor(bytes / (100.0 * MB)) / 10).ToString("0.0", C) + " GB"
+            : bytes < 1_000_000 * MB ? (bytes / (1000 * MB)).ToString("#,0", C) + " GB"
+            : bytes < 100_000_000 * MB ? (Math.Floor(bytes / (100_000.0 * MB)) / 10).ToString("0.0", C) + " TB"
+            : (bytes / (1_000_000 * MB)).ToString("#,0", C) + " TB";
 
     /// <summary>
     /// The card's line, before the option is turned on: what it gains, what it could take on this PC, what the limit
     /// does. While indexing isn't complete (or nothing is counted yet) the cost can't be known, so only the gain is said.
     /// </summary>
-    public static string EstimateText(ThumbCensus? census, bool indexingComplete, int capMegabytes, int sizeClass)
+    public static string EstimateText(ThumbCensus? census, bool indexingComplete, int capMegabytes, int sizeClass, ThumbKeep? keep = null)
     {
         const string gain = "Thumbnails you have seen before appear at once, also after a restart, because small copies are kept on disk. ";
         if (!indexingComplete || census is not { } c) return gain + "The space this needs is worked out when indexing has finished.";
         string cap = CapText(capMegabytes);
-        if (c.Files == 0) return gain + $"No pictures, videos or documents were found on this PC, so this takes almost no space; Rock Preview keeps at most {cap}.";
-        string files = c.Files == 1 ? "the 1 picture, video or document on this PC it" : $"the {CountText(c.Files)} pictures, videos and documents on this PC they";
+        // With some types switched off, the count is of the types chosen, not of every picture, video and document.
+        bool chosen = keep is not null && !keep.Equals(ThumbKeep.All);
+        if (c.Files == 0)
+            return gain + (chosen ? "No files of the types you chose were found on this PC" : "No pictures, videos or documents were found on this PC")
+                        + $", so this takes almost no space; Rock Preview keeps at most {cap}.";
+        string files = chosen
+            ? c.Files == 1 ? "the 1 file of the types you chose on this PC it" : $"the {CountText(c.Files)} files of the types you chose on this PC they"
+            : c.Files == 1 ? "the 1 picture, video or document on this PC it" : $"the {CountText(c.Files)} pictures, videos and documents on this PC they";
         return gain + $"For {files} could take {About(c.BytesAt(sizeClass))}; Rock Preview keeps at most {cap} and drops the oldest when that is full.";
     }
 

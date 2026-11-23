@@ -58,20 +58,40 @@ internal sealed class NoPowerPolicy : IPowerPolicy
     public PowerState Now(string contentFolder) => PowerState.Unlimited;
 }
 
+/// <summary>
+/// The policy the defaults use (the thumbnail store and service options, the real text index): the PC's own. The test
+/// assembly sets <see cref="NoPowerPolicy"/> once, so no test depends on how full its drive is; tests of a pause
+/// inject their own.
+/// </summary>
+internal static class DefaultPowerPolicy
+{
+    /// <summary>The policy for options that don't name one.</summary>
+    public static IPowerPolicy Current { get; set; } = SystemPowerPolicy.Instance;
+}
+
 /// <summary>What the power state allows (§10 table): reading, merges, and how fast.</summary>
 internal static class PowerRules
 {
     /// <summary>Input within this long counts as the user being active: reading runs at a 50% duty cycle.</summary>
     public static readonly TimeSpan ActiveWindow = TimeSpan.FromMinutes(2);
-    /// <summary>Below this much free space on the content folder's drive, reading and merges pause.</summary>
+    /// <summary>Below this much free space on the content folder's drive, reading and merges pause, whatever its size.</summary>
     public const long LowDiskBytes = 2L << 30;
+    /// <summary>
+    /// Under 5% free counts as low only below this much: 5% of a large drive is tens of gigabytes, and a 500 GB drive
+    /// with 24 GB free is not nearly full.
+    /// </summary>
+    public const long LowDiskShareCapBytes = 10L << 30;
 
     /// <summary>The user touched the keyboard or mouse recently (duty cycle on).</summary>
     public static bool UserActive(in PowerState s) => s.Idle < ActiveWindow;
 
-    /// <summary>Less than 2 GB, or under 5% of the drive, is free.</summary>
+    /// <summary>
+    /// Less than 2 GB is free, or less than 10 GB that is also under 5% of the drive: the line is 10 GB on a large
+    /// drive, 5% on a small one, never under 2 GB. An unknown free space is never low; an unknown size leaves the 2 GB.
+    /// </summary>
     public static bool LowDisk(in PowerState s)
-        => s.FreeBytes >= 0 && (s.FreeBytes < LowDiskBytes || (s.TotalBytes > 0 && s.FreeBytes < s.TotalBytes / 20));
+        => s.FreeBytes >= 0 && (s.FreeBytes < LowDiskBytes
+            || (s.TotalBytes > 0 && s.FreeBytes < s.TotalBytes / 20 && s.FreeBytes < LowDiskShareCapBytes));
 
     /// <summary>
     /// Why reading pauses now, in plain words, or null when it may go on: Battery Saver, battery (unless allowed), a

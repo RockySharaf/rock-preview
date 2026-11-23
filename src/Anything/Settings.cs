@@ -49,15 +49,16 @@ internal sealed partial class AppSettings
     // Results
     public Dictionary<string, ColumnSetting> Columns { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-    // Defaults (Settings › Defaults): what every new window and tab starts with; changed there, every tab follows.
+    // Defaults: what every new window and tab starts with. Changed in Settings › Defaults, every tab follows; a matching
+    // switch flipped in a window is stored here too (that tab has it, the other open tabs keep theirs).
     /// <summary>The order results start in: newest first, unless changed.</summary>
     public SortKey Sort { get; set; } = SortKey.DateModified;
     public bool SortDescending { get; set; } = true;
     /// <summary>Folders found come before files.</summary>
     public bool FoldersFirst { get; set; } = true;
     public bool MatchCase { get; set; }
-    /// <summary>On unless changed: "port" finds port, not report.</summary>
-    public bool MatchWholeWord { get; set; } = true;
+    /// <summary>Off unless chosen: "port" finds report too. On, it finds port, not report.</summary>
+    public bool MatchWholeWord { get; set; }
     /// <summary>The folder tree unfolds down to each folder opened (File Explorer's "Expand to open folder"); off unless changed.</summary>
     public bool ExpandTreeToFolder { get; set; }
     /// <summary>A USB drive plugged in: Rock Preview asks to open it, in place of Windows' AutoPlay.</summary>
@@ -76,6 +77,25 @@ internal sealed partial class AppSettings
     public bool MatchDiacritics { get; set; }
     public bool Regex { get; set; }
     public string Filter { get; set; } = "";
+
+    /// <summary>The matching switches as saved, Match inside files with them.</summary>
+    public MatchChoices Matching
+    {
+        get => new(MatchCase, MatchWholeWord, MatchPath, MatchDiacritics, Regex, MatchContent);
+        set => (MatchCase, MatchWholeWord, MatchPath, MatchDiacritics, Regex, MatchContent) =
+            (value.Case, value.WholeWord, value.Path, value.Diacritics, value.Regex, value.InsideFiles);
+    }
+
+    /// <summary>
+    /// A matching switch flipped in a window: it is the saved choice from now on (the next tab, window and start begin
+    /// with it), saved at once. Open tabs aren't told; the one flipped has it already.
+    /// </summary>
+    public void RememberMatch(MatchSwitch which, bool on)
+    {
+        if (Matching[which] == on) return;
+        Matching = Matching.With(which, on);
+        Save();
+    }
 
     // UI
     public bool FiltersVisible { get; set; }
@@ -125,6 +145,8 @@ internal sealed partial class AppSettings
     public int ThumbnailsHintCount { get; set; }
     /// <summary>How often the search box's folder button was clicked to search everything: from 3, it no longer lights up.</summary>
     public int ScopeChipUses { get; set; }
+    /// <summary>The starts of the program on which the pointer at the search box's scope showed (0 to 2): it shows on two.</summary>
+    public int ScopePointerStarts { get; set; }
     /// <summary>Thumbnails has been used, so its button no longer pulses.</summary>
     public bool ThumbnailsHintDone { get; set; }
     /// <summary>The bar saying that, run as administrator, files can't be dragged in from other programs was shown (once).</summary>
@@ -259,11 +281,10 @@ internal sealed partial class AppSettings
         s.NavPinnedOnly = Bool("nav_pinned_only", true);
         s.NavHiddenRoots = List("nav_hidden_roots", []);
 
-        s.MatchCase = Bool("match_case", false);
-        s.MatchWholeWord = Bool("default_match_whole_word", true);
-        s.MatchPath = Bool("match_path", false);
-        s.MatchDiacritics = Bool("match_diacritics", false);
-        s.Regex = Bool("match_regex", false);
+        // Every save up to 1.7.30 wrote whole word on (its old default), chosen or not: it starts off once (MatchDefaults).
+        var matching = MatchDefaults.Load(k => v.TryGetValue(k, out var x) ? x : null);
+        (s.MatchCase, s.MatchWholeWord, s.MatchPath, s.MatchDiacritics, s.Regex) =
+            (matching.Case, matching.WholeWord, matching.Path, matching.Diacritics, matching.Regex);
         s.Filter = Str("filter", "");
 
         s.FiltersVisible = Bool("filters_visible", false);
@@ -280,6 +301,7 @@ internal sealed partial class AppSettings
         s.EverydayAdded = List("everyday_added", []);
         s.ThumbnailsHintCount = Math.Max(0, Int("thumbnails_hint_count", 0));
         s.ScopeChipUses = Math.Max(0, Int("scope_chip_uses", 0));
+        s.ScopePointerStarts = Math.Clamp(Int("scope_pointer_starts", 0), 0, ScopePointerRules.Starts);
         // Settings saved before the hint have no key. Results left as thumbnails say thumbnails were used; nothing else
         // does, so everyone else still gets the hint, upgrading or not.
         s.ThumbnailsHintDone = Bool("thumbnails_hint_done", Int("thumbnail_size", 0) > 0);
@@ -394,11 +416,7 @@ internal sealed partial class AppSettings
         W("nav_pinned_height", NavPinnedHeight);
         B("nav_pinned_only", NavPinnedOnly);
         W("nav_hidden_roots", string.Join('|', NavHiddenRoots));
-        B("match_case", MatchCase);
-        B("default_match_whole_word", MatchWholeWord);
-        B("match_path", MatchPath);
-        B("match_diacritics", MatchDiacritics);
-        B("match_regex", Regex);
+        foreach (var (key, value) in MatchDefaults.Save(Matching)) W(key, value);
         W("filter", Filter);
         B("filters_visible", FiltersVisible);
         W("theme", Theme);
@@ -409,6 +427,7 @@ internal sealed partial class AppSettings
         W("everyday_added", string.Join('|', EverydayAdded));
         W("thumbnails_hint_count", ThumbnailsHintCount);
         W("scope_chip_uses", ScopeChipUses);
+        W("scope_pointer_starts", ScopePointerStarts);
         B("thumbnails_hint_done", ThumbnailsHintDone);
         B("elevated_drop_hint_shown", ElevatedDropHintShown);
         B("explorer_nav_pane", ExplorerNavPane);

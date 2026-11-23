@@ -358,6 +358,13 @@ internal sealed partial class MainForm
     void UpdateEmptyText()
     {
         string text = "";
+        string? link = null;
+        // A search that looked only in a folder says so, with a link that searches everything instead (the chip's click).
+        string OnlyInFolderText()
+        {
+            (string sentence, link) = SearchScope.EmptyOffer(ScopeButton());
+            return sentence;
+        }
         // Words inside files can say better why a search found nothing (a choice that is off), or that it may yet find some.
         string? content = _search.TextLength > 0 ? ContentEmptyText() : null;
         if (_zapActive)
@@ -394,15 +401,16 @@ internal sealed partial class MainForm
         }
         _list.EmptyText = text;
         _grid.EmptyText = text;
+        _list.EmptyLink = _grid.EmptyLink = text.Length > 0 ? link : null;
         UpdateScopeHint();
     }
 
-    /// <summary>A search that looked only in a folder says so, and how to look everywhere (the button that lights up).</summary>
-    string OnlyInFolderText()
+    /// <summary>
+    /// The link under an empty list's text was followed: the same search over everything, as a click on the chip does
+    /// there (the Thumbnails view stays). Nothing when the chip would no longer go to everything.
+    /// </summary>
+    void SearchEverythingInstead()
     {
-        var scope = ScopeButton();
-        return scope.Click == SearchScope.Click.ToEverything && !scope.Everything
-            ? $" It looked only in {scope.Text}: click {scope.Text} at the start of the search box to search everything."
-            : "";
+        if (ScopeButton() is { Click: SearchScope.Click.ToEverything, Everything: false }) ToggleSearchScope();
     }
 }

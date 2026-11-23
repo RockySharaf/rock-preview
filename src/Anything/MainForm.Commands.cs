@@ -204,7 +204,7 @@ internal sealed partial class MainForm
         var help = new ToolStripMenuItem("&Help");
         help.DropDownItems.AddRange(
         [
-            Item("&Search Syntax", () => SearchSyntaxForm.ShowSyntax(this), Keys.F1),
+            Item("&Help", () => SearchSyntaxForm.ShowHelp(this, _app.ActiveHotkey), Keys.F1),
             new ToolStripSeparator(),
             Item("&Get Started", _app.ShowGetStarted),
             Item("Check for &Updates...", () => _app.ShowUpdates(this)),
@@ -305,13 +305,27 @@ internal sealed partial class MainForm
             _app.Restart();
     }
 
+    /// <summary>
+    /// A matching switch flipped (menu, Search options, the status bar's menu or its key): this tab takes it, and it is
+    /// also the saved choice the next tab, window and start begin with. The other open tabs keep what they have.
+    /// </summary>
     void Toggle(Action change)
     {
+        var before = TabMatching();
         change();
+        var after = TabMatching();
+        foreach (var which in Enum.GetValues<MatchSwitch>())
+            if (before[which] != after[which]) _app.Settings.RememberMatch(which, after[which]);
         SyncMenus();
         RunSearch(SearchReason.NewQuery);
         UpdateStatus();
     }
+
+    /// <summary>The tab's matching switches now.</summary>
+    MatchChoices TabMatching() => TabMatching(_tab);
+
+    /// <summary>A tab's matching switches now.</summary>
+    MatchChoices TabMatching(FolderTab t) => new(t.MatchCase, t.WholeWord, t.MatchPath, t.Diacritics, t.Regex, ContentTab(t).MatchContent);
 
     void SetFilter(int index)
     {

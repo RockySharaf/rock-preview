@@ -40,7 +40,6 @@ internal sealed partial class MainForm
     bool PlainWordsLookInside(TabContent tc) => ContentPresentation.PlainWordsLookInside(tc.MatchContent, _matchPath, _regex);
 
     readonly ConditionalWeakTable<FolderTab, TabContent> _tabContent = new();
-    TabContent? _lastTabContent;          // the active tab's, last time it was asked: a new tab starts from it
     FolderTab? _contentSeenTab;           // to notice a tab switch (the strip repaints when one happens)
     ToolStripMenuItem? _miMatchContent;
     FlowLayoutPanel? _offerBar;
@@ -100,19 +99,21 @@ internal sealed partial class MainForm
         }
     }
 
-    /// <summary>The tab's state; a tab seen for the first time takes the toggle of the tab used before it (or Settings' default).</summary>
+    /// <summary>The tab's state; a tab without one yet (a new window's first) takes the saved Match inside files.</summary>
     TabContent ContentTab(FolderTab t)
     {
         if (!_tabContent.TryGetValue(t, out var c))
         {
-            c = new TabContent { MatchContent = _lastTabContent?.MatchContent ?? _app.Settings.MatchContent };
+            c = new TabContent { MatchContent = _app.Settings.MatchContent };
             _tabContent.Add(t, c);
         }
-        if (t == _tab) _lastTabContent = c;
         return c;
     }
 
     TabContent ContentTab() => ContentTab(_tab);
+
+    /// <summary>A new tab's Match inside files, set as it opens (<see cref="StartMatching"/>).</summary>
+    void SetMatchContent(FolderTab t, bool on) => _tabContent.AddOrUpdate(t, new TabContent { MatchContent = on });
 
     /// <summary>A tab from another window keeps its Match inside files and what its results said about it there.</summary>
     void TakeContentState(FolderTab t, MainForm from)

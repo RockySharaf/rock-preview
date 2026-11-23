@@ -46,6 +46,58 @@ internal sealed class ThumbnailGrid : Control
         }
     }
 
+    EmptyTextLink? _emptyLink;
+    bool _linkDown; // the left button went down on the link: its release there follows it
+
+    /// <summary>A link on its own line under <see cref="EmptyText"/> ("Search everything instead"); null for none.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public string? EmptyLink
+    {
+        get => _emptyLink?.Text;
+        set
+        {
+            _emptyLink ??= new EmptyTextLink(this, () => EmptyLinkClicked?.Invoke());
+            if (!_emptyLink.SetText(value)) return;
+            if (value is null) Cursor = Cursors.Default; // it may have gone from under the pointer
+            if (_count == 0) Invalidate();
+        }
+    }
+
+    /// <summary>The link under the gray text was clicked, or Enter pressed while it shows.</summary>
+    public event Action? EmptyLinkClicked;
+
+    bool EmptyLinkShowing => _emptyLink is { Text: not null } && _emptyText.Length > 0 && _count == 0;
+
+    Rectangle EmptyTextArea()
+    {
+        int pad = LogicalToDeviceUnits(16);
+        return new Rectangle(pad, LogicalToDeviceUnits(24), Math.Max(0, ClientSize.Width - 2 * pad), Math.Max(0, ClientSize.Height / 2));
+    }
+
+    /// <summary>The link's box, or empty while it doesn't show.</summary>
+    Rectangle EmptyLinkBounds() => EmptyLinkShowing ? _emptyLink!.Layout(EmptyTextArea(), _emptyText, Font) : Rectangle.Empty;
+
+    /// <summary>The pointer over the link or not: the hand and the underline follow.</summary>
+    void TrackLinkHover(Point p)
+    {
+        var link = EmptyLinkBounds();
+        bool hot = link.Contains(p);
+        if (_emptyLink is null || !_emptyLink.SetHot(hot)) return;
+        Cursor = hot ? Cursors.Hand : Cursors.Default;
+        Invalidate(Rectangle.Inflate(link, 2, 2));
+    }
+
+    protected override AccessibleObject CreateAccessibilityInstance() => new GridAccessible(this);
+
+    /// <summary>The grid's object, with the link as its child while the grid is empty and shows one.</summary>
+    sealed class GridAccessible(ThumbnailGrid owner) : ControlAccessibleObject(owner)
+    {
+        public override int GetChildCount() => owner.EmptyLinkShowing ? 1 : base.GetChildCount();
+
+        public override AccessibleObject? GetChild(int index) =>
+            owner.EmptyLinkShowing ? index == 0 ? owner._emptyLink!.Accessible(this, owner.EmptyLinkBounds, owner._emptyText) : null : base.GetChild(index);
+    }
+
     Point _downAt;
     int _downIndex = -1;
     Keys _downKeys;         // Ctrl and Shift as the button went down
@@ -347,10 +399,10 @@ internal sealed class ThumbnailGrid : Control
         if (_count == 0)
         {
             if (_emptyText.Length == 0) return;
-            int pad = LogicalToDeviceUnits(16);
-            var r = new Rectangle(pad, LogicalToDeviceUnits(24), Math.Max(0, ClientSize.Width - 2 * pad), Math.Max(0, ClientSize.Height / 2));
+            var r = EmptyTextArea();
             TextRenderer.DrawText(g, _emptyText, Font, r, ExplorerTheme.SecondaryText,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+            if (EmptyLinkShowing) _emptyLink!.Paint(g, _emptyLink.Layout(r, _emptyText, Font), Font);
             return;
         }
 
@@ -813,12 +865,13 @@ internal sealed class ThumbnailGrid : Control
         // another size, idle work given back), the option turned on, Settings' Clear.
         if (_idle.Done) { if (!_fill.Running) _idleTimer?.Stop(); return; }
         var requests = new List<ThumbRequest>(chunk.Count);
+        var keep = ThumbHost.Keep;
         foreach (int i in chunk)
         {
             string? path = PathAt(i);
             // Only kinds kept on disk (those the estimate counts): the idle step has nothing to make of the rest (a page of
-            // a file's own text, a music file's cover, a folder).
-            if (path is null || !ThumbKinds.KeepOnDisk(path)) continue;
+            // a file's own text, a music file's cover, a folder), nor of the kinds the user chose not to keep.
+            if (path is null || !ThumbKinds.KeepOnDisk(path) || !keep.Keeps(path)) continue;
             var stamp = StampAt(i);
             var key = ThumbKey.Of(path, stamp, _thumbSize);
             if (_memory.Peek((key, _thumbSize), out var held) && held.Quality != ThumbQuality.Low) continue;
@@ -869,6 +922,8 @@ internal sealed class ThumbnailGrid : Control
         _lastActivity = Environment.TickCount64;
         bool hadFocus = Focused;
         Focus();
+        _linkDown = e.Button == MouseButtons.Left && EmptyLinkBounds().Contains(e.Location);
+        if (_linkDown) return;
         StopRenameClick();
         SetHot(-1);
         int i = HitTest(e.Location);
@@ -899,6 +954,7 @@ internal sealed class ThumbnailGrid : Control
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (_emptyLink is not null) TrackLinkHover(e.Location);
         SetHot(e.Button == MouseButtons.None ? HitTest(e.Location) : -1); // no highlight while a button is held
         if (e.Button != MouseButtons.Left || _downIndex < 0) return;
         var d = SystemInformation.DragSize;
@@ -917,6 +973,7 @@ internal sealed class ThumbnailGrid : Control
         // The window closing for good: WinForms calls this while it destroys the grid's handle, if the pointer was on
         // it. Nothing is left to repaint (and the window's fonts may be gone), so the highlight is only forgotten.
         if (TopLevelControl is { } top && (top.Disposing || top.IsDisposed)) { _hot = -1; return; }
+        if (_emptyLink is not null) TrackLinkHover(new Point(-1, -1));
         SetHot(-1);
     }
 
@@ -967,6 +1024,12 @@ internal sealed class ThumbnailGrid : Control
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (_linkDown && e.Button == MouseButtons.Left)
+        {
+            _linkDown = false;
+            if (EmptyLinkBounds().Contains(e.Location)) EmptyLinkClicked?.Invoke();
+            return;
+        }
         if (e.Button == MouseButtons.Right && HitTest(e.Location) >= 0)
         {
             SetHot(-1); // no highlight while the menu is open
@@ -1045,6 +1108,12 @@ internal sealed class ThumbnailGrid : Control
         base.OnKeyDown(e);
         _lastActivity = Environment.TickCount64;
         StopRenameClick();
+        if (e.KeyData == Keys.Enter && EmptyLinkShowing)
+        {
+            e.Handled = e.SuppressKeyPress = true;
+            EmptyLinkClicked?.Invoke();
+            return;
+        }
         int cols = Columns, cur = Math.Max(0, FocusedIndex());
         int target = e.KeyCode switch
         {

@@ -40,14 +40,14 @@ public sealed record HelpEntry(string[] Code, string Meaning, string[] Examples,
 public sealed record HelpSection(string Title, string? Subtitle, HelpEntry[] Entries, string? Note);
 
 /// <summary>
-/// The Search Syntax help (F1), as data: the window draws it, Copy and screen readers use <see cref="PlainText"/>, so
-/// what is copied is exactly what is shown. Every line of the plain-text help of 1.7.28 is here (the tests pin its
-/// names); a few cryptic lines are said more plainly, and the four names the README already shows (da:, rc:, dr:,
-/// runcount:) were added.
+/// The help's Search syntax part (F1), as data: the window draws it, Copy and screen readers use <see cref="PlainText"/>,
+/// so what is copied is exactly what is shown. Every line of the plain-text help of 1.7.28 is here (the tests pin its
+/// names; its keys moved to the help's Keys part, see <see cref="HelpContent"/>); a few cryptic lines are said more
+/// plainly, and the four names the README already shows (da:, rc:, dr:, runcount:) were added.
 /// </summary>
 public static class SearchHelp
 {
-    public const string Title = "Search Syntax";
+    public const string Title = "Search syntax";
 
     /// <summary>Under the title: how to use the help itself.</summary>
     public const string Intro =
@@ -176,24 +176,10 @@ public static class SearchHelp
             Example("dpi:<300 cmyk:", "CMYK pictures under 300 dpi."),
             Example("tags:beach datetaken:2024", "Pictures tagged \"beach\", taken in 2024."),
         ], null),
-
-        new("Keys", null,
-        [
-            Sign("Alt+Down", "In the search box: earlier searches (Delete forgets the highlighted one)."),
-            Sign("F2", "Rename; one search result is renamed in place (Enter keeps the name, Esc leaves it, Tab goes on to " +
-                 "the next item, F2 again selects all, then the extension)."),
-            Sign(["Delete", "Shift+Delete"], "To the Recycle Bin / delete for good (Windows asks first if the Recycle Bin " +
-                 "is set to ask)."),
-            Sign("Ctrl+Shift+C", "Copy as path: each selected item's full path in quotes, one per line."),
-            Sign(["Ctrl+Z", "Ctrl+Y"], "Undo / redo the last file operation (in the search box, Ctrl+Z undoes typing)."),
-            Sign(["F4", "Alt+D", "Ctrl+L"], "Type an address; F4 or Alt+Down while typing lists the addresses typed before."),
-            Sign(["Alt+Left", "Alt+Right", "Alt+Up"], "Back / Forward / Up."),
-            Sign("Ctrl+N", "A new window on the current folder."),
-            Sign("Ctrl+Shift+N", "New folder."),
-            Sign("Ctrl+Shift+1 .. 8", "Folder layout: extra large, large, medium, small icons, list, details, tiles, " +
-                 "content; in search results 1, 2, 3 are thumbnail sizes and 6 is details."),
-        ], null),
     ];
+
+    /// <summary>The part of the help these sections make, under its heading and intro.</summary>
+    public static HelpPart Part { get; } = new(Title, Intro, Sections, HelpLabel.Chips);
 
     /// <summary>
     /// The search box's text and caret after a double-click on part of the help: a whole search takes the place of the
@@ -216,18 +202,6 @@ public static class SearchHelp
     public static string PlainHeading(HelpSection s) =>
         s.Subtitle is null ? s.Title.ToUpperInvariant() : $"{s.Title.ToUpperInvariant()} ({s.Subtitle})";
 
-    /// <summary>The whole help as plain text (Windows line ends), for Copy and for screen readers.</summary>
-    public static string PlainText()
-    {
-        var sb = new StringBuilder();
-        sb.Append(Title).Append("\r\n\r\n");
-        foreach (var s in Sections)
-        {
-            sb.Append(PlainHeading(s)).Append("\r\n");
-            foreach (var e in s.Entries) sb.Append("  ").Append(e.PlainText()).Append("\r\n");
-            if (s.Note is not null) sb.Append("  ").Append(s.Note).Append("\r\n");
-            sb.Append("\r\n");
-        }
-        return sb.ToString().TrimEnd() + "\r\n";
-    }
+    /// <summary>This part as plain text (Windows line ends); <see cref="HelpContent.PlainText"/> gives the whole help.</summary>
+    public static string PlainText() => Part.PlainText();
 }

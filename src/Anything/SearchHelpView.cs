@@ -4,13 +4,14 @@ using Anything.Core.Search;
 namespace Anything;
 
 /// <summary>
-/// The Search Syntax help drawn in the Settings window's look: the window's background, a rounded card per section
-/// under its heading, in each card what to type as code chips in a column at the left and the meaning at the right in
-/// the program's font, wrapping, with examples as chips under it. Laid out by <see cref="SearchHelpLayout"/> (tested
-/// in Core) at the control's width and scaling; every font is made in pixels from <see cref="Control.DeviceDpi"/> and
-/// made again when the window moves to a screen with another scaling, so it is right at any scaling. It scrolls with
-/// the wheel, the scroll bar and the keys; Ctrl+C copies the whole help, a right-click copies one entry, and a
-/// double-click on a name or an example tries it in the search box (<see cref="TryText"/>).
+/// The help (F1) drawn in the Settings window's look: the window's background, per part a big heading, then a rounded
+/// card per section under its heading, in each card what a row names at the left (code chips for keys and what to type,
+/// a bold name for how to use the program) and the meaning at the right in the program's font, wrapping, with examples
+/// as chips under it. Laid out by <see cref="SearchHelpLayout"/> (tested in Core) at the control's width and scaling;
+/// every font is made in pixels from <see cref="Control.DeviceDpi"/> and made again when the window moves to a screen
+/// with another scaling, so it is right at any scaling. It scrolls with the wheel, the scroll bar and the keys, and
+/// <see cref="ShowPart"/> scrolls a part to the top; Ctrl+C copies the whole help, a right-click copies one entry, and a
+/// double-click on a name or an example of the search syntax tries it in the search box (<see cref="TryText"/>).
 /// </summary>
 internal sealed class SearchHelpView : ScrollableControl
 {
@@ -39,15 +40,37 @@ internal sealed class SearchHelpView : ScrollableControl
     Font[] _fonts;
     int _fontDpi;
     SearchHelpLayout _layout;
+    IReadOnlyList<HelpPart> _parts = HelpContent.Build(null);
     HelpBox? _hover;
     readonly ToolTip _tip = new() { ShowAlways = true };
     string _tipText = "";
     int _wheelRest; // part of a wheel turn not scrolled yet (precision touchpads send small steps)
     List<(string Name, AccessibleRole Role, HelpRect Bounds)> _items = [];
+    int _currentPart;
+    int? _pendingPart; // asked for before the help was laid out at its real width
 
     /// <summary>A double-click on a name or an example: what to put in the search box and how. Null: nothing is tried.</summary>
     [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public Action<string, HelpInsert>? TryText { get; set; }
+
+    /// <summary>What the help shows: its parts in order (<see cref="HelpContent.Build"/>).</summary>
+    [System.ComponentModel.Browsable(false), System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public IReadOnlyList<HelpPart> Content
+    {
+        get => _parts;
+        set
+        {
+            if (ReferenceEquals(value, _parts)) return;
+            _parts = value;
+            _layoutFonts = null; // laid out again even at the same width
+            Relayout();
+        }
+    }
+
+    /// <summary>The part whose heading is at the top or above it; <see cref="CurrentPartChanged"/> says when it changes.</summary>
+    public int CurrentPart => _currentPart;
+
+    public event EventHandler? CurrentPartChanged;
 
     public SearchHelpView()
     {
@@ -56,11 +79,11 @@ internal sealed class SearchHelpView : ScrollableControl
         TabStop = true;
         AutoScroll = true;
         BackColor = Back;
-        AccessibleName = "Search syntax";
+        AccessibleName = "Help";
         AccessibleRole = AccessibleRole.Document;
         _fonts = MakeFonts(DeviceDpi);
         _fontDpi = DeviceDpi;
-        _layout = Arrange(_fonts, DeviceDpi, Math.Max(1, ClientSize.Width));
+        _layout = Arrange(_parts, _fonts, DeviceDpi, Math.Max(1, ClientSize.Width));
     }
 
     // ---- fonts and layout -----------------------------------------------------------------------
@@ -69,12 +92,14 @@ internal sealed class SearchHelpView : ScrollableControl
     static Font[] MakeFonts(int dpi)
     {
         float S(int v) => (float)Math.Round(v * dpi / 96.0);
-        var fonts = new Font[5];
+        var fonts = new Font[6];
         fonts[(int)HelpFont.Title] = new Font(ExplorerTheme.UiFamily, S(22), FontStyle.Bold, GraphicsUnit.Pixel);
         fonts[(int)HelpFont.Heading] = new Font(ExplorerTheme.UiFamily, S(15), FontStyle.Bold, GraphicsUnit.Pixel);
         fonts[(int)HelpFont.Small] = new Font(ExplorerTheme.UiFamily, S(12), FontStyle.Regular, GraphicsUnit.Pixel);
         fonts[(int)HelpFont.Body] = new Font(ExplorerTheme.UiFamily, S(14), FontStyle.Regular, GraphicsUnit.Pixel);
         fonts[(int)HelpFont.Code] = new Font(MonoFamily, S(13), FontStyle.Regular, GraphicsUnit.Pixel);
+        // A row's name in How to use: the text's face in bold, so it reads as a name and not as something to type.
+        fonts[(int)HelpFont.Name] = new Font(ExplorerTheme.UiFamily, S(14), FontStyle.Bold, GraphicsUnit.Pixel);
         return fonts;
     }
 
@@ -88,17 +113,17 @@ internal sealed class SearchHelpView : ScrollableControl
         return (size.Width, size.Height);
     };
 
-    static SearchHelpLayout Arrange(Font[] fonts, int dpi, int width) =>
-        SearchHelpLayout.Arrange(SearchHelp.Sections, SearchHelp.Title, SearchHelp.Intro, width, HelpMetrics.Scaled(dpi), Measurer(fonts));
+    static SearchHelpLayout Arrange(IReadOnlyList<HelpPart> parts, Font[] fonts, int dpi, int width) =>
+        SearchHelpLayout.Arrange(parts, width, HelpMetrics.Scaled(dpi), Measurer(fonts));
 
     /// <summary>
     /// The help's whole height at a width and scaling, for the window to size itself to before it exists (when the
     /// view's own fonts are still the system scaling's).
     /// </summary>
-    internal static int ContentHeightAt(int dpi, int width)
+    internal static int ContentHeightAt(IReadOnlyList<HelpPart> parts, int dpi, int width)
     {
         var fonts = MakeFonts(dpi);
-        try { return Arrange(fonts, dpi, Math.Max(1, width)).Height; }
+        try { return Arrange(parts, fonts, dpi, Math.Max(1, width)).Height; }
         finally { foreach (var f in fonts) f.Dispose(); }
     }
 
@@ -113,6 +138,35 @@ internal sealed class SearchHelpView : ScrollableControl
         AutoScrollPosition = new Point(0, y);
         Invalidate();
         UpdateHover(PointToClient(MousePosition));
+        UpdateCurrentPart();
+    }
+
+    /// <summary>Scrolls part <paramref name="part"/> (<see cref="HelpContent.HowTo"/>...) to the top; the first part is the very top.</summary>
+    public void ShowPart(int part)
+    {
+        if (!IsHandleCreated)
+        {
+            _pendingPart = part; // scrolled once the help is laid out in its window (Relayout)
+            return;
+        }
+        _pendingPart = null;
+        Relayout(); // at the present width first, so the heading is where it will be drawn
+        if (part < 0 || part >= _layout.PartTops.Count) return;
+        ScrollTo(part == 0 ? 0 : _layout.PartTops[part]);
+        UpdateCurrentPart();
+    }
+
+    // A heading scrolled to sits at the very top; a few pixels under it still count, so rounding never shows the part before.
+    int PartSlack => Math.Max(1, LineStep / 2);
+
+    void UpdateCurrentPart()
+    {
+        int part = _layout.PartAt(ScrollY, PartSlack);
+        // Scrolled to the very end, a part whose heading shows but can't come up to the top is the one being read.
+        if (MaxScroll > 0 && ScrollY >= MaxScroll) part = Math.Max(part, _layout.PartAt(ScrollY + ClientSize.Height / 2, 0));
+        if (part == _currentPart) return;
+        _currentPart = part;
+        CurrentPartChanged?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>Lays the help out again for the present width and scaling, keeping the entry at the top in view.</summary>
@@ -125,22 +179,31 @@ internal sealed class SearchHelpView : ScrollableControl
             _fontDpi = DeviceDpi;
         }
         int width = Math.Max(1, ClientSize.Width);
-        if (_layout.Width == width && _layout.Boxes.Count > 0 && ReferenceEquals(_layoutFonts, _fonts)) return;
-        // The reader's place: the row at the top and how far into it, not the pixel offset (wrapping changes heights).
+        if (_layout.Width == width && _layout.Boxes.Count > 0 && ReferenceEquals(_layoutFonts, _fonts)) { ApplyPendingPart(); return; }
+        // The reader's place: a part's heading jumped to stays at the top; else the row at the top and how far into
+        // it, not the pixel offset (wrapping changes heights).
         int scroll = ScrollY;
+        int atPart = scroll > 0 ? _layout.PartTops.ToList().IndexOf(scroll) : -1;
         var anchor = _layout.Rows.FirstOrDefault(r => r.Bounds.Bottom > scroll);
         double into = anchor is null || anchor.Bounds.Height == 0 ? 0 : (scroll - anchor.Bounds.Y) / (double)anchor.Bounds.Height;
-        _layout = Arrange(_fonts, _fontDpi, width);
+        bool sameContent = _layout.Sections.Count == _parts.Sum(p => p.Sections.Count);
+        _layout = Arrange(_parts, _fonts, _fontDpi, width);
         _layoutFonts = _fonts;
         _hover = null;
         BuildItems();
         AutoScrollMinSize = new Size(0, _layout.Height);
-        if (anchor is not null && scroll > 0)
-        {
-            var now = _layout.Rows.First(r => r.Section == anchor.Section && r.Entry == anchor.Entry);
+        if (atPart >= 0 && atPart < _layout.PartTops.Count) ScrollTo(_layout.PartTops[atPart]);
+        else if (anchor is not null && scroll > 0 && sameContent
+                 && _layout.Rows.FirstOrDefault(r => r.Section == anchor.Section && r.Entry == anchor.Entry) is { } now)
             ScrollTo(now.Bounds.Y + (int)Math.Round(Math.Clamp(into, 0, 1) * now.Bounds.Height));
-        }
         Invalidate();
+        UpdateCurrentPart();
+        ApplyPendingPart();
+    }
+
+    void ApplyPendingPart()
+    {
+        if (_pendingPart is { } part && IsHandleCreated) ShowPart(part);
     }
 
     Font[]? _layoutFonts;
@@ -167,7 +230,7 @@ internal sealed class SearchHelpView : ScrollableControl
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        var hover = TryText is not null && _hover is { } h && InsertOf(h) != HelpInsert.None ? h : null;
+        var hover = TryText is not null && _hover is { } h && InsertOf(_layout, h) != HelpInsert.None ? h : null;
         PaintHelp(e.Graphics, _layout, _fonts, _fontDpi, ScrollY, e.ClipRectangle, hover);
     }
 
@@ -196,6 +259,9 @@ internal sealed class SearchHelpView : ScrollableControl
                     break;
                 case HelpBoxKind.Meaning:
                     TextRenderer.DrawText(g, b.Text, fonts[(int)HelpFont.Body], r, ExplorerTheme.Text, Wrap);
+                    break;
+                case HelpBoxKind.Name:
+                    TextRenderer.DrawText(g, b.Text, fonts[(int)HelpFont.Name], r, ExplorerTheme.Text, Wrap);
                     break;
                 case HelpBoxKind.Card:
                     DrawCard(g, r, S(6));
@@ -251,14 +317,15 @@ internal sealed class SearchHelpView : ScrollableControl
     /// <paramref name="width"/> x <paramref name="height"/> pixels with a scroll bar, scrolled to
     /// <paramref name="scroll"/> (0 the top, 1 the very end). For checking the look without a window on the screen.
     /// </summary>
-    internal static Bitmap RenderPicture(int dpi, int width, int height, double scroll)
+    internal static Bitmap RenderPicture(int dpi, int width, int height, double scroll, IReadOnlyList<HelpPart>? parts = null)
     {
+        parts ??= HelpContent.Build(null);
         var fonts = MakeFonts(dpi);
         try
         {
             int bar = SystemInformation.GetVerticalScrollBarWidthForDpi(dpi);
-            var layout = Arrange(fonts, dpi, width);
-            if (layout.Height > height) layout = Arrange(fonts, dpi, width - bar);
+            var layout = Arrange(parts, fonts, dpi, width);
+            if (layout.Height > height) layout = Arrange(parts, fonts, dpi, width - bar);
             else bar = 0;
             int y = (int)Math.Round(Math.Clamp(scroll, 0, 1) * Math.Max(0, layout.Height - height));
             // Painted in a double buffer made for the screen, as the window paints: text drawn straight into a bitmap's
@@ -290,6 +357,9 @@ internal sealed class SearchHelpView : ScrollableControl
         (keyData & Keys.KeyCode) is Keys.Up or Keys.Down or Keys.PageUp or Keys.PageDown or Keys.Home or Keys.End or Keys.Space
         || base.IsInputKey(keyData);
 
+    /// <summary>The whole help as plain text, every part: what Copy all and Ctrl+C put on the clipboard.</summary>
+    internal string AllText() => HelpContent.PlainText(_parts);
+
     protected override void OnKeyDown(KeyEventArgs e)
     {
         int page = Math.Max(LineStep, ClientSize.Height - LineStep);
@@ -304,7 +374,7 @@ internal sealed class SearchHelpView : ScrollableControl
             case Keys.End: ScrollTo(MaxScroll); break;
             case Keys.C when e.Control:
             case Keys.Insert when e.Control:
-                CopyText(SearchHelp.PlainText());
+                CopyText(AllText());
                 break;
             case Keys.Apps:
             case Keys.F10 when e.Shift:
@@ -331,15 +401,16 @@ internal sealed class SearchHelpView : ScrollableControl
     {
         base.OnScroll(se);
         Invalidate();
+        UpdateCurrentPart();
     }
 
     // ---- the mouse: hover, double-click, right-click -------------------------------------------------
 
-    static HelpInsert InsertOf(HelpBox chip)
+    static HelpInsert InsertOf(SearchHelpLayout layout, HelpBox chip)
     {
         if (chip.Kind == HelpBoxKind.ExampleChip) return HelpInsert.Replace;
         if (chip.Section < 0 || chip.Entry < 0) return HelpInsert.None;
-        return SearchHelp.Sections[chip.Section].Entries[chip.Entry].Insert;
+        return layout.Sections[chip.Section].Entries[chip.Entry].Insert;
     }
 
     void UpdateHover(Point client)
@@ -349,7 +420,7 @@ internal sealed class SearchHelpView : ScrollableControl
         Invalidate(OnScreen(_hover));
         _hover = chip;
         Invalidate(OnScreen(_hover));
-        string tip = TryText is null || chip is null ? "" : InsertOf(chip) switch
+        string tip = TryText is null || chip is null ? "" : InsertOf(_layout, chip) switch
         {
             HelpInsert.Replace => "Double-click to search for this",
             HelpInsert.AtCaret => "Double-click to put this in the search box",
@@ -383,7 +454,7 @@ internal sealed class SearchHelpView : ScrollableControl
     {
         base.OnMouseDoubleClick(e);
         if (e.Button != MouseButtons.Left || TryText is null) return;
-        if (_layout.ChipAt(e.X, e.Y + ScrollY) is { } chip && InsertOf(chip) is var how && how != HelpInsert.None)
+        if (_layout.ChipAt(e.X, e.Y + ScrollY) is { } chip && InsertOf(_layout, chip) is var how && how != HelpInsert.None)
             TryText(chip.Text, how);
     }
 
@@ -410,10 +481,11 @@ internal sealed class SearchHelpView : ScrollableControl
         ExplorerTheme.StyleDropDown(menu);
         if (row is not null)
         {
-            var entry = SearchHelp.Sections[row.Section].Entries[row.Entry];
+            var entry = _layout.Sections[row.Section].Entries[row.Entry];
             menu.Items.Add(new ToolStripMenuItem("&Copy", null, (_, _) => CopyText(entry.PlainText())));
         }
-        if (chip is not null && TryText is { } tryText && InsertOf(chip) is var how && how != HelpInsert.None)
+        // Only the search syntax has names and examples to try; keys and how-to rows have nothing for the search box.
+        if (chip is not null && TryText is { } tryText && InsertOf(_layout, chip) is var how && how != HelpInsert.None)
         {
             string text = chip.Text;
             string shown = text.Replace("&", "&&"); // an & in the text is not a menu shortcut
@@ -421,14 +493,14 @@ internal sealed class SearchHelpView : ScrollableControl
             menu.Items.Add(new ToolStripMenuItem(label, null, (_, _) => tryText(text, how)));
         }
         if (menu.Items.Count > 0) menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(new ToolStripMenuItem("Copy &all", null, (_, _) => CopyText(SearchHelp.PlainText())) { ShortcutKeyDisplayString = "Ctrl+C" });
+        menu.Items.Add(new ToolStripMenuItem("Copy &all", null, (_, _) => CopyText(AllText())) { ShortcutKeyDisplayString = "Ctrl+C" });
         menu.Closed += (_, _) => menu.BeginInvoke(menu.Dispose);
         menu.Show(this, client);
     }
 
     // ---- screen readers ----------------------------------------------------------------------------
 
-    /// <summary>The help as items a screen reader walks through: the title, each heading, each entry, each note.</summary>
+    /// <summary>The help as items a screen reader walks through: each part's title and intro, each heading, entry and note.</summary>
     void BuildItems()
     {
         var items = new List<(string, AccessibleRole, HelpRect)>();
@@ -440,11 +512,11 @@ internal sealed class SearchHelpView : ScrollableControl
                     items.Add((b.Text, AccessibleRole.StaticText, b.Bounds));
                     break;
                 case HelpBoxKind.Heading:
-                    items.Add((SearchHelp.PlainHeading(SearchHelp.Sections[b.Section]), AccessibleRole.StaticText, b.Bounds));
+                    items.Add((SearchHelp.PlainHeading(_layout.Sections[b.Section]), AccessibleRole.StaticText, b.Bounds));
                     break;
                 case HelpBoxKind.Card:
                     foreach (var r in _layout.Rows.Where(r => r.Section == b.Section))
-                        items.Add((SearchHelp.Sections[r.Section].Entries[r.Entry].PlainText(), AccessibleRole.ListItem, r.Bounds));
+                        items.Add((_layout.Sections[r.Section].Entries[r.Entry].PlainText(), AccessibleRole.ListItem, r.Bounds));
                     break;
             }
         }
@@ -457,8 +529,8 @@ internal sealed class SearchHelpView : ScrollableControl
     {
         public override AccessibleRole Role => AccessibleRole.Document;
         public override string? Name => view.AccessibleName;
-        public override string? Value { get => SearchHelp.PlainText(); set { } }
-        public override string? Description => SearchHelp.Intro;
+        public override string? Value { get => view.AllText(); set { } }
+        public override string? Description => string.Join(", ", view._parts.Select(p => p.Title));
         public override AccessibleStates State => base.State | AccessibleStates.ReadOnly;
         public override int GetChildCount() => view._items.Count;
         public override AccessibleObject? GetChild(int index) =>

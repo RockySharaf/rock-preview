@@ -31,6 +31,11 @@ namespace Anything.Core.Thumbs;
 //       wraps each piece of work in Enter(slot, key) ... Leave(slot, epoch); a slot left set by a crash becomes a
 //       Suspect record at the next Open, or Crashed on a second strike.
 //   store.CapBytes = ...; store.SizeBytes   the cap (oldest pack deleted when over it) and what the packs take now.
+//       The store also holds at most MaxRecords records (the memory its map takes); past that the oldest packs go too.
+//   store.IsFull / store.BecameFull        packs are being dropped because the limit (or the record ceiling) is reached;
+//       false again when the limit is raised, the store is cleared or reopened with room. BecameFull comes on the writer
+//       thread: subscribe, then read IsFull (it may have become full while opening).
+//   store.DiskLow                          the last picture was not kept because the drive is nearly full.
 //   store.Clear()                          deletes every picture; the store stays open (the setting's Clear button).
 //   store.Dispose()                        when the program exits: the writer writes what is queued and saves the index;
 //       Dispose waits for it 2 s at most. Until the writer has let go, opening the same folder again gives InUse.
@@ -42,7 +47,8 @@ namespace Anything.Core.Thumbs;
 // ThumbStore.MeasureFolder(folder) gives what a store folder takes without opening it (Settings, the "free" question).
 //
 // Files in the folder: pack-00000001.bin ... (append-only, 16 MB at most each), index.bin (saved on close and every
-// minute, written to index.tmp and moved), inflight.bin (the marker). The store holds no file names: keys are hashes.
+// minute while it changes, less often when it is large; written to index.tmp and moved), inflight.bin (the marker). The
+// store holds no file names: keys are hashes.
 
 /// <summary>What a stored record says about a key.</summary>
 public enum StoredKind : byte
@@ -108,10 +114,10 @@ public sealed class ThumbStoreOptions
     /// <summary>A pack grows to this size, then a new one is started (16 MB; tests use less).</summary>
     public int PackBytes { get; init; } = 16 << 20;
     /// <summary>Where the free disk space comes from (tests inject a low disk).</summary>
-    internal IPowerPolicy Power { get; init; } = SystemPowerPolicy.Instance;
+    internal IPowerPolicy Power { get; init; } = DefaultPowerPolicy.Current;
     /// <summary>How often appended records are flushed to the disk.</summary>
     public TimeSpan FlushInterval { get; init; } = TimeSpan.FromSeconds(3);
-    /// <summary>How often a changed index is saved while the program runs.</summary>
+    /// <summary>How often a changed index is saved while the program runs, at most (a large index is saved less often).</summary>
     public TimeSpan IndexSaveInterval { get; init; } = TimeSpan.FromMinutes(1);
     /// <summary>How often the free disk space is checked at most.</summary>
     public TimeSpan DiskCheckInterval { get; init; } = TimeSpan.FromSeconds(30);
@@ -119,7 +125,7 @@ public sealed class ThumbStoreOptions
     public long MaxQueuedBytes { get; init; } = 64L << 20;
     /// <summary>Tests: asked before each append to a pack; true makes that write fail as a full or broken disk would.</summary>
     internal Func<bool>? FailWrite { get; init; }
-    /// <summary>Tests: called by Clear after it has taken the store's lock and before it deletes anything.</summary>
+    /// <summary>Tests: called by Clear once it has emptied and saved the index and let go of the store's locks (it still holds the marker), before it deletes the packs.</summary>
     internal Action? BeforeClearDeletes { get; init; }
     /// <summary>How long Dispose waits for the writer to finish closing (it returns then; the writer finishes alone).</summary>
     internal TimeSpan CloseWait { get; init; } = TimeSpan.FromSeconds(2);
@@ -129,6 +135,12 @@ public sealed class ThumbStoreOptions
     internal Func<string, bool?>? KeepsPermissions { get; init; }
     /// <summary>Tests: whether an account named in a folder's permissions exists (a made-up one stands for another user), instead of asking Windows.</summary>
     internal Func<System.Security.Principal.SecurityIdentifier, bool>? AccountExists { get; init; }
+    /// <summary>The most records the store holds (tests use less); past it the oldest packs go, as past the cap.</summary>
+    internal int MaxRecords { get; init; } = ThumbStore.MaxRecords;
+    /// <summary>The largest index.bin saved or read; 0: what <see cref="MaxRecords"/> needs, with room to spare (tests set less).</summary>
+    internal long MaxIndexBytes { get; init; }
+    /// <summary>Records read at a time when the index is loaded (tests use few, so a load crosses many parts).</summary>
+    internal int IndexPartRecords { get; init; } = 1 << 16;
 }
 
 /// <summary>
@@ -141,8 +153,19 @@ public sealed class ThumbStore : IDisposable
 {
     /// <summary>The folder's name beside the index database.</summary>
     public const string FolderName = "Thumbs";
-    /// <summary>The cap setting's limits and default, in megabytes.</summary>
-    public const int MinCapMegabytes = 64, MaxCapMegabytes = 8000, DefaultCapMegabytes = 500;
+    /// <summary>The smallest limit and the default, in megabytes. The user may type any whole number from the smallest up.</summary>
+    public const int MinCapMegabytes = 100, DefaultCapMegabytes = 500;
+    /// <summary>
+    /// 4,000,000 MB (4 TB): not a choice offered to anyone, only a sanity bound for a number typed in or edited into the
+    /// ini, so it stays a sensible int of megabytes.
+    /// </summary>
+    public const int MaxCapMegabytes = 4_000_000;
+    /// <summary>
+    /// The most records the store holds, whatever the limit: its map takes about 50 bytes of memory per record (measured
+    /// 148 MB at 3 million, opened from its 108 MB index in 0.3 s), so the program's memory stays bounded. Past it the
+    /// oldest packs go, as past the limit. At today's sizes (13 KB a small photo) it is about 39 GB of pictures.
+    /// </summary>
+    public const int MaxRecords = 3_000_000;
     /// <summary>
     /// A megabyte of the cap: 1,000,000 bytes, the unit every size in Settings is shown in, so the limit, what the store
     /// takes, the estimate and the free space read alike (a full 500 MB store reads "500 MB of 500 MB").
@@ -160,7 +183,8 @@ public sealed class ThumbStore : IDisposable
     const ushort IndexVersion = 1;
     const int IndexHeaderBytes = 24, IndexPackBytes = 12, IndexEntryBytes = 36;
     const long MaxScanBytes = 64L << 20;
-    const long MaxIndexFileBytes = 256L << 20;
+    // A large index is saved less often, so writing it costs about this much disk work a minute at most.
+    internal const long IndexBytesPerMinute = 20_000_000;
 
     sealed class Pack(int number, string path, long length)
     {
@@ -175,9 +199,12 @@ public sealed class ThumbStore : IDisposable
         public bool Writable;
         // Made by this store with CreateNew in this session: certainly its own, so it may be deleted when nothing got in.
         public bool Made;
+        // Records in the map that point into this pack (under _gate): how many the record ceiling frees when it goes.
+        public int Live;
     }
 
-    readonly record struct Entry(int Pack, long Offset, int Length, StoredKind Kind, ushort Width, ushort Height, uint Check);
+    // 24 bytes: an offset inside a pack fits an int (a pack ends near PackBytes), which keeps the map small.
+    readonly record struct Entry(int Pack, int Offset, int Length, uint Check, ushort Width, ushort Height, StoredKind Kind);
 
     sealed class Pending(ulong hash, uint check, StoredKind kind, ushort width, ushort height, byte[] payload)
     {
@@ -190,12 +217,87 @@ public sealed class ThumbStore : IDisposable
         public int Bytes => RecordHeaderBytes + Payload.Length;
     }
 
+    /// <summary>
+    /// The records by key, in shards: no single array grows huge, a resize copies one shard, and a pass over every record
+    /// (evicting, saving the index) can let the store's lock go between shards. Shards grow by a quarter once large, not
+    /// double, so the memory stays near what the records need. Not thread-safe: used under _gate.
+    /// </summary>
+    sealed class EntryMap
+    {
+        public const int ShardCount = 64;
+        readonly Dictionary<ulong, Entry>[] _shards = new Dictionary<ulong, Entry>[ShardCount];
+        int _count;
+
+        public EntryMap() { for (int i = 0; i < ShardCount; i++) _shards[i] = []; }
+
+        public int Count => _count;
+
+        // The keys are hashes already: their top bits spread evenly.
+        static int ShardOf(ulong hash) => (int)(hash >> 58);
+
+        public Dictionary<ulong, Entry> Shard(int index) => _shards[index];
+
+        public bool TryGetValue(ulong hash, out Entry entry) => _shards[ShardOf(hash)].TryGetValue(hash, out entry);
+
+        /// <summary>Sets the record for <paramref name="hash"/>; true when it replaced one (<paramref name="old"/>).</summary>
+        public bool Set(ulong hash, Entry entry, out Entry old)
+        {
+            var shard = _shards[ShardOf(hash)];
+            ref var slot = ref System.Runtime.InteropServices.CollectionsMarshal.GetValueRefOrNullRef(shard, hash);
+            if (!System.Runtime.CompilerServices.Unsafe.IsNullRef(ref slot))
+            {
+                old = slot;
+                slot = entry;
+                return true;
+            }
+            int capacity = shard.EnsureCapacity(0);
+            if (shard.Count >= capacity) shard.EnsureCapacity(capacity < 4096 ? Math.Max(64, capacity * 2) : capacity + capacity / 4);
+            shard.Add(hash, entry);
+            _count++;
+            old = default;
+            return false;
+        }
+
+        public bool Remove(ulong hash, out Entry old)
+        {
+            if (!_shards[ShardOf(hash)].Remove(hash, out old)) return false;
+            _count--;
+            return true;
+        }
+
+        /// <summary>Removes the shard's records that point into packs up to <paramref name="number"/>; how many went.</summary>
+        public int RemovePacksUpTo(int index, int number)
+        {
+            var shard = _shards[index];
+            int removed = 0;
+            // Removing while enumerating is allowed for Dictionary since .NET Core 3.0.
+            foreach (var (hash, e) in shard)
+                if (e.Pack <= number && shard.Remove(hash)) removed++;
+            _count -= removed;
+            return removed;
+        }
+
+        /// <summary>Makes room for <paramref name="total"/> records in all, spread over the shards (an index about to be loaded).</summary>
+        public void Reserve(int total)
+        {
+            int each = (int)Math.Min(int.MaxValue, total / (long)ShardCount + total / (16L * ShardCount) + 16);
+            foreach (var shard in _shards) shard.EnsureCapacity(each);
+        }
+
+        /// <summary>Empties the map and lets its memory go.</summary>
+        public void Clear()
+        {
+            for (int i = 0; i < ShardCount; i++) _shards[i] = [];
+            _count = 0;
+        }
+    }
+
     readonly string _folder;
     readonly ThumbStoreOptions _options;
     readonly bool _enabled;
     readonly object _gate = new();   // the map, the queue, the pack list and the sizes
     readonly object _io = new();     // the writer's file work, Clear, SaveIndex and Close
-    readonly Dictionary<ulong, Entry> _map = [];
+    readonly EntryMap _map = new();
     // Packs the cap let go whose file couldn't be deleted yet (a backup reading it without sharing deletes): they still
     // take their space, so they count toward the cap and the size until a later try deletes them.
     readonly List<Pack> _undeleted = [];
@@ -228,6 +330,14 @@ public sealed class ThumbStore : IDisposable
     long _lastFlush = Environment.TickCount64, _lastIndexSave = Environment.TickCount64;
     long _diskCheckedAt = long.MinValue;
     bool _diskLow;
+    // The signals for the window (IsFull, DiskLow): read from any thread without a lock.
+    volatile bool _full, _diskLowRefused;
+    // 1 when the store became full; the writer raises BecameFull once it has let go of the locks.
+    int _becameFullPending;
+    // How often a changed index may be saved, from the size of the last one written.
+    long _indexSaveEveryMs;
+    readonly int _maxRecords;
+    readonly long _maxIndexBytes;
     // When a pack write last failed (a full disk, a quota, a share that went away): for one disk-check interval after it,
     // batches are dropped without making a new pack, so failures don't leave a trail of empty files.
     long _writeFailedAt = long.MinValue;
@@ -237,6 +347,9 @@ public sealed class ThumbStore : IDisposable
         _folder = folder;
         _options = options;
         _cap = Math.Max(1, options.CapBytes);
+        _maxRecords = Math.Max(1, options.MaxRecords);
+        _maxIndexBytes = options.MaxIndexBytes > 0 ? options.MaxIndexBytes : MaxIndexBytesFor(_maxRecords);
+        _indexSaveEveryMs = (long)options.IndexSaveInterval.TotalMilliseconds;
         Marker = marker;
         _enabled = enabled;
         Problem = problem;
@@ -257,10 +370,7 @@ public sealed class ThumbStore : IDisposable
     /// </summary>
     public static string FolderIn(string chosenFolder) => Path.Combine(Path.GetFullPath(chosenFolder), ChosenFolderName);
 
-    /// <summary>The cap setting's choices in Settings, in megabytes: 250 MB, 500 MB, 1, 2, 4 and 8 GB.</summary>
-    public static IReadOnlyList<int> CapChoicesMegabytes { get; } = [250, 500, 1000, 2000, 4000, 8000];
-
-    /// <summary>The cap in bytes for the setting's megabytes (decimal, <see cref="BytesPerMegabyte"/>), clamped to 64 to 8000.</summary>
+    /// <summary>The cap in bytes for the setting's megabytes (decimal, <see cref="BytesPerMegabyte"/>), clamped to <see cref="MinCapMegabytes"/> to <see cref="MaxCapMegabytes"/>.</summary>
     public static long CapBytesFor(int megabytes) => Math.Clamp(megabytes, MinCapMegabytes, MaxCapMegabytes) * BytesPerMegabyte;
 
     /// <summary>A store that stores nothing and touches no disk (demo mode, the setting off).</summary>
@@ -360,10 +470,37 @@ public sealed class ThumbStore : IDisposable
         get { lock (_gate) return _cap; }
         set
         {
-            lock (_gate) _cap = Math.Max(1, value);
+            lock (_gate)
+            {
+                long cap = Math.Max(1, value);
+                // More room: the store isn't full any more (it says so again if it fills the new limit too).
+                if (cap > _cap) _full = false;
+                _cap = cap;
+            }
             if (_enabled) _wake.Set();
         }
     }
+
+    /// <summary>
+    /// Whether the store is full: true from the moment a pack was dropped because the limit (or <see cref="MaxRecords"/>)
+    /// was reached, until the limit is raised, the store is cleared, or it is opened again with room. Any thread; never waits.
+    /// Lowering the limit makes it full too, as packs are dropped to fit.
+    /// </summary>
+    public bool IsFull => _full;
+
+    /// <summary>
+    /// Raised once each time <see cref="IsFull"/> turns true, on the store's writer thread (never under a lock of the
+    /// store's, so a handler may call into it; it must not block for long, and should post to the UI thread). A store that
+    /// filled while it opened raises it on the writer's first round: subscribe, then read <see cref="IsFull"/>. Never
+    /// raised by a disabled store.
+    /// </summary>
+    public event Action? BecameFull;
+
+    /// <summary>
+    /// Whether the last picture was not kept because the drive is nearly full (<see cref="PowerRules.LowDisk"/>); false again once a
+    /// picture is written. Any thread; never waits. False for a disabled store.
+    /// </summary>
+    public bool DiskLow => _diskLowRefused;
 
     /// <summary>What the packs take on disk now, in bytes. Never waits (Settings reads it on the UI thread while the writer may hold the store's lock).</summary>
     public long SizeBytes => Interlocked.Read(ref _total) + Interlocked.Read(ref _undeletedBytes);
@@ -373,6 +510,13 @@ public sealed class ThumbStore : IDisposable
 
     /// <summary>The packs on disk (tests and diagnostics).</summary>
     public int PackCount { get { lock (_gate) return _packs.Count; } }
+
+    /// <summary>Passes over the whole map to drop evicted packs' records (tests: many packs at once cost one pass).</summary>
+    internal int EvictionPasses => Volatile.Read(ref _evictionPasses);
+    int _evictionPasses;
+
+    /// <summary>Records the last open took from index.bin (tests: the index was used, not a scan of the packs).</summary>
+    internal int IndexEntriesLoaded { get; private set; }
 
     /// <summary>Who still holds the marker and with it the folder: the writer, Dispose and a running Clear (tests).</summary>
     internal int MarkerHolders => Volatile.Read(ref _markerHolders);
@@ -467,7 +611,7 @@ public sealed class ThumbStore : IDisposable
             if (_pending.TryGetValue(key.Hash64, out var p) && p.Check == key.Check32) _pending.Remove(key.Hash64);
             if (_map.TryGetValue(key.Hash64, out var e) && e.Check == key.Check32)
             {
-                _map.Remove(key.Hash64);
+                RemoveEntry(key.Hash64);
                 _indexDirty = true;
             }
         }
@@ -507,7 +651,7 @@ public sealed class ThumbStore : IDisposable
                 removed = _pending.Remove(key.Hash64);
             if (_map.TryGetValue(key.Hash64, out var e) && e.Check == key.Check32 && e.Kind == StoredKind.Suspect)
             {
-                _map.Remove(key.Hash64);
+                RemoveEntry(key.Hash64);
                 _indexDirty = true;
                 // A later crash should see that this key was made successfully, even between regular saves.
                 _saveIndexSoon = true;
@@ -524,10 +668,36 @@ public sealed class ThumbStore : IDisposable
         {
             if (_map.TryGetValue(hash, out var now) && now == e)
             {
-                _map.Remove(hash);
+                RemoveEntry(hash);
                 _indexDirty = true;
             }
         }
+    }
+
+    /// <summary>Removes a record and counts it off its pack. Under _gate.</summary>
+    void RemoveEntry(ulong hash)
+    {
+        if (_map.Remove(hash, out var old) && _packs.TryGetValue(old.Pack, out var pack)) pack.Live--;
+    }
+
+    /// <summary>Sets a record written to <paramref name="pack"/>, counting it on its pack and a replaced one off its own. Under _gate.</summary>
+    void SetEntry(ulong hash, Entry entry, Pack pack)
+    {
+        if (_map.Set(hash, entry, out var old) && _packs.TryGetValue(old.Pack, out var before)) before.Live--;
+        pack.Live++;
+    }
+
+    /// <summary>Counts each pack's records again in one pass (after opening, when the map was filled before the packs were known). Under _gate.</summary>
+    void RecountLive()
+    {
+        foreach (var pack in _packs.Values) pack.Live = 0;
+        Pack? last = null;
+        for (int i = 0; i < EntryMap.ShardCount; i++)
+            foreach (var e in _map.Shard(i).Values)
+            {
+                if (last?.Number != e.Pack && !_packs.TryGetValue(e.Pack, out last)) continue;
+                last!.Live++;
+            }
     }
 
     static int ReadFully(SafeFileHandle handle, byte[] buffer, long offset)
@@ -620,7 +790,7 @@ public sealed class ThumbStore : IDisposable
                     EnforceCap();
                     long now = Environment.TickCount64;
                     if (_unflushed && now - _lastFlush >= _options.FlushInterval.TotalMilliseconds) FlushCurrent();
-                    if (_saveIndexSoon || (_indexDirty && now - _lastIndexSave >= _options.IndexSaveInterval.TotalMilliseconds)) SaveIndexLocked();
+                    if (_saveIndexSoon || (_indexDirty && now - _lastIndexSave >= _indexSaveEveryMs)) SaveIndexLocked();
                 }
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException or ObjectDisposedException)
@@ -631,6 +801,7 @@ public sealed class ThumbStore : IDisposable
             {
                 lock (_gate) _writing = false;
             }
+            RaiseBecameFull();
             if (_stopping)
             {
                 bool drained, save;
@@ -647,6 +818,15 @@ public sealed class ThumbStore : IDisposable
                 }
             }
         }
+    }
+
+    /// <summary>Raises <see cref="BecameFull"/> when the store became full since the last round. On the writer thread, holding no lock.</summary>
+    void RaiseBecameFull()
+    {
+        if (Interlocked.Exchange(ref _becameFullPending, 0) == 0) return;
+        try { BecameFull?.Invoke(); }
+        // A handler's mistake must not end the writer: the store would stop writing.
+        catch (Exception) { }
     }
 
     /// <summary>
@@ -693,11 +873,13 @@ public sealed class ThumbStore : IDisposable
             Unqueue(batch);
             return;
         }
-        if (DiskLow())
+        if (IsDiskLowNow())
         {
             // Pictures wait for space; records without one (32 bytes: "none", "suspect", "crashed") are still written, or
             // a file that killed the program would be tried again and again while the disk is low.
-            Unqueue(batch.Where(p => p.Payload.Length > 0).ToList());
+            var pictures = batch.Where(p => p.Payload.Length > 0).ToList();
+            if (pictures.Count > 0) _diskLowRefused = true;
+            Unqueue(pictures);
             batch = batch.Where(p => p.Payload.Length == 0).ToList();
             if (batch.Count == 0) return;
         }
@@ -715,12 +897,15 @@ public sealed class ThumbStore : IDisposable
             var entries = new Entry[end - i];
             long offset = pack.Length;
             int at = 0;
+            bool picture = false;
             for (int k = i; k < end; k++)
             {
                 var p = batch[k];
                 Encode(buffer.AsSpan(at), p);
-                entries[k - i] = new Entry(pack.Number, offset + at, p.Bytes, p.Kind, p.Width, p.Height, p.Check);
+                // A pack is written only below PackBytes (an int), so the offset fits.
+                entries[k - i] = new Entry(pack.Number, (int)(offset + at), p.Bytes, p.Check, p.Width, p.Height, p.Kind);
                 at += p.Bytes;
+                picture |= p.Payload.Length > 0;
             }
             try
             {
@@ -741,13 +926,14 @@ public sealed class ThumbStore : IDisposable
                 for (int k = i; k < end; k++)
                 {
                     var p = batch[k];
-                    _map[p.Hash] = entries[k - i];
+                    SetEntry(p.Hash, entries[k - i], pack);
                     if (_pending.TryGetValue(p.Hash, out var q) && ReferenceEquals(q, p)) _pending.Remove(p.Hash);
                     _queuedBytes -= p.Bytes;
                 }
                 _indexDirty = true;
                 _unflushed = true;
             }
+            if (picture) _diskLowRefused = false;
             i = end;
         }
     }
@@ -829,7 +1015,7 @@ public sealed class ThumbStore : IDisposable
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ObjectDisposedException) { }
     }
 
-    bool DiskLow()
+    bool IsDiskLowNow()
     {
         long now = Environment.TickCount64;
         if (_diskCheckedAt != long.MinValue && now - _diskCheckedAt < _options.DiskCheckInterval.TotalMilliseconds) return _diskLow;
@@ -839,38 +1025,88 @@ public sealed class ThumbStore : IDisposable
         return _diskLow;
     }
 
-    /// <summary>Deletes the oldest packs while the store is over its cap (never the pack being written). Under _io.</summary>
+    /// <summary>
+    /// Deletes the oldest packs while the store is over its cap or holds more than <see cref="ThumbStoreOptions.MaxRecords"/>
+    /// records (never the pack being written while there are others). Every pack that has to go is chosen first, so their
+    /// records leave the map in one pass, whatever their number. Under _io.
+    /// </summary>
     void EnforceCap()
     {
         RetryUndeleted();
-        while (true)
-        {
-            Pack oldest;
-            lock (_gate)
-            {
-                if (_total + _undeletedBytes <= _cap || _packs.Count == 0) return;
-                oldest = _packs.First().Value;
-                if (ReferenceEquals(oldest, _current))
-                {
-                    if (_packs.Count == 1)
-                    {
-                        // Keep writing to this pack unless it alone is over the cap. A held file still takes its space.
-                        if (oldest.Length == 0 || _total <= _cap) return;
-                        _current = null;
-                    }
-                    else return;
-                }
-                _packs.Remove(oldest.Number);
-                foreach (var hash in _map.Where(kv => kv.Value.Pack == oldest.Number).Select(kv => kv.Key).ToList()) _map.Remove(hash);
-                _total -= oldest.Length;
-                _indexDirty = true;
-            }
-            oldest.Handle?.Dispose();
-            if (!TryDelete(oldest.Path)) KeepUndeleted(oldest);
-        }
+        // Again only when a pack couldn't be deleted: its space still counts, so older ones may have to go as well.
+        while (EvictOldest()) { }
     }
 
-    /// <summary>Tries again to delete the packs the cap let go whose files couldn't be deleted then. Under _io.</summary>
+    /// <summary>One round of <see cref="EnforceCap"/>; true when it should run again. Under _io.</summary>
+    bool EvictOldest()
+    {
+        var evict = new List<Pack>();
+        lock (_gate)
+        {
+            long bytes = _total + _undeletedBytes, packsBytes = _total;
+            int records = _map.Count;
+            foreach (var pack in _packs.Values)
+            {
+                if (bytes <= _cap && records <= _maxRecords) break;
+                if (ReferenceEquals(pack, _current))
+                {
+                    // Keep writing to this pack unless it alone is over the cap or the ceiling. A held file still takes its space.
+                    if (evict.Count != _packs.Count - 1 || pack.Length == 0 || (packsBytes <= _cap && records <= _maxRecords)) break;
+                    _current = null;
+                }
+                evict.Add(pack);
+                bytes -= pack.Length;
+                packsBytes -= pack.Length;
+                records -= pack.Live;
+            }
+            if (evict.Count == 0) return false;
+            foreach (var pack in evict)
+            {
+                _packs.Remove(pack.Number);
+                _total -= pack.Length;
+            }
+            _indexDirty = true;
+            if (!_full)
+            {
+                _full = true;
+                Interlocked.Exchange(ref _becameFullPending, 1);
+            }
+        }
+        // The evicted packs are the oldest: every record pointing at one of them, or below, goes. One shard at a time, so
+        // readers wait for one shard, not the whole map; a reader in between finds the pack gone and misses.
+        int upTo = evict[^1].Number;
+        for (int i = 0; i < EntryMap.ShardCount; i++)
+        {
+            lock (_gate) _map.RemovePacksUpTo(i, upTo);
+            LetWaitersIn();
+        }
+        Interlocked.Increment(ref _evictionPasses);
+        bool held = false;
+        foreach (var pack in evict)
+        {
+            pack.Handle?.Dispose();
+            if (!TryDelete(pack.Path))
+            {
+                KeepUndeleted(pack);
+                held = true;
+            }
+        }
+        if (!held) return false;
+        lock (_gate) return _total + _undeletedBytes > _cap && _packs.Count > 0;
+    }
+
+    /// <summary>
+    /// A short pause between two holds of the store's lock in a long pass. The lock isn't fair: a thread that takes it
+    /// back at once keeps a reader that is still waking up waiting for the whole pass. 50 microseconds lets it in.
+    /// </summary>
+    static void LetWaitersIn()
+    {
+        long until = System.Diagnostics.Stopwatch.GetTimestamp() + System.Diagnostics.Stopwatch.Frequency / 20_000;
+        Thread.Yield();
+        while (System.Diagnostics.Stopwatch.GetTimestamp() < until) Thread.SpinWait(20);
+    }
+
+    /// <summary>Tries again to delete the packs the cap or Clear let go whose files couldn't be deleted then. The writer and Clear may both run it.</summary>
     void RetryUndeleted()
     {
         List<Pack> waiting;
@@ -883,8 +1119,8 @@ public sealed class ThumbStore : IDisposable
             if (TryDelete(p.Path) || !File.Exists(p.Path))
                 lock (_gate)
                 {
-                    _undeleted.Remove(p);
-                    _undeletedBytes -= p.Length;
+                    // Clear may try the same pack at the same time: it is counted off once.
+                    if (_undeleted.Remove(p)) _undeletedBytes -= p.Length;
                 }
     }
 
@@ -892,14 +1128,16 @@ public sealed class ThumbStore : IDisposable
 
     /// <summary>
     /// Deletes every picture and saves an empty index. A held pack keeps counting in <see cref="SizeBytes"/> until it
-    /// can be deleted. Its pictures stay cleared across restarts. Does nothing once the store is closing.
+    /// can be deleted. Its pictures stay cleared across restarts. Does nothing once the store is closing. The files are
+    /// deleted before it returns, but without holding up the writer: thousands of packs take a while.
     /// </summary>
     public void Clear()
     {
         if (!_enabled) return;
+        List<Pack> packs;
+        var others = new List<(int Number, string Path)>();
         lock (_io)
         {
-            List<Pack> packs;
             lock (_gate)
             {
                 // A closing store has let go of the folder, or is about to: another store may own it now, and its files
@@ -919,31 +1157,21 @@ public sealed class ThumbStore : IDisposable
                 _total = 0;
                 _indexDirty = true;
                 _unflushed = false;
+                _full = false;
             }
             try
             {
-                _options.BeforeClearDeletes?.Invoke();
-                foreach (var p in packs)
-                {
-                    p.Handle?.Dispose();
-                    if (!TryDelete(p.Path)) KeepUndeleted(p);
-                }
-                RetryUndeleted();
+                // Packs left on disk by an earlier run that the store didn't load. Only their names here: who they belong
+                // to is looked at below, outside the lock.
+                HashSet<int> known;
+                lock (_gate) known = [.. _undeleted.Select(p => p.Number), .. packs.Select(p => p.Number)];
                 try
                 {
-                    // Packs left on disk by an earlier run that the store didn't load; only the store's own (a file named
-                    // like a pack without the store's mark is someone else's).
-                    HashSet<int> waiting;
-                    lock (_gate) waiting = [.. _undeleted.Select(p => p.Number)];
                     foreach (var path in Directory.EnumerateFiles(_folder, PackPrefix + "*" + PackSuffix))
                     {
                         if (!TryParsePackName(Path.GetFileName(path), out int number)) continue;
                         _nextNumber = Math.Max(_nextNumber, number + 1);
-                        if (waiting.Contains(number) || OwnFile(path) != true) continue;
-                        long length;
-                        try { length = new FileInfo(path).Length; }
-                        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { length = 0; }
-                        if (!TryDelete(path)) KeepUndeleted(new Pack(number, path, length));
+                        if (!known.Contains(number)) others.Add((number, path));
                     }
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
@@ -952,11 +1180,37 @@ public sealed class ThumbStore : IDisposable
                     string path = Path.Combine(_folder, name);
                     if (OwnFile(path) == true) TryDelete(path);
                 }
+                // Saved before the deletes: every pack below the floor is deleted at the next open, should this end
+                // halfway. The writer makes new packs only from the floor up, so the deletes below never meet them.
                 _packFloor = _nextNumber;
                 SaveIndexLocked();
             }
-            finally { LetGoOfMarker(null); }
+            catch (Exception)
+            {
+                LetGoOfMarker(null);
+                throw;
+            }
         }
+        try
+        {
+            _options.BeforeClearDeletes?.Invoke();
+            foreach (var p in packs)
+            {
+                p.Handle?.Dispose();
+                if (!TryDelete(p.Path)) KeepUndeleted(p);
+            }
+            RetryUndeleted();
+            // Only the store's own (a file named like a pack without the store's mark is someone else's).
+            foreach (var (number, path) in others)
+            {
+                if (OwnFile(path) != true) continue;
+                long length;
+                try { length = new FileInfo(path).Length; }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { length = 0; }
+                if (!TryDelete(path)) KeepUndeleted(new Pack(number, path, length));
+            }
+        }
+        finally { LetGoOfMarker(null); }
     }
 
     /// <summary>
@@ -1000,55 +1254,45 @@ public sealed class ThumbStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// How often a changed index may be saved: <paramref name="least"/> (a minute) while it is small, and so that writing
+    /// it takes about <see cref="IndexBytesPerMinute"/> a minute at most once it is large.
+    /// </summary>
+    internal static TimeSpan IndexSaveIntervalFor(long indexBytes, TimeSpan least)
+        => TimeSpan.FromMinutes(Math.Max(least.TotalMinutes, indexBytes / (double)IndexBytesPerMinute));
+
+    /// <summary>
+    /// The largest index.bin saved or read for a ceiling of <paramref name="maxRecords"/>: twice the records it may hold
+    /// (the map passes the ceiling by a batch before the oldest packs go) and 64 MB for the pack list (5 million packs).
+    /// </summary>
+    internal static long MaxIndexBytesFor(int maxRecords) => (long)maxRecords * 2 * IndexEntryBytes + (64L << 20);
+
+    /// <summary>The size of an index of <paramref name="records"/> records over <paramref name="packs"/> packs.</summary>
+    internal static long IndexBytes(long records, long packs) => IndexHeaderBytes + packs * IndexPackBytes + records * IndexEntryBytes + 4;
+
+    /// <summary>
+    /// Writes the index to index.tmp, part by part, and moves it over index.bin. The map is copied one shard at a time under
+    /// the store's lock and written outside it, so readers wait for one shard's copy, never for the disk. Under _io: the
+    /// writer adds nothing meanwhile, and what Forget or ClearSuspect remove meanwhile is saved again next time.
+    /// </summary>
     void SaveIndexLocked()
     {
         _lastIndexSave = Environment.TickCount64;
-        byte[] bytes;
-        int at;
+        int entries, floor;
+        (int Number, long Verified)[] packs;
         lock (_gate)
         {
             _saveIndexSoon = false;
-            int packs = _packs.Count, entries = _map.Count;
-            long size = IndexHeaderBytes + (long)packs * IndexPackBytes + (long)entries * IndexEntryBytes + 4;
-            if (size > MaxIndexFileBytes)
-            {
-                // More records than an index the store would read back (millions of "no picture" records): the packs are
-                // scanned at the next open instead.
-                _indexDirty = false;
-                return;
-            }
-            bytes = new byte[size];
-            var s = bytes.AsSpan();
-            IndexMagic.CopyTo(s);
-            BinaryPrimitives.WriteUInt16LittleEndian(s[8..], IndexVersion);
-            BinaryPrimitives.WriteInt32LittleEndian(s[12..], packs);
-            BinaryPrimitives.WriteInt32LittleEndian(s[16..], entries);
-            // Version 1 left these four bytes zero, which means no packs have been cleared.
-            BinaryPrimitives.WriteInt32LittleEndian(s[20..], _packFloor);
-            at = IndexHeaderBytes;
-            foreach (var p in _packs.Values)
-            {
-                BinaryPrimitives.WriteInt32LittleEndian(s[at..], p.Number);
-                // How far the pack is covered: the end of its last good record, so a damaged tail is looked at again.
-                BinaryPrimitives.WriteInt64LittleEndian(s[(at + 4)..], p.Verified);
-                at += IndexPackBytes;
-            }
-            foreach (var (hash, e) in _map)
-            {
-                BinaryPrimitives.WriteUInt64LittleEndian(s[at..], hash);
-                BinaryPrimitives.WriteUInt32LittleEndian(s[(at + 8)..], e.Check);
-                BinaryPrimitives.WriteInt32LittleEndian(s[(at + 12)..], e.Pack);
-                BinaryPrimitives.WriteInt64LittleEndian(s[(at + 16)..], e.Offset);
-                BinaryPrimitives.WriteInt32LittleEndian(s[(at + 24)..], e.Length);
-                s[at + 28] = (byte)e.Kind;
-                BinaryPrimitives.WriteUInt16LittleEndian(s[(at + 30)..], e.Width);
-                BinaryPrimitives.WriteUInt16LittleEndian(s[(at + 32)..], e.Height);
-                at += IndexEntryBytes;
-            }
+            // Changes from here on mark it again, for the next save.
             _indexDirty = false;
+            entries = _map.Count;
+            floor = _packFloor;
+            packs = [.. _packs.Values.Select(p => (p.Number, p.Verified))];
         }
-        // The checksum outside the lock: readers only wait for the copy.
-        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(at), Crc32C.Compute(bytes.AsSpan(0, at)));
+        long size = IndexBytes(entries, packs.Length);
+        // More records than an index the store would read back (the record ceiling keeps far below it): the packs are
+        // scanned at the next open instead.
+        if (size > _maxIndexBytes) return;
         // The packs the index covers go to the disk before the index that trusts them.
         FlushCurrent();
         string temp = Path.Combine(_folder, IndexTempName), index = Path.Combine(_folder, IndexName);
@@ -1063,13 +1307,76 @@ public sealed class ThumbStore : IDisposable
         try
         {
             // CreateNew: a file that appeared after the look above makes this fail instead of being emptied.
-            using (var f = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.WriteThrough))
+            using (var f = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20))
             {
                 made = true;
-                f.Write(bytes);
+                uint crc = Crc32C.Start;
+                var buffer = new byte[4096 * IndexEntryBytes];
+                var s = buffer.AsSpan();
+                IndexMagic.CopyTo(s);
+                BinaryPrimitives.WriteUInt16LittleEndian(s[8..], IndexVersion);
+                s[10] = s[11] = 0;
+                BinaryPrimitives.WriteInt32LittleEndian(s[12..], packs.Length);
+                BinaryPrimitives.WriteInt32LittleEndian(s[16..], entries);
+                // Version 1 left these four bytes zero, which means no packs have been cleared.
+                BinaryPrimitives.WriteInt32LittleEndian(s[20..], floor);
+                crc = WritePart(f, crc, s[..IndexHeaderBytes]);
+                foreach (var (number, verified) in packs)
+                {
+                    BinaryPrimitives.WriteInt32LittleEndian(s, number);
+                    // How far the pack is covered: the end of its last good record, so a damaged tail is looked at again.
+                    BinaryPrimitives.WriteInt64LittleEndian(s[4..], verified);
+                    crc = WritePart(f, crc, s[..IndexPackBytes]);
+                }
+                int written = 0;
+                for (int i = 0; i < EntryMap.ShardCount && written < entries; i++)
+                {
+                    int at = 0;
+                    lock (_gate)
+                    {
+                        var shard = _map.Shard(i);
+                        int room = Math.Min(shard.Count, entries - written) * IndexEntryBytes;
+                        if (buffer.Length < room) buffer = new byte[room];
+                        s = buffer.AsSpan();
+                        foreach (var (hash, e) in shard)
+                        {
+                            if (at == room) break;
+                            BinaryPrimitives.WriteUInt64LittleEndian(s[at..], hash);
+                            BinaryPrimitives.WriteUInt32LittleEndian(s[(at + 8)..], e.Check);
+                            BinaryPrimitives.WriteInt32LittleEndian(s[(at + 12)..], e.Pack);
+                            BinaryPrimitives.WriteInt64LittleEndian(s[(at + 16)..], e.Offset);
+                            BinaryPrimitives.WriteInt32LittleEndian(s[(at + 24)..], e.Length);
+                            s[at + 28] = (byte)e.Kind;
+                            s[at + 29] = 0;
+                            BinaryPrimitives.WriteUInt16LittleEndian(s[(at + 30)..], e.Width);
+                            BinaryPrimitives.WriteUInt16LittleEndian(s[(at + 32)..], e.Height);
+                            s[at + 34] = s[at + 35] = 0;
+                            at += IndexEntryBytes;
+                        }
+                    }
+                    crc = WritePart(f, crc, s[..at]);
+                    written += at / IndexEntryBytes;
+                }
+                // Records removed while the shards were copied leave their places as zeros, which no open takes (pack 0
+                // isn't a pack), so the count in the header stays true.
+                if (written < entries)
+                {
+                    s = buffer.AsSpan();
+                    s.Clear();
+                    for (int left = entries - written; left > 0;)
+                    {
+                        int n = Math.Min(left, buffer.Length / IndexEntryBytes);
+                        crc = WritePart(f, crc, s[..(n * IndexEntryBytes)]);
+                        left -= n;
+                    }
+                }
+                BinaryPrimitives.WriteUInt32LittleEndian(s, Crc32C.Finish(crc));
+                f.Write(s[..4]);
+                f.Flush(flushToDisk: true);
             }
             // If the name was free, the move must still fail if another file takes it first.
             File.Move(temp, index, overwrite: OwnFile(index) == true);
+            _indexSaveEveryMs = (long)IndexSaveIntervalFor(size, _options.IndexSaveInterval).TotalMilliseconds;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
@@ -1077,6 +1384,12 @@ public sealed class ThumbStore : IDisposable
             // Only the copy this save made; a file that beat it to the name is someone else's.
             if (made) TryDelete(temp);
         }
+    }
+
+    static uint WritePart(FileStream f, uint crc, ReadOnlySpan<byte> part)
+    {
+        f.Write(part);
+        return Crc32C.Update(crc, part);
     }
 
     /// <summary>
@@ -1201,6 +1514,7 @@ public sealed class ThumbStore : IDisposable
             last = pack;
             lastClean = clean;
         }
+        lock (_gate) RecountLive();
         // Appending goes on in the newest pack only when it ended cleanly: records after a damaged one would never be
         // found by a scan.
         if (last != null && lastClean && last.Length < _options.PackBytes)
@@ -1215,51 +1529,94 @@ public sealed class ThumbStore : IDisposable
         }
     }
 
-    /// <summary>Loads index.bin into the map for packs that still exist and are at least as long as it says; returns how far each is covered.</summary>
+    /// <summary>
+    /// Loads index.bin into the map for packs that still exist and are at least as long as it says; returns how far each is
+    /// covered. Read part by part (never the whole file at once); the records go into the map as they come and leave it
+    /// again if the checksum at the end is wrong, so a damaged index costs a scan of the packs, as before. Under _io,
+    /// before the packs are scanned (the map holds nothing else yet).
+    /// </summary>
     Dictionary<int, long> LoadIndex(SortedDictionary<int, (long Length, bool ZeroHead)> onDisk)
     {
         var covered = new Dictionary<int, long>();
-        byte[] bytes;
+        bool filled = false;
         try
         {
             string path = Path.Combine(_folder, IndexName);
-            if (!File.Exists(path) || new FileInfo(path).Length > MaxIndexFileBytes) return covered;
-            bytes = File.ReadAllBytes(path);
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return covered; }
-        var s = bytes.AsSpan();
-        if (s.Length < IndexHeaderBytes + 4 || !s[..8].SequenceEqual(IndexMagic) || BinaryPrimitives.ReadUInt16LittleEndian(s[8..]) != IndexVersion)
-            return covered;
-        int packs = BinaryPrimitives.ReadInt32LittleEndian(s[12..]);
-        int entries = BinaryPrimitives.ReadInt32LittleEndian(s[16..]);
-        if (packs < 0 || entries < 0 || (long)IndexHeaderBytes + (long)packs * IndexPackBytes + (long)entries * IndexEntryBytes + 4 != s.Length)
-            return covered;
-        int crcAt = s.Length - 4;
-        if (BinaryPrimitives.ReadUInt32LittleEndian(s[crcAt..]) != Crc32C.Compute(s[..crcAt])) return covered;
-        _packFloor = BinaryPrimitives.ReadInt32LittleEndian(s[20..]);
-        int at = IndexHeaderBytes;
-        for (int i = 0; i < packs; i++, at += IndexPackBytes)
-        {
-            int number = BinaryPrimitives.ReadInt32LittleEndian(s[at..]);
-            if (number < _packFloor) continue;
-            long length = BinaryPrimitives.ReadInt64LittleEndian(s[(at + 4)..]);
-            // A shortened pack or one whose head was zeroed lost data the index describes. Scan it from the start.
-            if (onDisk.TryGetValue(number, out var file) && !file.ZeroHead && length >= 0 && length <= file.Length) covered[number] = length;
-        }
-        lock (_gate)
-            for (int i = 0; i < entries; i++, at += IndexEntryBytes)
+            if (!File.Exists(path)) return covered;
+            using var f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16);
+            long fileLength = f.Length;
+            if (fileLength < IndexHeaderBytes + 4 || fileLength > _maxIndexBytes) return covered;
+            var head = new byte[IndexHeaderBytes];
+            f.ReadExactly(head);
+            var s = head.AsSpan();
+            if (!s[..8].SequenceEqual(IndexMagic) || BinaryPrimitives.ReadUInt16LittleEndian(s[8..]) != IndexVersion) return covered;
+            int packs = BinaryPrimitives.ReadInt32LittleEndian(s[12..]);
+            int entries = BinaryPrimitives.ReadInt32LittleEndian(s[16..]);
+            if (packs < 0 || entries < 0 || IndexBytes(entries, packs) != fileLength)
+                return covered;
+            uint crc = Crc32C.Update(Crc32C.Start, s);
+            int floor = BinaryPrimitives.ReadInt32LittleEndian(s[20..]);
+            int part = Math.Max(1, _options.IndexPartRecords);
+            var buffer = new byte[Math.Max(part * IndexEntryBytes, IndexPackBytes * 1024)];
+            for (int left = packs; left > 0;)
             {
-                int pack = BinaryPrimitives.ReadInt32LittleEndian(s[(at + 12)..]);
-                if (!covered.TryGetValue(pack, out long upTo)) continue;
-                long offset = BinaryPrimitives.ReadInt64LittleEndian(s[(at + 16)..]);
-                int length = BinaryPrimitives.ReadInt32LittleEndian(s[(at + 24)..]);
-                var kind = (StoredKind)s[at + 28];
-                if (offset < 0 || length < RecordHeaderBytes || length > RecordHeaderBytes + MaxPayloadBytes || offset + length > upTo || kind is < StoredKind.Jpeg or > StoredKind.Suspect) continue;
-                _map[BinaryPrimitives.ReadUInt64LittleEndian(s[at..])] = new Entry(pack, offset, length, kind,
-                    BinaryPrimitives.ReadUInt16LittleEndian(s[(at + 30)..]), BinaryPrimitives.ReadUInt16LittleEndian(s[(at + 32)..]),
-                    BinaryPrimitives.ReadUInt32LittleEndian(s[(at + 8)..]));
+                int n = Math.Min(left, buffer.Length / IndexPackBytes);
+                var chunk = buffer.AsSpan(0, n * IndexPackBytes);
+                f.ReadExactly(chunk);
+                crc = Crc32C.Update(crc, chunk);
+                for (int at = 0; at < chunk.Length; at += IndexPackBytes)
+                {
+                    int number = BinaryPrimitives.ReadInt32LittleEndian(chunk[at..]);
+                    if (number < floor) continue;
+                    long length = BinaryPrimitives.ReadInt64LittleEndian(chunk[(at + 4)..]);
+                    // A shortened pack or one whose head was zeroed lost data the index describes. Scan it from the start.
+                    if (onDisk.TryGetValue(number, out var file) && !file.ZeroHead && length >= 0 && length <= file.Length) covered[number] = length;
+                }
+                left -= n;
             }
-        return covered;
+            filled = true;
+            lock (_gate) _map.Reserve(entries);
+            for (int left = entries; left > 0;)
+            {
+                int n = Math.Min(left, buffer.Length / IndexEntryBytes);
+                var chunk = buffer.AsSpan(0, n * IndexEntryBytes);
+                f.ReadExactly(chunk);
+                crc = Crc32C.Update(crc, chunk);
+                lock (_gate)
+                    for (int at = 0; at < chunk.Length; at += IndexEntryBytes)
+                    {
+                        ulong hash = BinaryPrimitives.ReadUInt64LittleEndian(chunk[at..]);
+                        int pack = BinaryPrimitives.ReadInt32LittleEndian(chunk[(at + 12)..]);
+                        if (hash == 0 || !covered.TryGetValue(pack, out long upTo)) continue;
+                        long offset = BinaryPrimitives.ReadInt64LittleEndian(chunk[(at + 16)..]);
+                        int length = BinaryPrimitives.ReadInt32LittleEndian(chunk[(at + 24)..]);
+                        var kind = (StoredKind)chunk[at + 28];
+                        if (offset < 0 || offset > int.MaxValue || length < RecordHeaderBytes || length > RecordHeaderBytes + MaxPayloadBytes
+                            || offset + length > upTo || kind is < StoredKind.Jpeg or > StoredKind.Suspect) continue;
+                        _map.Set(hash, new Entry(pack, (int)offset, length, BinaryPrimitives.ReadUInt32LittleEndian(chunk[(at + 8)..]),
+                            BinaryPrimitives.ReadUInt16LittleEndian(chunk[(at + 30)..]), BinaryPrimitives.ReadUInt16LittleEndian(chunk[(at + 32)..]), kind), out _);
+                    }
+                left -= n;
+            }
+            Span<byte> tail = stackalloc byte[4];
+            f.ReadExactly(tail);
+            if (BinaryPrimitives.ReadUInt32LittleEndian(tail) != Crc32C.Finish(crc))
+            {
+                lock (_gate) _map.Clear();
+                return [];
+            }
+            _packFloor = floor;
+            IndexEntriesLoaded = entries;
+            // A large index is saved less often from the start.
+            _indexSaveEveryMs = (long)IndexSaveIntervalFor(fileLength, _options.IndexSaveInterval).TotalMilliseconds;
+            return covered;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // Cut short (EndOfStreamException is an IOException) or unreadable: as if there were no index.
+            if (filled) lock (_gate) _map.Clear();
+            return [];
+        }
     }
 
     /// <summary>
@@ -1285,8 +1642,9 @@ public sealed class ThumbStore : IDisposable
         {
             while (at < n)
             {
-                if (!Parse(buffer, at, n, out var r)) break;
-                _map[r.Hash] = new Entry(pack.Number, from + at, r.Length, r.Kind, r.Width, r.Height, r.Check);
+                // No pack the store writes is that long; a record past an int's reach can't be kept in the map.
+                if (from + at > int.MaxValue || !Parse(buffer, at, n, out var r)) break;
+                _map.Set(r.Hash, new Entry(pack.Number, (int)(from + at), r.Length, r.Check, r.Width, r.Height, r.Kind), out _);
                 at += r.Length;
                 dirty = true;
             }
@@ -1455,6 +1813,15 @@ public sealed class ThumbStore : IDisposable
             file.SetAccessControl(own);
             if (!OnlyPrivateReaders(file.GetAccessControl(AccessControlSections.Access).GetAccessRules(true, true, typeof(SecurityIdentifier)), user))
                 allPrivate = false;
+        }
+        // A private folder that takes its permissions from above would have every file looked at again at each open
+        // (thousands of packs in a large store). Holding only the store's files, it keeps the same private permissions
+        // as its own from now on, so the next opens stop at the check above.
+        if (allPrivate && !dir.GetAccessControl(AccessControlSections.Access).AreAccessRulesProtected)
+        {
+            try { if (HoldsOnlyStoreFiles(folder)) dir.SetAccessControl(PrivateFolderSecurity(user)); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException
+                                          or System.Security.SecurityException or ArgumentException) { }
         }
         return allPrivate ? FolderAccess.Private : FolderAccess.NotPrivate;
     }
@@ -1729,12 +2096,30 @@ public sealed class ThumbStore : IDisposable
             if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) return 0;
             long total = 0;
             foreach (var info in new DirectoryInfo(folder).EnumerateFiles())
-                if (IsStoreFileName(info.Name) && OwnFile(info.FullName) == true) total += info.Length;
+                if (IsStoreFileName(info.Name) && OwnFileSeen(info)) total += info.Length;
             return total;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             return 0;
         }
+    }
+
+    // What MeasureFolder found each file to be, by its name, times and length (from the folder listing, no file opened).
+    // Settings measures every 2 seconds in some states: thousands of packs are then opened once, not at every look.
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Created, DateTime Written, long Length, bool Own)> OwnSeen
+        = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Whether the file is the store's own, looked at again only when its times or length changed since the last look.</summary>
+    static bool OwnFileSeen(FileInfo info)
+    {
+        var stamp = (info.CreationTimeUtc, info.LastWriteTimeUtc, info.Length);
+        if (OwnSeen.TryGetValue(info.FullName, out var seen) && (seen.Created, seen.Written, seen.Length) == stamp) return seen.Own;
+        bool? own = OwnFile(info.FullName);
+        // A file that couldn't be read is looked at again next time.
+        if (own == null) return false;
+        if (OwnSeen.Count > 100_000) OwnSeen.Clear();
+        OwnSeen[info.FullName] = (stamp.CreationTimeUtc, stamp.LastWriteTimeUtc, stamp.Length, own.Value);
+        return own.Value;
     }
 }

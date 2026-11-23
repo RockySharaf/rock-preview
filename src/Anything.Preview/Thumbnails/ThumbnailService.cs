@@ -28,6 +28,10 @@ namespace Anything.Preview.Thumbnails;
 //                               being opened there didn't finish in time, so the folder is left and reported).
 //   Changing the location:      await Shared.UseStore(() => ThumbStore.Open(newFolder, ...)); then remove the old folder.
 //   Changing the limit:         Shared.StoreCapBytes = ThumbStore.CapBytesFor(mb) (applies at once, and to a store opened later).
+//   What is kept:               Shared.StoreKeep = the user's ThumbKeep (asked with ThumbKinds.KeepOnDisk, for pictures made
+//                               from then on; what is saved already stays).
+//   Full:                       Shared.StoreBecameFull is raised on a worker when the store starts dropping its oldest
+//                               thumbnails (marshal to the UI); Shared.StoreIsFull and StoreDiskLow say how it is now.
 //   Clear:                      Shared.ClearStore() empties the store (the grid clears its own memory cache itself).
 //   Settings' line:             Shared.CurrentStore (null until the first request opens it) has Problem, Folder, IsEnabled;
 //                               Shared.StoreSizeBytes and StoreCapBytes give "123 MB of 500 MB". A folder that can't be
@@ -107,7 +111,7 @@ internal sealed class ThumbServiceOptions
     /// <summary>Opens the store on the first request (on a worker); null: no store.</summary>
     public Func<ThumbStore>? OpenStore { get; init; }
     /// <summary>Battery Saver, full screen and disk space, for the idle rule.</summary>
-    public IPowerPolicy Power { get; init; } = SystemPowerPolicy.Instance;
+    public IPowerPolicy Power { get; init; } = DefaultPowerPolicy.Current;
     /// <summary>Decode threads (default: 3/8 of the logical processors, 2 to 6).</summary>
     public int DecodeThreads { get; init; } = ThumbRules.DecodeThreadsFor(Environment.ProcessorCount);
     /// <summary>A Windows call on a fast or shell thread that takes longer than this is given up (default 12 s).</summary>
@@ -519,6 +523,7 @@ internal sealed class ThumbnailService : IDisposable
     private int _textJobs;
     private long _viewMovedAt = long.MinValue / 2;
     private long _capOverride = -1;
+    private volatile ThumbKeep _keep = ThumbKeep.All;
     private long _seq;
     private int _roundRobin;
     private long _powerCheckedAt = long.MinValue;   // never: the first check asks the power policy
@@ -707,6 +712,35 @@ internal sealed class ThumbnailService : IDisposable
             }
             if (s != null) s.CapBytes = value;
         }
+    }
+
+    /// <summary>
+    /// Which thumbnails the store keeps, as the user chose (asked in addition to <see cref="ThumbKinds.KeepOnDisk"/>):
+    /// pictures made from now on that it doesn't keep are shown but not saved, and the idle step skips them. Any thread.
+    /// </summary>
+    public ThumbKeep StoreKeep
+    {
+        get => _keep;
+        set => _keep = value ?? ThumbKeep.All;
+    }
+
+    /// <summary>
+    /// The store in use started dropping its oldest thumbnails to stay within its limit. Raised on a worker thread (the
+    /// store's writer or the thread pool), never under a lock of the service or the store: marshal to the UI thread. May
+    /// be raised again for the same filling (once by the store, once when a store that opened full is published).
+    /// </summary>
+    public event Action? StoreBecameFull;
+
+    /// <summary>Whether the store in use is full now (it drops the oldest as new ones are saved). Any thread; cheap.</summary>
+    public bool StoreIsFull => _store is { IsEnabled: true } s && s.IsFull;
+
+    /// <summary>Whether the store in use refuses new pictures now because its drive is nearly full. Any thread; cheap.</summary>
+    public bool StoreDiskLow => _store is { IsEnabled: true } s && s.DiskLow;
+
+    private void RaiseStoreBecameFull()
+    {
+        try { StoreBecameFull?.Invoke(); }
+        catch { /* a handler's fault must not stop the store's writer */ }
     }
 
     /// <summary>What the service did so far.</summary>
@@ -1300,7 +1334,8 @@ internal sealed class ThumbnailService : IDisposable
     {
         if (!Resolve(w)) return new Outcome { None = true };
         // Idle work for a kind never kept on disk (text pages) has nothing to make: it only fills the store.
-        if (IdleOnly(w) && !ThumbKinds.KeepOnDisk(w.Path, w.IsFolder)) return new Outcome { Skip = true };
+        // So is idle work for a kind the user chose not to keep.
+        if (IdleOnly(w) && (!ThumbKinds.KeepOnDisk(w.Path, w.IsFolder) || !_keep.Keeps(w.Path, w.IsFolder))) return new Outcome { Skip = true };
         lock (_failed)
         {
             if (_failed.Contains(w.RealKey) || _hung.Contains(w.RealKey)) return new Outcome { Next = Stage.Icon };
@@ -1862,6 +1897,8 @@ internal sealed class ThumbnailService : IDisposable
     {
         // A page of a file's own text is shown, never kept (the caller checks what was drawn; this checks the kind).
         if (!ThumbKinds.KeepOnDisk(w.Path, w.IsFolder)) return;
+        // Nor a kind the user chose not to keep (the Instant thumbnails card in Settings).
+        if (!_keep.Keeps(w.Path, w.IsFolder)) return;
         // No store (the option off, one still opening, or a location that can't be used): nothing to encode for.
         var store = Store();
         if (!store.IsEnabled) return;
@@ -1966,6 +2003,13 @@ internal sealed class ThumbnailService : IDisposable
             }
             if (cap > 0 && s.IsEnabled) s.CapBytes = cap;
             if (!ReferenceEquals(replaced, s)) replaced?.Dispose();
+            if (s.IsEnabled)
+            {
+                // Told only while it is the store in use (a later choice replaces it). Subscribed before IsFull is read, so
+                // a filling during the open is not missed.
+                s.BecameFull += () => { if (ReferenceEquals(_store, s)) RaiseStoreBecameFull(); };
+                if (s.IsFull) RaiseStoreBecameFull();
+            }
             // A location that can't be used keeps the store idle: no idle step, whose pictures would go nowhere.
             foreach (var c in clients) c.Queue.AllowIdle = s.IsEnabled;
             Wake();

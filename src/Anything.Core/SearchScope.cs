@@ -11,8 +11,11 @@ public static class SearchScope
     /// <summary>What clicking the button does.</summary>
     public enum Click { None, ToEverything, ToFolder }
 
-    /// <summary>The button: "Everything" (in blue) or a folder's name, its tooltip, and what a click does.</summary>
-    public readonly record struct Button(string Text, bool Everything, string Tip, Click Click);
+    /// <summary>
+    /// The button: "Everything" (in blue) or a folder's name, its tooltip, what a click does, and where a search in a
+    /// folder looks ("Downloads", "the selected 3 folders"; null when there is no folder).
+    /// </summary>
+    public readonly record struct Button(string Text, bool Everything, string Tip, Click Click, string? Where = null);
 
     /// <param name="everywhere">The tab looks everywhere (Alt+X, this button, Search options), whatever is open or selected.</param>
     /// <param name="selected">The folders selected in the view a search looks inside ("images", "3 folders"), or null.</param>
@@ -20,11 +23,24 @@ public static class SearchScope
     /// <param name="zap">The folders "every file in" shows, or null when it isn't showing.</param>
     public static Button Describe(bool everywhere, string? selected, string? folder, string? zap)
     {
-        if (zap != null) return new(zap, false, $"Searching the files in {zap}. Click to search everything", Click.ToEverything);
+        if (zap != null) return new(zap, false, $"Searching the files in {zap}. Click to search everything", Click.ToEverything, zap);
         if ((selected ?? folder) is not { } scoped) return new("Everything", true, "Searching everything", Click.None);
         string where = selected != null ? $"the selected {selected}" : scoped;
         return everywhere
-            ? new("Everything", true, $"Searching everything. Click to search only in {where}", Click.ToFolder)
-            : new(scoped, false, $"Searching only in {where}. Click to search everything", Click.ToEverything);
+            ? new("Everything", true, $"Searching everything. Click to search only in {where}", Click.ToFolder, where)
+            : new(scoped, false, $"Searching only in {where}. Click to search everything", Click.ToEverything, where);
     }
+
+    /// <summary>The link under the gray text of a search that found nothing in a folder.</summary>
+    public const string EverythingInsteadLink = "Search everything instead";
+
+    /// <summary>
+    /// What an empty list adds after "No items match your search." for <paramref name="scope"/>: when the search looked
+    /// only in a folder and the chip's click goes to everything, a short sentence naming where it looked (Where) and the
+    /// link that does the click; otherwise nothing and no link.
+    /// </summary>
+    public static (string Sentence, string? Link) EmptyOffer(Button scope) =>
+        scope.Click == Click.ToEverything && !scope.Everything
+            ? ($" It looked only in {scope.Where ?? scope.Text}.", EverythingInsteadLink)
+            : ("", null);
 }

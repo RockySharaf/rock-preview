@@ -138,7 +138,9 @@ internal sealed partial class MainForm : Form
         BuildFolderBar();
         BuildElevatedDropBar();
         BuildThumbStoreBar();
+        BuildThumbStoreFullBar();
         BuildThumbnailsHint();
+        BuildScopePointer();
         BuildList();
         BuildStatusBar();
 
@@ -359,6 +361,7 @@ internal sealed partial class MainForm : Form
         _list.SelectedIndexChanged += (_, _) => QueueStatusUpdate();
         _list.VirtualItemsSelectionRangeChanged += (_, _) => QueueStatusUpdate();
         _list.KeyDown += OnListKeyDown;
+        _list.EmptyLinkClicked += SearchEverythingInstead;
         _list.KeyPress += OnListKeyPress;
         _list.MouseDoubleClick += (_, e) =>
         {
@@ -385,6 +388,7 @@ internal sealed partial class MainForm : Form
         // The offer to keep thumbnails on disk is about the thumbnails, so it sits above them only, not across the
         // navigation pane and the preview as the window's other bars do. Added after the grid: docked first, at the top.
         _split.Panel1.Controls.Add(_thumbStoreBar);
+        _split.Panel1.Controls.Add(_thumbStoreFullBar); // the same place: the store is full
         AttachTab(_tab);
         _split.Panel2.Controls.Add(_preview);
         _split.Panel2Collapsed = !_app.Settings.PreviewVisible;
@@ -432,6 +436,7 @@ internal sealed partial class MainForm : Form
         ShellDragDrop.AcceptDrops(_grid, screen => DropFolderAt(_grid, screen));
         _grid.ZoomRequested += notches => SetViewMode(Math.Clamp(Math.Max(48, _app.Settings.ThumbnailSize) + notches * 24, 48, 512));
         _grid.ForwardKeyDown += OnListKeyDown;
+        _grid.EmptyLinkClicked += SearchEverythingInstead;
         _grid.ForwardKeyPress += OnListKeyPress;
     }
 
@@ -868,7 +873,8 @@ internal sealed partial class MainForm : Form
         s.AlwaysOnTop = TopMost;
         SaveColumnState();
         foreach (var (k, v) in _cols) s.Columns[k] = new ColumnSetting { Visible = v.Visible, Width = v.Width, Position = v.Position };
-        // The order and the match options are Settings › Defaults' own: what a tab changes stays in the tab.
+        // The order is Settings › Defaults' own: a tab's sort stays in the tab. The match options are saved as they are
+        // flipped (Toggle), not here.
         s.Filter = _filterIndex == 0 ? "" : Filters.All[_filterIndex].Name;
     }
 

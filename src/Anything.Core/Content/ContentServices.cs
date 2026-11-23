@@ -27,7 +27,7 @@ public static class ContentServices
     public static IContentIndex Create(string folder)
     {
         string full = Path.GetFullPath(folder);
-        return new ContentIndex(() => ContentStore.Open(full), Files(), null, SystemPowerPolicy.Instance, new ContentIndexOptions
+        return new ContentIndex(() => ContentStore.Open(full), Files(), null, DefaultPowerPolicy.Current, new ContentIndexOptions
         {
             Folder = full,
             OpenReadOnly = () => ContentStore.Open(full, readOnly: true),
@@ -39,7 +39,7 @@ public static class ContentServices
     /// or elevation pauses, paced at about 500 documents a second.
     /// </summary>
     public static IContentIndex CreateInMemory(IContentSource source, bool demo)
-        => new ContentIndex(() => ContentStore.Open(null), source, null, demo ? NoPowerPolicy.Instance : SystemPowerPolicy.Instance,
+        => new ContentIndex(() => ContentStore.Open(null), source, null, demo ? NoPowerPolicy.Instance : DefaultPowerPolicy.Current,
             demo ? new ContentIndexOptions(AllRootsInScope: true, IgnorePower: true, IgnoreElevation: true, PaceMs: 2) : new ContentIndexOptions());
 
     /// <summary>

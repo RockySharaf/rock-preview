@@ -69,4 +69,49 @@ public sealed class SearchScopeTests
             Assert.Equal(selected ?? folder, Describe(everywhere: false, selected, folder, zap: null).Text);
         }
     }
+
+    [Fact]
+    public void TheButtonSaysWhereAFolderSearchLooks()
+    {
+        Assert.Equal("Downloads", Describe(everywhere: true, selected: null, folder: "Downloads", zap: null).Where);
+        Assert.Equal("the selected images", Describe(everywhere: false, selected: "images", folder: "Pictures", zap: null).Where);
+        Assert.Null(Describe(everywhere: true, selected: null, folder: null, zap: null).Where);
+    }
+
+    [Fact]
+    public void ASearchInAFolderThatFoundNothingOffersEverything()
+    {
+        var (sentence, link) = EmptyOffer(Describe(everywhere: false, selected: null, folder: "Downloads", zap: null));
+        Assert.Equal(" It looked only in Downloads.", sentence);
+        Assert.Equal("Search everything instead", link);
+    }
+
+    [Fact]
+    public void ASearchInSelectedFoldersSaysTheSelectedFolders()
+    {
+        var (sentence, link) = EmptyOffer(Describe(everywhere: false, selected: "3 folders", folder: "Projects", zap: null));
+        Assert.Equal(" It looked only in the selected 3 folders.", sentence);
+        Assert.Equal(EverythingInsteadLink, link);
+        (sentence, _) = EmptyOffer(Describe(everywhere: false, selected: "images", folder: "Pictures", zap: null));
+        Assert.Equal(" It looked only in the selected images.", sentence);
+    }
+
+    [Fact]
+    public void EveryFileInAFolderOffersEverythingToo()
+    {
+        var (sentence, link) = EmptyOffer(Describe(everywhere: false, selected: null, folder: "Downloads", zap: "Downloads"));
+        Assert.Equal(" It looked only in Downloads.", sentence);
+        Assert.Equal(EverythingInsteadLink, link);
+    }
+
+    [Theory]
+    [InlineData(true, "Downloads")]  // already everything: the click would go back to the folder
+    [InlineData(false, null)]         // no folder: the click does nothing
+    [InlineData(true, null)]
+    public void ASearchOverEverythingOffersNothing(bool everywhere, string? folder)
+    {
+        var (sentence, link) = EmptyOffer(Describe(everywhere, selected: null, folder, zap: null));
+        Assert.Equal("", sentence);
+        Assert.Null(link);
+    }
 }

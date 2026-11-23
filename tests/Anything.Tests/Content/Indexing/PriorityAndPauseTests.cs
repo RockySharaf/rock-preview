@@ -184,6 +184,27 @@ public class PauseTests
         Assert.Null(PowerRules.MergePause(PowerState.Unlimited with { OnBattery = true }, readOnBattery: true));
     }
 
+    // Sizes in GiB; -1 is unknown. The line is 2 GiB always, and 5% only below 10 GiB.
+    [Theory]
+    [InlineData(1, 32, true)]
+    [InlineData(1, 4096, true)]
+    [InlineData(1, -1, true)]
+    [InlineData(3, 32, false)]      // 9%: over 5% and over 2 GiB
+    [InlineData(3, 100, true)]      // 3% and under 10 GiB
+    [InlineData(9, 500, true)]      // under 2% and under 10 GiB
+    [InlineData(11, 500, false)]    // 2.2%, but over 10 GiB
+    [InlineData(24, 499, false)]    // 4.8%: the PC that showed the old rule's fault
+    [InlineData(24, 4096, false)]
+    [InlineData(3, -1, false)]      // unknown size: only the 2 GiB line
+    [InlineData(-1, 500, false)]    // unknown free space never pauses
+    [InlineData(-1, -1, false)]
+    public void Low_disk_is_under_2_GB_or_under_5_percent_and_10_GB(long freeGiB, long totalGiB, bool low)
+    {
+        static long Bytes(long gib) => gib < 0 ? -1 : gib << 30;
+        var s = PowerState.Unlimited with { FreeBytes = Bytes(freeGiB), TotalBytes = Bytes(totalGiB) };
+        Assert.Equal(low, PowerRules.LowDisk(s));
+    }
+
     [Fact]
     public void The_real_power_policy_answers_without_throwing()
     {

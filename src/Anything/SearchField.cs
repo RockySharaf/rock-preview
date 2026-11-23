@@ -55,6 +55,15 @@ internal sealed class SearchField : Control
         _chip.Invalidate();
     }
 
+    /// <summary>The scope chip on the screen, or empty while it can't be seen (the pointer for new users points at it).</summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Rectangle ScopeChipOnScreen =>
+        IsHandleCreated && Visible && _chip.Visible && _chip.Width > 0 && _chip.Height > 0 ? _chip.RectangleToScreen(_chip.ClientRectangle) : Rectangle.Empty;
+
+    /// <summary>The chip's window, to tell a click on it from others.</summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public IntPtr ScopeChipHandle => _chip.IsHandleCreated ? _chip.Handle : IntPtr.Zero;
+
     /// <summary>Where a search looks: <paramref name="text"/> ("Everything" in blue, or a folder's name) and what clicking it does.</summary>
     public void SetScope(string text, bool everything, bool clickable, string tip)
     {

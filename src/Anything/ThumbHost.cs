@@ -14,6 +14,7 @@ internal static class ThumbHost
 {
     static Func<ThumbStore>? _open;
     static bool _started;
+    static ThumbKeep _keep = ThumbKeep.All;
 
     /// <summary>The pictures held in memory at least (96 MB), shared by every window's grid.</summary>
     const long MinMemoryBudget = 96L * 1024 * 1024;
@@ -73,6 +74,8 @@ internal static class ThumbHost
             if (!_started)
             {
                 _started = true;
+                service.StoreKeep = _keep;
+                service.StoreBecameFull += () => StoreBecameFull?.Invoke();
                 if (_open != null) service.UseStore(_open);
             }
             return service;
@@ -142,6 +145,31 @@ internal static class ThumbHost
     {
         if (_started) ThumbnailService.Shared.StoreCapBytes = ThumbStore.CapBytesFor(megabytes);
     }
+
+    /// <summary>
+    /// Which thumbnails are kept on disk, as the user chose (the Instant thumbnails card in Settings): for pictures made
+    /// from now on, and for the grids' idle planning (<see cref="Keep"/>). A service started later takes it then.
+    /// </summary>
+    public static void SetKeep(ThumbKeep keep)
+    {
+        _keep = keep;
+        if (_started) ThumbnailService.Shared.StoreKeep = keep;
+    }
+
+    /// <summary>The user's choice of what is kept (<see cref="ThumbKeep.All"/> unless changed): the grid's idle planner asks it.</summary>
+    public static ThumbKeep Keep => _keep;
+
+    /// <summary>
+    /// The store in use started dropping its oldest thumbnails. Raised on a worker thread, not the UI's: the program
+    /// posts it to the UI thread before touching a window. Only once the service has started (no store is open before).
+    /// </summary>
+    public static event Action? StoreBecameFull;
+
+    /// <summary>Whether the store in use is full now (false while none is open). Any thread; cheap.</summary>
+    public static bool StoreIsFull => Volatile.Read(ref _started) && ThumbnailService.Shared.StoreIsFull;
+
+    /// <summary>Whether the store in use refuses new pictures because its drive is nearly full (false while none is open). Any thread; cheap.</summary>
+    public static bool StoreDiskLow => Volatile.Read(ref _started) && ThumbnailService.Shared.StoreDiskLow;
 
     /// <summary>Settings' Clear: the store is emptied, and what the service remembers in memory is forgotten.</summary>
     public static void ClearStore()

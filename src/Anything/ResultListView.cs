@@ -187,7 +187,7 @@ internal sealed class ResultListView : ListView
     /// and exhausts memory. A plain ControlAccessibleObject defers to the native SysListView32 proxy, which serves
     /// owner-data items on demand.
     /// </summary>
-    protected override AccessibleObject CreateAccessibilityInstance() => new ControlAccessibleObject(this);
+    // CreateAccessibilityInstance is with the empty text below: a plain ControlAccessibleObject, plus the link while empty.
 
     /// <summary>O(1) selection test (SelectedIndices.Contains walks every selected item in virtual mode).</summary>
     public bool IsItemSelected(int index)
@@ -238,6 +238,49 @@ internal sealed class ResultListView : ListView
         }
     }
 
+    EmptyTextLink? _emptyLink;
+
+    /// <summary>A link on its own line under <see cref="EmptyText"/> ("Search everything instead"); null for none.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public string? EmptyLink
+    {
+        get => _emptyLink?.Text;
+        set
+        {
+            _emptyLink ??= new EmptyTextLink(this, () => EmptyLinkClicked?.Invoke());
+            if (!_emptyLink.SetText(value)) return;
+            if (VirtualListSize == 0) Invalidate();
+        }
+    }
+
+    /// <summary>The link under the gray text was clicked, or Enter pressed while it shows.</summary>
+    public event Action? EmptyLinkClicked;
+
+    bool EmptyLinkShowing => _emptyLink is { Text: not null } && _emptyText.Length > 0 && VirtualListSize == 0;
+
+    /// <summary>The gray text's box, under the column headers.</summary>
+    Rectangle EmptyTextArea()
+    {
+        int top = 0;
+        if (HeaderHandle is var header && header != IntPtr.Zero && GetWindowRect(header, out var hr)) top = hr.Bottom - hr.Top;
+        int pad = LogicalToDeviceUnits(16);
+        return new Rectangle(pad, top + LogicalToDeviceUnits(20), Math.Max(0, ClientSize.Width - 2 * pad), LogicalToDeviceUnits(80));
+    }
+
+    /// <summary>The link's box (client), or empty while it doesn't show.</summary>
+    Rectangle EmptyLinkBounds() => EmptyLinkShowing ? _emptyLink!.Layout(EmptyTextArea(), _emptyText, Font) : Rectangle.Empty;
+
+    protected override AccessibleObject CreateAccessibilityInstance() => new ListAccessible(this);
+
+    /// <summary>The native list's own object, with the link as its only child while the list is empty and shows one.</summary>
+    sealed class ListAccessible(ResultListView owner) : ControlAccessibleObject(owner)
+    {
+        public override int GetChildCount() => owner.EmptyLinkShowing ? 1 : base.GetChildCount();
+
+        public override AccessibleObject? GetChild(int index) =>
+            owner.EmptyLinkShowing ? index == 0 ? owner._emptyLink!.Accessible(this, owner.EmptyLinkBounds, owner._emptyText) : null : base.GetChild(index);
+    }
+
     [DllImport("user32.dll")]
     static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
 
@@ -253,14 +296,37 @@ internal sealed class ResultListView : ListView
     /// </summary>
     void DrawEmptyText(Rectangle painted)
     {
-        int top = 0;
-        if (HeaderHandle is var header && header != IntPtr.Zero && GetWindowRect(header, out var hr)) top = hr.Bottom - hr.Top;
-        int pad = LogicalToDeviceUnits(16);
-        var r = new Rectangle(pad, top + LogicalToDeviceUnits(20), Math.Max(0, ClientSize.Width - 2 * pad), LogicalToDeviceUnits(80));
+        var r = EmptyTextArea();
         using var g = CreateGraphics();
         g.SetClip(painted);
         TextRenderer.DrawText(g, _emptyText, Font, r, ExplorerTheme.SecondaryText,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+        if (EmptyLinkShowing) _emptyLink!.Paint(g, _emptyLink.Layout(r, _emptyText, Font), Font);
+    }
+
+    bool _linkDown; // the left button went down on the link: its release there follows it
+
+    /// <summary>The pointer over the link or not: the hand and the underline follow.</summary>
+    void TrackLinkHover(Point p)
+    {
+        var link = EmptyLinkBounds();
+        bool hot = link.Contains(p);
+        if (_emptyLink is null || !_emptyLink.SetHot(hot)) return;
+        Invalidate(Rectangle.Inflate(link, 2, 2));
+        if (!hot) return;
+        var tme = new TRACKMOUSEEVENT { cbSize = Marshal.SizeOf<TRACKMOUSEEVENT>(), dwFlags = TME_LEAVE, hwndTrack = Handle };
+        TrackMouseEvent(ref tme);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyData == Keys.Enter && EmptyLinkShowing)
+        {
+            e.Handled = e.SuppressKeyPress = true;
+            EmptyLinkClicked?.Invoke();
+            return;
+        }
+        base.OnKeyDown(e);
     }
 
     // ---- Explorer's empty space and selection rectangle -------------------------------------------
@@ -631,6 +697,7 @@ internal sealed class ResultListView : ListView
 
     const int WM_MOUSELEAVE = 0x2A3, WM_KEYDOWN = 0x100, WM_MBUTTONDOWN = 0x207, MK_LBUTTON = 0x1, MK_RBUTTON = 0x2, MK_MBUTTON = 0x10;
     const int TME_LEAVE = 0x2;
+    const int WM_SETCURSOR = 0x20, HTCLIENT = 1;
 
     [StructLayout(LayoutKind.Sequential)]
     struct TRACKMOUSEEVENT { public int cbSize; public int dwFlags; public IntPtr hwndTrack; public int dwHoverTime; }
@@ -755,6 +822,34 @@ internal sealed class ResultListView : ListView
     protected override void WndProc(ref Message m)
     {
         if (ShellContextMenu.HandleMenuMessage(ref m)) return;
+        if (_emptyLink is { Text: not null } && VirtualListSize == 0)
+        {
+            // The link under the gray text: a hand over it, followed on a release where it was pressed.
+            switch (m.Msg)
+            {
+                case WM_MOUSEMOVE:
+                    TrackLinkHover(PointOf(m.LParam));
+                    break;
+                case WM_MOUSELEAVE:
+                    TrackLinkHover(new Point(-1, -1));
+                    break;
+                case WM_SETCURSOR when _emptyLink.Hot && ((int)(long)m.LParam & 0xFFFF) == HTCLIENT:
+                    Cursor.Current = Cursors.Hand;
+                    m.Result = 1;
+                    return;
+                case WM_LBUTTONDOWN or WM_LBUTTONDBLCLK when EmptyLinkBounds().Contains(PointOf(m.LParam)):
+                    Focus();
+                    _linkDown = true;
+                    return;
+                case WM_LBUTTONUP when _linkDown:
+                    _linkDown = false;
+                    if (EmptyLinkBounds().Contains(PointOf(m.LParam))) EmptyLinkClicked?.Invoke();
+                    return;
+                case WM_LBUTTONDOWN:
+                    _linkDown = false;
+                    break;
+            }
+        }
         switch (m.Msg)
         {
             case WM_MOUSEMOVE:
@@ -858,5 +953,86 @@ internal sealed class ResultListView : ListView
         base.OnLostFocus(e);
         StopRenameClick();
         Invalidate();
+    }
+}
+
+/// <summary>
+/// A link on its own line under an empty list's or grid's gray text ("Search everything instead"): drawn in the accent
+/// colour, underlined under the pointer, and a Link to screen readers, named by its text.
+/// </summary>
+internal sealed class EmptyTextLink(Control owner, Action click)
+{
+    readonly Control _owner = owner;
+    readonly Action _click = click;
+    const TextFormatFlags Flags = TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+    const TextFormatFlags TextFlags = TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix;
+
+    public string? Text { get; private set; }
+
+    /// <summary>The pointer is over it.</summary>
+    public bool Hot { get; private set; }
+
+    LinkAccessible? _accessible;
+
+    /// <summary>False when it already said that.</summary>
+    public bool SetText(string? text)
+    {
+        if (text == Text) return false;
+        Text = text;
+        if (text is null) Hot = false;
+        return true;
+    }
+
+    /// <summary>False when it already was.</summary>
+    public bool SetHot(bool hot)
+    {
+        if (hot == Hot) return false;
+        Hot = hot;
+        return true;
+    }
+
+    /// <summary>Its box, centred under <paramref name="grey"/> as it wraps in <paramref name="area"/>.</summary>
+    public Rectangle Layout(Rectangle area, string grey, Font font)
+    {
+        if (Text is null || area.Width <= 0) return Rectangle.Empty;
+        int textHeight = Math.Min(area.Height, TextRenderer.MeasureText(grey, font, new Size(area.Width, int.MaxValue), TextFlags).Height);
+        var size = TextRenderer.MeasureText(Text, font, Size.Empty, Flags);
+        int width = Math.Min(size.Width, area.Width);
+        return new Rectangle(area.X + (area.Width - width) / 2, area.Y + textHeight + _owner.LogicalToDeviceUnits(6), width, size.Height);
+    }
+
+    public void Paint(Graphics g, Rectangle bounds, Font font)
+    {
+        if (Text is null || bounds.IsEmpty) return;
+        if (Hot)
+        {
+            using var underlined = new Font(font, font.Style | FontStyle.Underline);
+            TextRenderer.DrawText(g, Text, underlined, bounds, ExplorerTheme.Accent, Flags | TextFormatFlags.EndEllipsis);
+        }
+        else TextRenderer.DrawText(g, Text, font, bounds, ExplorerTheme.Accent, Flags | TextFormatFlags.EndEllipsis);
+    }
+
+    /// <summary>Its object for screen readers: a Link named by its text, the gray text as its description.</summary>
+    public AccessibleObject Accessible(AccessibleObject parent, Func<Rectangle> bounds, string grey)
+    {
+        _accessible ??= new LinkAccessible(this);
+        (_accessible.ParentObject, _accessible.BoundsOf, _accessible.Grey) = (parent, bounds, grey);
+        return _accessible;
+    }
+
+    sealed class LinkAccessible(EmptyTextLink link) : AccessibleObject
+    {
+        public AccessibleObject? ParentObject;
+        public Func<Rectangle> BoundsOf = () => Rectangle.Empty;
+        public string Grey = "";
+
+        public override string? Name { get => link.Text; set { } }
+        public override string? Description => Grey;
+        public override AccessibleRole Role => AccessibleRole.Link;
+        public override AccessibleStates State => AccessibleStates.Focusable | AccessibleStates.Linked | (link.Hot ? AccessibleStates.HotTracked : 0);
+        public override string DefaultAction => "Click";
+        public override AccessibleObject? Parent => ParentObject;
+        public override Rectangle Bounds => link._owner.IsHandleCreated && BoundsOf() is { IsEmpty: false } r ? link._owner.RectangleToScreen(r) : Rectangle.Empty;
+        public override void DoDefaultAction() => link._click();
     }
 }

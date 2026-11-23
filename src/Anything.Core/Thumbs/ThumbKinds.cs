@@ -243,6 +243,14 @@ public static class ThumbKinds
     /// </summary>
     public static bool KeepOnDisk(string extensionOrPath, bool isFolder = false) => CostOf(extensionOrPath, isFolder) != ThumbCost.Nothing;
 
+    /// <summary>Whether a bare extension (any case) is a flat picture (png, gif, bmp, ico...): a picture to the user, priced as a document.</summary>
+    internal static bool IsFlatPicture(ReadOnlySpan<char> extension)
+    {
+        foreach (var ext in FlatPictures)
+            if (extension.Equals(ext, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
     /// <summary>Whether this is a camera RAW kind.</summary>
     public static bool IsRaw(string extensionOrPath) => Raw.Contains(Ext(extensionOrPath));
 

@@ -31,6 +31,7 @@ internal sealed partial class SettingsForm : Form
     readonly ComboBox _defaultSort = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ToggleSwitch _foldersFirst = new();
     readonly ToggleSwitch _matchCase = new(), _wholeWord = new(), _matchPath = new(), _diacritics = new(), _regex = new();
+    (bool Case, bool WholeWord, bool Path, bool Diacritics, bool Regex) _shownMatch; // as the page last showed or saved them
     readonly ToggleSwitch _expandTree = new(), _hiddenFiles = new(), _usbPrompt = new(), _frequentFolders = new();
     readonly List<(string Key, ToggleSwitch Switch)> _navRoots = [];
     // Thumbnails
@@ -372,8 +373,8 @@ internal sealed partial class SettingsForm : Form
     }
 
     /// <summary>
-    /// What every new window and tab starts with, in one place. Changed here, every open tab takes it too (Sort and
-    /// Search options still change a tab on its own).
+    /// What every new window and tab starts with, in one place. Changed here, every open tab takes it too. A match
+    /// switch flipped in a window is stored here as well (only that tab changes); Sort still changes a tab on its own.
     /// </summary>
     PageStack DefaultsPage()
     {
@@ -976,6 +977,7 @@ internal sealed partial class SettingsForm : Form
         _matchPath.Checked = s.MatchPath;
         _diacritics.Checked = s.MatchDiacritics;
         _regex.Checked = s.Regex;
+        _shownMatch = (s.MatchCase, s.MatchWholeWord, s.MatchPath, s.MatchDiacritics, s.Regex);
         ShowEveryday(s);
         var ix = s.Index;
         _ntfs.Checked = ix.IndexNtfsVolumes;
@@ -1120,11 +1122,13 @@ internal sealed partial class SettingsForm : Form
         var before = s.Defaults;
         if (_defaultSort.SelectedItem is SortChoice sort) (s.Sort, s.SortDescending) = (sort.Key, sort.Descending);
         s.FoldersFirst = _foldersFirst.Checked;
-        s.MatchCase = _matchCase.Checked;
-        s.MatchWholeWord = _wholeWord.Checked;
-        s.MatchPath = _matchPath.Checked;
-        s.MatchDiacritics = _diacritics.Checked;
-        s.Regex = _regex.Checked;
+        // Only the match switches changed on this page: one flipped in a window since the page showed it is newer.
+        if (_matchCase.Checked != _shownMatch.Case) s.MatchCase = _matchCase.Checked;
+        if (_wholeWord.Checked != _shownMatch.WholeWord) s.MatchWholeWord = _wholeWord.Checked;
+        if (_matchPath.Checked != _shownMatch.Path) s.MatchPath = _matchPath.Checked;
+        if (_diacritics.Checked != _shownMatch.Diacritics) s.MatchDiacritics = _diacritics.Checked;
+        if (_regex.Checked != _shownMatch.Regex) s.Regex = _regex.Checked;
+        _shownMatch = (_matchCase.Checked, _wholeWord.Checked, _matchPath.Checked, _diacritics.Checked, _regex.Checked);
         s.ExpandTreeToFolder = _expandTree.Checked;
         s.UsbPrompt = _usbPrompt.Checked;
         _app.ApplySettings(indexChanged: false);

@@ -525,7 +525,7 @@ internal sealed partial class MainForm
         items.Add(new ToolStripMenuItem("Match diacritics", null, (_, _) => Toggle(() => _diacritics = !_diacritics)) { Checked = _diacritics, ShortcutKeyDisplayString = "Ctrl+M" });
         items.Add(new ToolStripMenuItem("Regular expressions", null, (_, _) => Toggle(() => _regex = !_regex)) { Checked = _regex, ShortcutKeyDisplayString = "Ctrl+R" });
         items.Add(new ToolStripSeparator());
-        items.Add(new ToolStripMenuItem("Search syntax", null, (_, _) => SearchSyntaxForm.ShowSyntax(this)) { ShortcutKeyDisplayString = "F1" });
+        items.Add(new ToolStripMenuItem("Search syntax", null, (_, _) => SearchSyntaxForm.ShowSyntax(this, _app.ActiveHotkey)));
     }
 
     /// <summary>

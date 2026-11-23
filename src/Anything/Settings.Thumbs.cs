@@ -10,8 +10,17 @@ internal sealed partial class AppSettings
     /// <summary>Keep thumbnails on disk so they appear at once (Settings › Thumbnails). Off unless the user turns it on.</summary>
     public bool ThumbnailStore { get; set; }
 
-    /// <summary>The most the saved thumbnails may take, in megabytes: one of <see cref="ThumbStore.CapChoicesMegabytes"/>.</summary>
+    /// <summary>
+    /// The most the saved thumbnails may take, in megabytes, as the user typed it: any whole number within
+    /// <see cref="ThumbStore.MinCapMegabytes"/> and <see cref="ThumbStore.MaxCapMegabytes"/>.
+    /// </summary>
     public int ThumbnailStoreMegabytes { get; set; } = ThumbStore.DefaultCapMegabytes;
+
+    /// <summary>Which thumbnails are kept (the groups ticked, the file types never kept): everything unless the user changes it.</summary>
+    public ThumbKeep ThumbnailStoreKeep { get; set; } = ThumbKeep.All;
+
+    /// <summary>The limit (MB) at which the user last dismissed the "store is full" bar; 0 when never. Another limit tells again.</summary>
+    public int ThumbnailStoreFullToldMegabytes { get; set; }
 
     /// <summary>The folder the user chose for them (Change location...); empty: beside the index database.</summary>
     public string ThumbnailStorePath { get; set; } = "";
@@ -36,6 +45,8 @@ internal sealed partial class AppSettings
         string? Get(string k) => v.TryGetValue(k, out var x) ? x : null;
         s.ThumbnailStore = Get("thumbnail_store")?.Trim() is "1" or "true" or "True";
         s.ThumbnailStoreMegabytes = ThumbOption.CapMegabytesFrom(Get("thumbnail_store_mb"));
+        s.ThumbnailStoreKeep = ThumbKeep.FromIni(Get("thumbnail_store_kinds"), Get("thumbnail_store_skip"));
+        s.ThumbnailStoreFullToldMegabytes = int.TryParse(Get("thumbnail_store_full_told_mb")?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int told) ? Math.Max(0, told) : 0;
         s.ThumbnailStorePath = Get("thumbnail_store_path")?.Trim() ?? "";
         s.ThumbnailWaits = int.TryParse(Get("thumbnail_waits")?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int waits) ? Math.Max(0, waits) : 0;
         s.ThumbnailStoreOffered = Get("thumbnail_store_offered")?.Trim() is "1" or "true" or "True";
@@ -50,6 +61,9 @@ internal sealed partial class AppSettings
         void W(string k, string value) => sb.Append(k).Append('=').Append(value).Append("\r\n");
         W("thumbnail_store", ThumbnailStore ? "1" : "0");
         W("thumbnail_store_mb", ThumbnailStoreMegabytes.ToString(CultureInfo.InvariantCulture));
+        W("thumbnail_store_kinds", ThumbnailStoreKeep.KindsIni);
+        if (ThumbnailStoreKeep.Skipped.Count > 0) W("thumbnail_store_skip", Clean(ThumbnailStoreKeep.SkipIni));
+        if (ThumbnailStoreFullToldMegabytes > 0) W("thumbnail_store_full_told_mb", ThumbnailStoreFullToldMegabytes.ToString(CultureInfo.InvariantCulture));
         if (ThumbnailStorePath.Length > 0) W("thumbnail_store_path", Clean(ThumbnailStorePath));
         W("thumbnail_waits", ThumbnailWaits.ToString(CultureInfo.InvariantCulture));
         W("thumbnail_store_offered", ThumbnailStoreOffered ? "1" : "0");

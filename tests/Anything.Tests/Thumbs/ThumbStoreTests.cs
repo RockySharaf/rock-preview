@@ -405,13 +405,22 @@ public sealed class ThumbStoreTests : IDisposable
     }
 
     [Fact]
-    public void Five_percent_free_also_counts_as_low()
+    public void Under_5_percent_free_counts_as_low_only_below_10_GB()
     {
-        var low = new FixedPower(new PowerState(false, false, TimeSpan.Zero, false, FreeBytes: 40L << 30, TotalBytes: 1000L << 30));
-        using var store = Open(new ThumbStoreOptions { Power = low });
-        Assert.True(store.Put(Key(1), StoredKind.Jpeg, 256, 192, Payload(1)));
-        Assert.True(store.WaitUntilWritten(Wait));
-        Assert.Empty(Packs());
+        // 8 GB of 200 GB: 4% and under 10 GB, so low.
+        var low = new FixedPower(new PowerState(false, false, TimeSpan.Zero, false, FreeBytes: 8L << 30, TotalBytes: 200L << 30));
+        using (var store = Open(new ThumbStoreOptions { Power = low }))
+        {
+            Assert.True(store.Put(Key(1), StoredKind.Jpeg, 256, 192, Payload(1)));
+            Assert.True(store.WaitUntilWritten(Wait));
+            Assert.Empty(Packs());
+        }
+        // 40 GB of 1000 GB: 4% too, but a large drive with room to spare.
+        var roomy = new FixedPower(new PowerState(false, false, TimeSpan.Zero, false, FreeBytes: 40L << 30, TotalBytes: 1000L << 30));
+        using var again = Open(new ThumbStoreOptions { Power = roomy });
+        Assert.True(again.Put(Key(2), StoredKind.Jpeg, 256, 192, Payload(2)));
+        Assert.True(again.WaitUntilWritten(Wait));
+        Assert.NotEmpty(Packs());
     }
 
     [Fact]
@@ -613,9 +622,11 @@ public sealed class ThumbStoreTests : IDisposable
     [Fact]
     public void The_cap_setting_is_clamped_and_counted_in_decimal_megabytes()
     {
-        Assert.Equal(64_000_000L, ThumbStore.CapBytesFor(1));
+        Assert.Equal(100_000_000L, ThumbStore.CapBytesFor(1));
         Assert.Equal(500_000_000L, ThumbStore.CapBytesFor(500));
-        Assert.Equal(8_000_000_000L, ThumbStore.CapBytesFor(100_000));
+        // No top at 8 GB any more: only the 4 TB sanity bound.
+        Assert.Equal(100_000_000_000L, ThumbStore.CapBytesFor(100_000));
+        Assert.Equal(4_000_000_000_000L, ThumbStore.CapBytesFor(int.MaxValue));
     }
 
     [Fact]
@@ -812,11 +823,10 @@ public sealed class ThumbStoreTests : IDisposable
     }
 
     [Fact]
-    public void The_cap_choices_are_the_settings()
+    public void The_default_limit_is_within_the_bounds_and_counted_in_decimal_megabytes()
     {
-        Assert.Equal([250, 500, 1000, 2000, 4000, 8000], ThumbStore.CapChoicesMegabytes);
-        Assert.Contains(ThumbStore.DefaultCapMegabytes, ThumbStore.CapChoicesMegabytes);
-        Assert.All(ThumbStore.CapChoicesMegabytes, mb => Assert.Equal(mb * 1_000_000L, ThumbStore.CapBytesFor(mb)));
+        Assert.All(new[] { 250, 500, 1000, 8000 }, mb => Assert.Equal(mb * 1_000_000L, ThumbStore.CapBytesFor(mb)));
+        Assert.Equal((100, 500, 4_000_000), (ThumbStore.MinCapMegabytes, ThumbStore.DefaultCapMegabytes, ThumbStore.MaxCapMegabytes));
     }
 
     [Fact]

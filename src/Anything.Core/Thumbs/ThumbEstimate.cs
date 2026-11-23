@@ -75,9 +75,10 @@ public static class ThumbEstimator
 
     /// <summary>
     /// The census of a list of file names (tests, the demo): each counted by its kind; with <paramref name="only"/> (the
-    /// setting "Everyday files only"), names it leaves out count nothing, since the thumbnail views never show them.
+    /// setting "Everyday files only"), names it leaves out count nothing, since the thumbnail views never show them; with
+    /// <paramref name="keep"/> (the user's choice of what is kept), names it doesn't keep count nothing either.
     /// </summary>
-    public static ThumbCensus Count(IEnumerable<string> names, EverydayFiles? only = null)
+    public static ThumbCensus Count(IEnumerable<string> names, EverydayFiles? only = null, ThumbKeep? keep = null)
     {
         var counts = new long[4];
         long files = 0;
@@ -85,6 +86,7 @@ public static class ThumbEstimator
         {
             files++;
             if (only != null && !only.IsEveryday(n)) continue;
+            if (keep != null && !keep.Keeps(n)) continue;
             counts[(int)ThumbKinds.CostOf(n)]++;
         }
         return Census(counts, files, complete: true, live: files);
@@ -108,9 +110,10 @@ public static class ThumbEstimator
     /// after that the census is not <see cref="ThumbCensus.Complete"/>. Call it off the UI thread; it allocates nothing
     /// per file. Throws OperationCanceledException when <paramref name="ct"/> is cancelled. With <paramref name="only"/>
     /// (the setting "Everyday files only", on by default) files it leaves out count nothing: the thumbnail views never
-    /// show them, so they never get a stored thumbnail (source trees would otherwise swell the number many times).
+    /// show them, so they never get a stored thumbnail (source trees would otherwise swell the number many times). With
+    /// <paramref name="keep"/> (Settings' "Keep thumbnails of" and the types never kept), files it doesn't keep count nothing.
     /// </summary>
-    public static ThumbCensus CountIndex(FileIndex index, CancellationToken ct, EverydayFiles? only = null)
+    public static ThumbCensus CountIndex(FileIndex index, CancellationToken ct, EverydayFiles? only = null, ThumbKeep? keep = null)
     {
         var counts = new long[4];
         long files = 0;
@@ -141,7 +144,10 @@ public static class ThumbEstimator
                         files++;
                         string name = index.Name(id);
                         if (only != null && !only.IsEveryday(name)) continue;
-                        counts[(int)ThumbKinds.CostOfExtension(ExtensionOf(name))]++;
+                        var ext = ExtensionOf(name);
+                        var cost = ThumbKinds.CostOfExtension(ext);
+                        if (keep != null && cost != ThumbCost.Nothing && !keep.KeepsExtension(ext, cost)) continue;
+                        counts[(int)cost]++;
                     }
                 }
                 finally

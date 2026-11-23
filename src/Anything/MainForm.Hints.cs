@@ -85,6 +85,8 @@ internal sealed partial class MainForm
         _hintPulse.Dispose();
         _scopeHintDelay.Dispose();
         _scopeHintPulse.Dispose();
+        _pointerDelay.Dispose();
+        _pointer?.Dismiss();
     }
 
     // ---- the search box's folder button ---------------------------------------------------------
@@ -137,15 +139,144 @@ internal sealed partial class MainForm
         float amount = !_scopeHintAnimate ? 1f
             : t < HintPulses * HintPulseMs ? (float)(0.5 - 0.5 * Math.Cos(2 * Math.PI * (t % HintPulseMs) / HintPulseMs))
             : 0.35f;
-        _searchField.SetScopeGlow(amount);
+        _searchField.SetScopeGlow(Math.Max(amount, PointerGlow));
     }
 
     void StopScopeHint()
     {
         _scopeHintDelay.Stop();
         _scopeHintPulse.Stop();
-        _searchField.SetScopeGlow(0);
+        _searchField.SetScopeGlow(PointerGlow);
     }
+
+    // ---- the pointer at the search box's scope, for new users -----------------------------------
+
+    /// <summary>Shown on this start of the program already (one showing per start, whichever window).</summary>
+    static bool s_scopePointerShown;
+
+    /// <summary>Its moments on this start that a menu, dialog or drag was in the way of; at the limit it gives up.</summary>
+    static int s_scopePointerTries;
+
+    /// <summary>Gave up on this start: something was in the way every time.</summary>
+    static bool s_scopePointerGaveUp;
+
+    readonly System.Windows.Forms.Timer _pointerDelay = new() { Interval = 1500 };
+    ScopePointer? _pointer;
+
+    /// <summary>The chip is lit while the pointer points at it.</summary>
+    float PointerGlow => _pointer is null ? 0f : 1f;
+
+    void BuildScopePointer()
+    {
+        _pointerDelay.Tick += (_, _) => { _pointerDelay.Stop(); ShowScopePointer(); };
+        // It waits until the window is in front, and goes when it isn't (ScopePointer closes itself then).
+        Activated += (_, _) => QueueScopePointer();
+        Deactivate += (_, _) => _pointerDelay.Stop();
+        _searchField.ScopeClicked += () => _pointer?.Dismiss();
+    }
+
+    /// <summary>The window came to the front: on the first starts, the pointer shows in a moment, if it still is.</summary>
+    void QueueScopePointer()
+    {
+        if (_pointer is not null || !ScopePointerRules.Wanted(_app.Settings.ScopePointerStarts, _app.IsDemo, s_scopePointerShown || s_scopePointerGaveUp, chipVisible: true)) return;
+        _pointerDelay.Stop();
+        _pointerDelay.Start();
+    }
+
+    void ShowScopePointer()
+    {
+        try
+        {
+            if (IsDisposed || !_loaded || _pointer is not null || ActiveForm != this || WindowState == FormWindowState.Minimized || !Visible) return;
+            var s = _app.Settings;
+            bool chip = !_searchField.ScopeChipOnScreen.IsEmpty;
+            if (!ScopePointerRules.Wanted(s.ScopePointerStarts, _app.IsDemo, s_scopePointerShown || s_scopePointerGaveUp, chip)) return;
+            // Never under a menu, a drop-down or a dialog, nor during a drag: it tries again after the same delay.
+            switch (ScopePointerRules.WhenDue(AnyMenuOpen(), AnyDialogOpen(), MouseCaptured(), s_scopePointerTries))
+            {
+                case ScopePointerRules.Moment.Wait:
+                    s_scopePointerTries++;
+                    _pointerDelay.Start();
+                    return;
+                case ScopePointerRules.Moment.GiveUp:
+                    s_scopePointerGaveUp = true;
+                    return;
+            }
+            // The Get started corner window may be up: the pointer keeps clear of it, or waits for another time.
+            var corner = Application.OpenForms.OfType<GetStartedForm>().FirstOrDefault(f => f.Visible && !f.IsDisposed)?.Bounds;
+            var pointer = ScopePointer.TryShow(this, _searchField, ScopePointerRules.Line(ScopeButton()), corner);
+            if (pointer is null) return;
+            _pointer = pointer;
+            pointer.FormClosed += (_, _) =>
+            {
+                if (_pointer == pointer) _pointer = null;
+                if (!IsDisposed && !_scopeHintPulse.Enabled) _searchField.SetScopeGlow(0);
+            };
+            s_scopePointerShown = true;
+            s.ScopePointerStarts = Math.Min(ScopePointerRules.Starts, s.ScopePointerStarts + 1);
+            s.Save();
+            _searchField.SetScopeGlow(Math.Max(PointerGlow, _scopeHintPulse.Enabled ? 0.35f : 0f));
+        }
+        catch (Exception) { } // only a hint: never into the message loop
+    }
+
+    const uint GUI_INMENUMODE = 0x4, GUI_SYSTEMMENUMODE = 0x8, GUI_POPUPMENUMODE = 0x10;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct GUITHREADINFO
+    {
+        public int cbSize;
+        public uint flags;
+        public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret;
+        public int caretLeft, caretTop, caretRight, caretBottom;
+    }
+
+    delegate bool ThreadWindowProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint thread, ref GUITHREADINFO info);
+    [DllImport("user32.dll")] static extern bool EnumThreadWindows(uint thread, ThreadWindowProc proc, IntPtr lParam);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+
+    /// <summary>This window's thread as Windows sees it, or null when it can't be read.</summary>
+    static GUITHREADINFO? ThreadInfo()
+    {
+        var info = new GUITHREADINFO { cbSize = Marshal.SizeOf<GUITHREADINFO>() };
+        return GetGUIThreadInfo(GetCurrentThreadId(), ref info) ? info : null;
+    }
+
+    /// <summary>A menu is open: one of this window's drop-downs (the command bar's, the search history's, a shortcut menu) or a native one.</summary>
+    bool AnyMenuOpen()
+    {
+        if (ThreadInfo() is { } info && (info.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE)) != 0) return true;
+        bool open = false;
+        EnumThreadWindows(GetCurrentThreadId(), (hwnd, _) =>
+        {
+            if (FromHandle(hwnd) is ToolStripDropDown { Visible: true } dd && DropDownOwner(dd) is var owner && (owner is null || owner == this))
+                open = true;
+            return !open;
+        }, IntPtr.Zero);
+        return open;
+    }
+
+    /// <summary>The window a drop-down belongs to, through the menus it opened from; null when it can't be told (then it counts as this one's).</summary>
+    static Form? DropDownOwner(ToolStripDropDown dd)
+    {
+        for (int depth = 0; depth < 32; depth++)
+        {
+            if (dd.OwnerItem?.Owner is ToolStripDropDown up) { dd = up; continue; }
+            if (dd.OwnerItem?.Owner is { } strip) return strip.FindForm();
+            if (dd is ContextMenuStrip { SourceControl: { } source }) return source.FindForm();
+            break;
+        }
+        return null;
+    }
+
+    /// <summary>A dialog is up over the program, its own or Windows' (this window is disabled then).</summary>
+    bool AnyDialogOpen() =>
+        !IsWindowEnabled(Handle) || Application.OpenForms.Cast<Form>().Any(f => f != this && f.Visible && f.Modal);
+
+    /// <summary>The mouse is captured: a drag is on its way.</summary>
+    static bool MouseCaptured() => ThreadInfo() is { } info && info.hwndCapture != IntPtr.Zero;
 
     // ---- running as administrator ---------------------------------------------------------------
 

@@ -218,10 +218,10 @@ internal sealed partial class MainForm
         var from = _tab;
         var t = new FolderTab
         {
-            MatchCase = from.MatchCase, WholeWord = from.WholeWord, MatchPath = from.MatchPath, Diacritics = from.Diacritics, Regex = from.Regex,
             FilterIndex = from.FilterIndex,
             Browsing = true,
         };
+        StartMatching(t, null); // the matching switches as saved, as a new window begins
         (t.Sort, t.Descending) = from.SortBeforeZap ?? (from.Sort, from.Descending);
         _tabs.Add(t);
         AttachTab(t);
@@ -249,18 +249,18 @@ internal sealed partial class MainForm
 
     /// <summary>
     /// Opens a tab and shows it: at <paramref name="location"/>, or where File Explorer opens, at <paramref name="index"/> (-1 = the end). It
-    /// searches the way <paramref name="like"/> (by default the active tab) does: match options, kind of file and sort,
-    /// as a new window does.
+    /// takes the kind of file and sort of <paramref name="like"/> (by default the active tab) and, as a new window does,
+    /// the matching switches as saved; a duplicated tab (<paramref name="like"/> given) keeps its matching switches too.
     /// </summary>
     void OpenTab(string? location, int index, string? search, FolderTab? like)
     {
         var from = like ?? _tab;
         var t = new FolderTab
         {
-            MatchCase = from.MatchCase, WholeWord = from.WholeWord, MatchPath = from.MatchPath, Diacritics = from.Diacritics, Regex = from.Regex,
             FilterIndex = from.FilterIndex,
             Browsing = true, // a folder is on its way: show its view, not an empty results list, while it loads
         };
+        StartMatching(t, like);
         (t.Sort, t.Descending) = from.SortBeforeZap ?? (from.Sort, from.Descending);
         _tabs.Insert(index < 0 || index > _tabs.Count ? _tabs.Count : index, t);
         AttachTab(t);
@@ -269,6 +269,17 @@ internal sealed partial class MainForm
         if (search is { Length: > 0 }) SetSearch(search);
         else RunSearch(SearchReason.NewQuery);
         BeginInvoke(() => { if (t == _tab) FocusTabContent(); }); // after whatever else wants the focus now (showing the window)
+    }
+
+    /// <summary>
+    /// Gives a new tab its six matching switches (<see cref="MatchChoices.ForNewTab"/>): the saved ones, or those of
+    /// <paramref name="duplicated"/> when it is a copy of that tab.
+    /// </summary>
+    void StartMatching(FolderTab t, FolderTab? duplicated)
+    {
+        var m = MatchChoices.ForNewTab(_app.Settings.Matching, duplicated is null ? null : TabMatching(duplicated));
+        (t.MatchCase, t.WholeWord, t.MatchPath, t.Diacritics, t.Regex) = (m.Case, m.WholeWord, m.Path, m.Diacritics, m.Regex);
+        SetMatchContent(t, m.InsideFiles);
     }
 
     /// <summary>Shows another tab: its view, its search, and its results where it left them.</summary>

@@ -63,13 +63,18 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
   folder you opened ("Downloads"). Opening a folder searches inside it; `Alt+X` always searches everything. Click the
   folder's name at the start of the box to search everything instead, and **Everything** to go back; it always
   switches, also while folders are selected (it then shows their name) or every file in a folder shows. Select
-  folders first to search only inside them ("images"). Everything stays chosen until you open another folder.
-- Results start newest first, **folders before files**, matching **whole words** ("port" finds port, not report).
-  A word that starts or ends with punctuation needs no word break there: `.pdf` finds every PDF and `c:\projects\ .cs`
-  the .cs files under that folder. In Chinese, Japanese, Korean or Thai, written without spaces, any part of a name
-  matches.
-  **Settings › Defaults** changes any of it, with the other match options, and every open tab follows; Sort and
-  Search options still change one tab on its own.
+  folders first to search only inside them ("images"). Everything stays chosen until you open another folder. When a
+  search in a folder finds nothing, the empty list says where it looked, with a **Search everything instead** link.
+  On the first two starts, a small note under the search box points at the folder's name (or Everything) at its start
+  and says what clicking it does.
+- Results start newest first, **folders before files**, and words match anywhere in a name ("port" also finds
+  report); turn on **whole word** to find port alone. With it on, a word that starts or ends with punctuation needs
+  no word break there: `.pdf` finds every PDF and `c:\projects\ .cs` the .cs files under that folder. In Chinese,
+  Japanese, Korean or Thai, written without spaces, any part of a name matches.
+  **Settings › Defaults** changes any of it, with the other match options, and every open tab follows. A match option
+  you switch in a window (Search options, the Search menu or its key) stays chosen until you switch it again: new
+  tabs, new windows and the next start begin with it, while the other open tabs keep theirs (a duplicated tab keeps
+  its own). Sort still changes one tab on its own.
 - **Search options**, on the command bar while you search, sets where to look, the kind of file (Audio, Compressed,
   Document, Executable, Folder, Picture, Video) and how words match (case, whole word, path, diacritics, regex). While a
   kind is chosen the button shows it ("Video", with its icon) and splits in two, like Windows' split buttons: the
@@ -262,6 +267,13 @@ logs, program and system files are left out, in a folder and in a search alike. 
 off to see every file. The arrow beside **Everyday files** picks which kinds count, one click each; **Settings ›
 Thumbnails** also adds extensions of your own, like `md` or `json`; **Reset** brings back the usual.
 
+**Instant thumbnails** (**Settings › Thumbnails**, off until you turn it on) keeps small copies on disk of the
+thumbnails you have seen, so they appear at once, also after a restart; the card says how much space that would take
+for the files on your PC. You type the limit in GB, as much as you want to give it (**Enough for everything** fills in the
+estimate), and choose the folder. When it is full, the oldest thumbnails are dropped as new ones are saved, and a bar
+says so once, with **Raise the limit**. You also choose what is kept: pictures, videos and documents, and file types
+never to keep (`pdf`, for example). **Clear** empties it; turning it off deletes it.
+
 At **Home**, Thumbnails shows the files you opened lately (Windows' Recent files), as pictures.
 
 A folder the index doesn't have (left out in **Settings › Folders**, on a drive that's turned off, or not read yet)
@@ -408,7 +420,7 @@ The [Microsoft Store version](#microsoft-store-version-coming-soon) doesn't do a
 | `Ctrl+,` | Settings (also the gear on the command bar; its arrow has the rest of Explorer's **⋯** menu) |
 | `Ctrl+N` | New window, on the current folder |
 | `Esc` | Clear the search / back to the folder |
-| `F1` | Search syntax help |
+| `F1` | Help: how to use Rock Preview, every key, and the search syntax |
 
 ## Search syntax
 
@@ -439,7 +451,7 @@ The [Microsoft Store version](#microsoft-store-version-coming-soon) doesn't do a
 | `datetaken:2023` · `camera:canon` · `gps:` | date taken, camera, with a place |
 | `pagecount:>20` · `contentstatus:failed` | pages, slides or sheets / files that couldn't be read |
 
-Press `F1` in the app for the complete reference.
+Press `F1` in the app for the complete reference (the help's **Search syntax** part; Search options › **Search syntax** opens it there).
 
 ## Command line
 
