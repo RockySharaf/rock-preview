@@ -356,7 +356,8 @@ public sealed class SearchHelpTests
         Assert.Contains("Choose Search options › Kind, or right-click the status bar, to show only audio", how);
         Assert.Contains("In the list of results, drag from an empty part to select with a box, holding Ctrl to add.", how);
         Assert.Contains("Type how much space it may use in Keep at most (in GB) and tick the kinds of files under Keep " +
-            "thumbnails of. Choose where with Change location (the new place starts empty).", how);
+            "thumbnails of. Unticking a kind deletes its saved thumbnails. Choose where with Change location (the new " +
+            "place starts empty, and the thumbnails in the old one are deleted).", how);
         Assert.Contains("Rename; with one search result selected, it is renamed in place.", keys);
         // The order in which saved thumbnails go is on the Settings card itself, not repeated here.
         Assert.DoesNotContain("dropped first", how);

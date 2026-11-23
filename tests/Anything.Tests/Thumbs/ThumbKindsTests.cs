@@ -112,15 +112,12 @@ public sealed class ThumbKindsTests
     }
 
     [Theory]
-    [InlineData("env")]
-    [InlineData("npmrc")]
     [InlineData("txt")]
     [InlineData("md")]
     [InlineData("cs")]
     [InlineData("json")]
     [InlineData("html")]
     [InlineData("csv")]
-    [InlineData("vcf")]
     [InlineData("m3u")]
     [InlineData("cue")]
     [InlineData("desktop")]
@@ -163,6 +160,17 @@ public sealed class ThumbKindsTests
     [InlineData("KEY")]
     [InlineData("pub")]
     [InlineData("asc")]
+    [InlineData("csr")]
+    [InlineData("env")]
+    [InlineData("npmrc")]
+    [InlineData("vcf")]
+    [InlineData("ngc")]
+    [InlineData("tap")]
+    [InlineData("cnc")]
+    [InlineData("stl")]
+    [InlineData("gltf")]
+    [InlineData("step")]
+    [InlineData("STP")]
     [InlineData(@"D:\Work\drawing.SVG")]
     public void Machine_text_and_keys_get_Windows_picture_or_their_icon_never_a_text_page(string kind)
     {
@@ -181,8 +189,76 @@ public sealed class ThumbKindsTests
     [Fact]
     public void Text_kinds_with_a_readable_start_keep_their_page()
     {
-        foreach (var kind in new[] { "txt", "cs", "vcf", "m3u", "m3u8", "pls", "cue", "desktop", "html", "" })
+        foreach (var kind in new[] { "txt", "cs", "m3u", "m3u8", "pls", "cue", "desktop", "html", "" })
             Assert.False(ThumbKinds.NoTextPage(kind), kind);
+    }
+
+    [Theory]
+    [InlineData(".env")]
+    [InlineData(".env.local")]
+    [InlineData(".npmrc")]
+    [InlineData("id_rsa")]
+    [InlineData("id_ed25519")]
+    [InlineData("x.ppk")]
+    [InlineData("x.gpg")]
+    [InlineData("x.ovpn")]
+    [InlineData("x.csr")]
+    public void Secret_files_never_get_a_text_page_by_name_or_path(string name)
+    {
+        // By file name and by path, in any case: neither Rock Preview's own page nor the text sniff after Windows' miss.
+        foreach (var path in new[] { name, @"D:\Work\" + name, "D:/Work/" + name.ToUpperInvariant() })
+        {
+            if (path == name && !name.Contains('.')) continue; // a bare word is an extension (below)
+            Assert.True(ThumbKinds.NoTextPage(path), path);
+            Assert.False(ThumbKinds.DrawsText(path), path);
+        }
+    }
+
+    [Theory]
+    [InlineData("BitLocker Recovery Key 1A2B3C4D.TXT")]
+    [InlineData("Chrome Passwords.csv")]
+    [InlineData("github-recovery-codes.txt")]
+    [InlineData("credentials.json")]
+    [InlineData("id_rsa.txt")]
+    [InlineData(".env.json")]
+    [InlineData("Passwords.docx")]
+    [InlineData("Passwords.xlsx")]
+    [InlineData("password list.xls")]
+    [InlineData("old passwords.doc")]
+    public void Secret_names_of_kinds_drawn_as_text_go_to_Windows_not_their_own_page(string name)
+    {
+        // Rock Preview's own page would show the file's first lines or cells: Windows' picture or the icon instead.
+        foreach (var path in new[] { name, @"D:\Work\" + name, "D:/Work/" + name.ToUpperInvariant() })
+        {
+            Assert.Equal(ThumbRoute.Shell, ThumbKinds.RouteOf(path));
+            Assert.True(ThumbKinds.NoTextPage(path), path); // and no text sniff after Windows' miss
+        }
+    }
+
+    [Fact]
+    public void Ordinary_names_of_kinds_drawn_as_text_keep_their_own_page()
+    {
+        foreach (var name in new[] { "notes.txt", "report.docx", "table.csv", "budget.xlsx", "letter.doc", "sheet.xls" })
+            foreach (var path in new[] { name, @"D:\Work\" + name })
+                Assert.Equal(ThumbRoute.OwnExtractor, ThumbKinds.RouteOf(path));
+        // A picture or a PDF is no page of the file's text, whatever its name; a bare word is an extension only.
+        Assert.Equal(ThumbRoute.Picture, ThumbKinds.RouteOf(@"D:\Work\password reset.png"));
+        Assert.Equal(ThumbRoute.OwnExtractor, ThumbKinds.RouteOf(@"D:\Work\password policy.pdf"));
+        Assert.Equal(ThumbRoute.OwnExtractor, ThumbKinds.RouteOf("txt"));
+    }
+
+    [Fact]
+    public void A_bare_word_is_only_an_extension_and_ordinary_text_files_keep_their_page()
+    {
+        // Where only an extension is known, only the list of kinds counts: "id_rsa" and "ppk" are kinds no list names.
+        foreach (var kind in new[] { "id_rsa", "ppk", "ovpn", "txt" })
+            Assert.False(ThumbKinds.NoTextPage(kind), kind);
+        foreach (var name in new[] { "notes.txt", "script.py", "table.csv" })
+            foreach (var path in new[] { name, @"D:\Work\" + name })
+            {
+                Assert.False(ThumbKinds.NoTextPage(path), path);
+                Assert.True(ThumbKinds.DrawsText(path), path);
+            }
     }
 
     [Fact]

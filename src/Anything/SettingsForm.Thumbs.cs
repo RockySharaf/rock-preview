@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using Anything.Core.Thumbs;
 
 namespace Anything;
@@ -28,7 +29,9 @@ internal sealed partial class SettingsForm
     Button? _thumbStoreClear, _thumbStoreMove;
     bool _thumbStoreBusy;   // a question or a change is under way: the switch's own events are ours
     bool _keepShowing;      // the boxes are being set from the settings: their events are ours
-    bool _thumbLimitAsking; // the question before a lower limit is showing: a commit meanwhile waits for its answer
+    bool _thumbLimitAsking; // the store is measured or the question before a lower limit shows: a commit meanwhile waits
+    bool _closeAfterLimit;  // the window was closed meanwhile: it closes once the limit is settled
+    Task _thumbLimitCommit = Task.CompletedTask; // the last commit of the limit box, still measuring or done
     int _thumbStoreLook;    // the last look's number: an older one that answers later is dropped
     int _thumbStoreEnoughMb; // what "Use 3 GB: enough for everything on this PC" sets (0: not offered)
     string _thumbStoreDone = ""; // what the last change did, when it is worth saying (a folder left alone, thumbnails deleted by a move)
@@ -87,10 +90,22 @@ internal sealed partial class SettingsForm
         };
         // Closing with the title bar's X raises no Leave: both boxes are committed here, as the other boxes of this window
         // are. A lower limit is asked about when the user closes; closing without a chance to ask keeps the old limit.
+        // While the store's size has to be measured first (it is still opening), the window closes once that is answered.
         FormClosing += (_, e) =>
         {
             if (e.Cancel) return;
-            CommitThumbStoreLimit(ask: e.CloseReason == CloseReason.UserClosing);
+            bool user = e.CloseReason == CloseReason.UserClosing;
+            if (user && (_thumbLimitAsking || LimitNeedsMeasuring()))
+            {
+                e.Cancel = true;
+                if (!_closeAfterLimit)
+                {
+                    _closeAfterLimit = true;
+                    _ = CloseAfterLimit();
+                }
+                return;
+            }
+            CommitThumbStoreLimit(ask: user);
             CommitKeepIfChanged();
         };
         _app.ThumbEstimateChanged += RefreshThumbStore;
@@ -189,23 +204,82 @@ internal sealed partial class SettingsForm
 
     void CommitThumbStoreLimit() => CommitThumbStoreLimit(ask: true);
 
+    void CommitThumbStoreLimit(bool ask)
+    {
+        // A commit under way keeps its own task: the window's close waits for that one.
+        if (_thumbLimitAsking) return;
+        _thumbLimitCommit = ReportingErrors(CommitThumbStoreLimitAsync(ask));
+    }
+
+    /// <summary>
+    /// Waits for <paramref name="commit"/>; an error in it goes to the app's error report, as one on the UI thread does,
+    /// instead of staying unseen in the stored task.
+    /// </summary>
+    static async Task ReportingErrors(Task commit)
+    {
+        try { await commit; }
+        catch (Exception ex) when (SynchronizationContext.Current is { } ui)
+        {
+            ui.Post(_ => ExceptionDispatchInfo.Throw(ex), null);
+        }
+    }
+
     /// <summary>
     /// The limit box committed: a size sets the limit, anything else puts the old one back. A limit lower than what the
     /// store holds now deletes the oldest thumbnails at once, so it is asked about first (<paramref name="ask"/> false:
-    /// no chance to ask, and the old limit stays). Does nothing when the limit is unchanged.
+    /// no chance to ask, and the old limit stays). While the store is still opening its size isn't known, so its folder
+    /// is measured first. Does nothing when the limit is unchanged.
     /// </summary>
-    void CommitThumbStoreLimit(bool ask)
+    async Task CommitThumbStoreLimitAsync(bool ask)
     {
         if (_thumbStoreCard is null || _thumbLimitAsking || IsDisposed) return;
         int current = _app.Settings.ThumbnailStoreMegabytes;
         int mb = ThumbOption.LimitTyped(_thumbStoreLimit.Text, current);
         long held = _app.Settings.ThumbnailStore ? ThumbHost.StoreSizeBytes : -1;
+        if (LimitNeedsMeasuring())
+        {
+            if (!ask) mb = current; // no time to measure: as with no chance to ask, the old limit stays
+            else
+            {
+                string folder = _app.Settings.ThumbnailStoreFolder;
+                _thumbLimitAsking = true;
+                try { held = await Task.Run(() => ThumbStore.MeasureFolder(folder)); }
+                finally { _thumbLimitAsking = false; }
+                if (IsDisposed) return;
+                current = _app.Settings.ThumbnailStoreMegabytes;
+                // A value typed or chosen during the wait found the commit busy: the box as it is now is what counts.
+                mb = ThumbOption.LimitTyped(_thumbStoreLimit.Text, current);
+            }
+        }
         if (mb != current && ThumbOption.AskBeforeLowering(current, mb, held) && !(ask && LowerLimitConfirmed(held, mb))) mb = current;
         if (IsDisposed) return;
         _thumbStoreLimit.Text = ThumbOption.LimitBoxText(mb);
         if (mb == current) return;
-        _app.SetThumbStoreLimit(mb);
+        _app.SetThumbStoreLimit(mb, held);
         RefreshThumbStore();
+    }
+
+    /// <summary>A lower limit is typed while the option is on and the store's size isn't known yet (it is still opening).</summary>
+    bool LimitNeedsMeasuring()
+    {
+        if (_thumbStoreCard is null || IsDisposed || !_app.Settings.ThumbnailStore) return false;
+        int current = _app.Settings.ThumbnailStoreMegabytes;
+        return ThumbOption.LimitTyped(_thumbStoreLimit.Text, current) < current && ThumbHost.StoreSizeBytes < 0;
+    }
+
+    /// <summary>The window was closed while the limit waited for the store's size: settles the limit, then closes.</summary>
+    async Task CloseAfterLimit()
+    {
+        try
+        {
+            await _thumbLimitCommit;
+            if (!IsDisposed) CommitThumbStoreLimit(ask: true);
+            await _thumbLimitCommit;
+        }
+        finally { _closeAfterLimit = false; }
+        if (IsDisposed) return;
+        CommitKeepIfChanged();
+        BeginInvoke(Close);
     }
 
     /// <summary>Asks before a limit below what the store holds is applied; Cancel is the default.</summary>

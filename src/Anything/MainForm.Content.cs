@@ -321,6 +321,7 @@ internal sealed partial class MainForm
             ForeColor = SystemColors.InfoText,
             Visible = false,
         };
+        ExplorerTheme.StyleBarLinks(bar);
         _offerText = new Label { AutoSize = true, UseMnemonic = false, Margin = new Padding(0, 2, 6, 2) };
         _offerTurnOn = new LinkLabel { AutoSize = true, Text = "Turn it back on", Margin = new Padding(0, 2, 12, 2) };
         _offerTurnOn.LinkClicked += (_, _) => _app.TurnKeptContentBackOn();

@@ -32,7 +32,7 @@ namespace Anything.Preview.Thumbnails;
 //                               from then on). A group switched off has its saved thumbnails deleted in the background;
 //                               types left out stay until dropped for room. Each picture is saved with its group (ThumbKeep.GroupOf).
 //   Full:                       Shared.StoreBecameFull is raised on a worker when the store starts dropping
-//                               thumbnails (marshal to the UI); Shared.StoreIsFull and StoreDiskLow say how it is now.
+//                               thumbnails (marshal to the UI); Shared.StoreIsFull says whether it is now.
 //   Clear:                      Shared.ClearStore() empties the store (the grid clears its own memory cache itself).
 //   Settings' line:             Shared.CurrentStore (null until the first request opens it) has Problem, Folder, IsEnabled;
 //                               Shared.StoreSizeBytes and StoreCapBytes give "123 MB of 500 MB". A folder that can't be
@@ -763,9 +763,6 @@ internal sealed class ThumbnailService : IDisposable
 
     /// <summary>Whether the store in use is full now (it drops thumbnails as new ones are saved). Any thread; cheap.</summary>
     public bool StoreIsFull => _store is { IsEnabled: true } s && s.IsFull;
-
-    /// <summary>Whether the store in use refuses new pictures now because its drive is nearly full. Any thread; cheap.</summary>
-    public bool StoreDiskLow => _store is { IsEnabled: true } s && s.DiskLow;
 
     private void RaiseStoreBecameFull()
     {
@@ -1948,6 +1945,8 @@ internal sealed class ThumbnailService : IDisposable
                 if (!ThumbGuards.MayStore(w.RealKey.Stamp, readNow, now)) return;
             }
             var bytes = ThumbSources.Encode(master, Ext(w), w.SizeClass, out var kind);
+            // Asked again: a kind switched off while this was encoded may have had its saved thumbnails deleted already.
+            if (!_keep.Keeps(w.Path, w.IsFolder)) return;
             // The file's group goes with it: the store keeps pictures longest and deletes a group switched off.
             if (bytes != null && store.Put(w.RealKey, kind, master.Width, master.Height, bytes, ThumbKeep.GroupOf(w.Path, w.IsFolder)))
                 Interlocked.Increment(ref _finalsStored);

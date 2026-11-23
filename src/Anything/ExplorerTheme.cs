@@ -52,6 +52,30 @@ internal static class ExplorerTheme
     /// <summary>Windows' default blue for text and marks, whatever the user's accent: "Everything" in the search box, the brand.</summary>
     public static Color Blue => Dark ? Color.FromArgb(0x4C, 0xC2, 0xFF) : Color.FromArgb(0x00, 0x67, 0xC0);
 
+    /// <summary>
+    /// Links on the main window's information bars in dark mode. The bars are SystemColors.Info, dark olive (80,80,60)
+    /// in dark mode, where WinForms' default pure blue links can't be read; this light blue is over 4.5 to 1 on it.
+    /// </summary>
+    public static readonly Color DarkBarLink = Color.FromArgb(160, 200, 255);
+
+    /// <summary>
+    /// Gives every link on an information bar, now and added later, a colour that reads on the bar. Light mode keeps
+    /// WinForms' own link colours. The theme is chosen once at start, so a bar never sees it change.
+    /// </summary>
+    public static void StyleBarLinks(Control bar) => StyleBarLinks(bar, Dark);
+
+    internal static void StyleBarLinks(Control bar, bool dark)
+    {
+        if (!dark) return;
+        foreach (Control c in bar.Controls) StyleBarLink(c);
+        bar.ControlAdded += (_, e) => StyleBarLink(e.Control);
+    }
+
+    static void StyleBarLink(Control? c)
+    {
+        if (c is LinkLabel link) link.LinkColor = link.ActiveLinkColor = link.VisitedLinkColor = DarkBarLink;
+    }
+
     /// <summary>Explorer's View › Compact view: its lists' rows closer together.</summary>
     public static bool CompactView
     {

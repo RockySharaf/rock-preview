@@ -225,8 +225,11 @@ internal sealed class ScopePointer : Form, IMessageFilter
                     Dismiss(); // a shortcut menu
                     break;
                 case WM_LBUTTONDOWN or WM_NCLBUTTONDOWN when m.HWnd != Handle:
-                    // The chip (which switches what it points at) or a bar or menu, whose buttons open menus.
-                    if (m.HWnd == _field.ScopeChipHandle || FromHandle(m.HWnd) is ToolStrip) Dismiss();
+                    // The chip (which switches what it points at), the search field itself (its history button opens a
+                    // list the note would cover, and the first Esc must close that list) or a bar or menu, whose buttons
+                    // open menus. A click into the field's text box keeps the note.
+                    if (m.HWnd == _field.ScopeChipHandle || (_field.IsHandleCreated && m.HWnd == _field.Handle)
+                        || FromHandle(m.HWnd) is ToolStrip) Dismiss();
                     break;
             }
         }

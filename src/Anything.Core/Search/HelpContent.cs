@@ -129,7 +129,8 @@ public static class HelpContent
                 Row("Instant thumbnails", "Off unless you turn it on in Settings › Thumbnails. It keeps small copies of " +
                     "thumbnails on disk, so thumbnails you have seen before appear at once, also after a restart. Type how " +
                     "much space it may use in Keep at most (in GB) and tick the kinds of files under Keep thumbnails of. " +
-                    "Choose where with Change location (the new place starts empty)."),
+                    "Unticking a kind deletes its saved thumbnails. Choose where with Change location (the new place " +
+                    "starts empty, and the thumbnails in the old one are deleted)."),
             ], null),
 
             new("Files", null,

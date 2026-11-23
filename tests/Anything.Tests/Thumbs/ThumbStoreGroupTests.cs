@@ -221,7 +221,7 @@ public sealed class ThumbStoreGroupTests : IDisposable
     }
 
     [Fact]
-    public void Records_without_a_picture_have_packs_of_their_own_kept_with_the_pictures()
+    public void Records_without_a_picture_have_packs_of_their_own_kept_longest()
     {
         using var store = Open(Small());
         PutMany(store, ThumbKeepGroup.Documents, 7);
@@ -236,6 +236,67 @@ public sealed class ThumbStoreGroupTests : IDisposable
         Assert.Equal(StoredKind.Crashed, crashed.Kind);
         // A group switched off never takes these with it.
         Assert.Equal(0, store.DropGroup(ThumbKeepGroup.Videos));
+        Assert.True(store.TryGet(Key(ThumbKeepGroup.Videos, 1), out _));
+    }
+
+    [Fact]
+    public void Records_without_a_picture_outlast_older_pictures_and_new_pictures_are_still_saved()
+    {
+        using var store = Open(Small());
+        // The marks come first, so their pack has the lowest number: age doesn't make them go before a picture.
+        Assert.True(store.PutCrashed(Key(ThumbKeepGroup.Videos, 1)));
+        Assert.True(store.PutNone(Key(ThumbKeepGroup.Documents, 50)));
+        Assert.True(store.WaitUntilWritten(Wait));
+        PutMany(store, ThumbKeepGroup.Pictures, 7);
+        // Room for the marks and two packs of pictures: the oldest pictures go, every mark stays.
+        store.CapBytes = 2048;
+        PutMany(store, ThumbKeepGroup.Pictures, 14, from: 7);
+        Assert.True(SpinUntil(() => store.SizeBytes <= 2048));
+        Assert.True(store.WaitUntilWritten(Wait));
+        Assert.True(store.IsFull);
+        Assert.Equal(0, Found(store, ThumbKeepGroup.Pictures, 7));
+        Assert.Equal(14, Found(store, ThumbKeepGroup.Pictures, 14, from: 7));
+        Assert.True(store.TryGet(Key(ThumbKeepGroup.Videos, 1), out var crashed));
+        Assert.Equal(StoredKind.Crashed, crashed.Kind);
+        Assert.True(store.TryGet(Key(ThumbKeepGroup.Documents, 50), out var none));
+        Assert.Equal(StoredKind.None, none.Kind);
+        Assert.Contains(store.PackGroups, p => p.Group == ThumbStore.PackGroup.NoPicture);
+
+        // New pictures are still saved; documents and videos, which would go first, are not.
+        Assert.Equal([ThumbKeepGroup.Videos, ThumbKeepGroup.Documents], Refused(store));
+        PutMany(store, ThumbKeepGroup.Pictures, 7, from: 100);
+        Assert.Equal(7, Found(store, ThumbKeepGroup.Pictures, 7, from: 100));
+        Assert.True(store.TryGet(Key(ThumbKeepGroup.Videos, 1), out _));
+    }
+
+    [Fact]
+    public void A_full_store_holding_only_records_without_a_picture_still_takes_pictures()
+    {
+        using var store = Open(Small());
+        Assert.True(store.PutCrashed(Key(ThumbKeepGroup.Videos, 1)));
+        Assert.True(store.PutNone(Key(ThumbKeepGroup.Documents, 50)));
+        Assert.True(store.WaitUntilWritten(Wait));
+        PutMany(store, ThumbKeepGroup.Pictures, 7);
+        // Room for the marks alone: the pictures go, the marks stay, and the store is full holding only them.
+        store.CapBytes = 100;
+        Assert.True(SpinUntil(() => store.PackCount == 1));
+        Assert.True(store.WaitUntilWritten(Wait));
+        Assert.True(store.IsFull);
+        Assert.Equal([ThumbStore.PackGroup.NoPicture], store.PackGroups.Select(p => p.Group));
+        // The marks count as pictures held: a picture is still taken, documents and videos are refused.
+        Assert.Equal([ThumbKeepGroup.Videos, ThumbKeepGroup.Documents], Refused(store));
+        int refused = store.RefusedWhileFull;
+        Assert.True(store.Put(Key(ThumbKeepGroup.Pictures, 50), StoredKind.Jpeg, 256, 192, Payload(50), ThumbKeepGroup.Pictures));
+        Assert.True(store.WaitUntilWritten(Wait));
+        Assert.Equal(refused, store.RefusedWhileFull);
+        // Over the limit again, the new picture went before the marks.
+        Assert.True(store.TryGet(Key(ThumbKeepGroup.Videos, 1), out _));
+        Assert.True(store.TryGet(Key(ThumbKeepGroup.Documents, 50), out _));
+
+        // With room again, pictures are kept beside the marks.
+        store.CapBytes = 1 << 30;
+        PutMany(store, ThumbKeepGroup.Pictures, 1, from: 60);
+        Assert.True(store.TryGet(Key(ThumbKeepGroup.Pictures, 60), out _));
         Assert.True(store.TryGet(Key(ThumbKeepGroup.Videos, 1), out _));
     }
 

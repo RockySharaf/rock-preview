@@ -23,6 +23,7 @@ internal sealed partial class MainForm
         _folderBar.Padding = new Padding(6, 3, 6, 3);
         _folderBar.BackColor = SystemColors.Info;
         _folderBar.ForeColor = SystemColors.InfoText;
+        ExplorerTheme.StyleBarLinks(_folderBar);
         _folderInclude.LinkClicked += (_, _) =>
         {
             var gaps = FolderGaps();

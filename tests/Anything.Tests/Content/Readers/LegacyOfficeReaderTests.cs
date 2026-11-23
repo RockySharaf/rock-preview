@@ -329,10 +329,113 @@ public class LegacyOfficeReaderTests
 
     static readonly string[] OldNames = ["doc", "dot", "xls", "xlt", "ppt", "pps", "pot"];
 
+    [Fact]
+    public void A_web_page_under_an_old_Office_name_is_read_as_HTML_without_its_markup()
+    {
+        // What a website or Excel writes as a ".xls" report: a table with styles and class names.
+        const string page = "<html><head><style>.report-cell { color: navy }</style></head><body>"
+            + "<table class=\"report-grid\"><tr><td class=\"report-cell\">Statement</td><td style=\"width:40px\">Zanzibar</td></tr></table>"
+            + "</body></html>";
+        var asHtml = ReaderRun.Bytes(Encoding.UTF8.GetBytes(page), "html");
+        byte[][] files =
+        [
+            Encoding.UTF8.GetBytes(page),
+            Encoding.UTF8.GetBytes(" \r\n\t" + page),
+            [.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes("\r\n" + page)],
+            [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes("\r\n" + page)],
+            [.. Encoding.BigEndianUnicode.GetPreamble(), .. Encoding.BigEndianUnicode.GetBytes(page)],
+        ];
+        foreach (var bytes in files)
+            foreach (var extension in OldNames)
+            {
+                var doc = ReaderRun.Bytes(bytes, extension);
+                Assert.Equal(DocStatus.Ok, doc.Status);
+                Assert.Equal(ContentKind.Office, doc.Kind);
+                Assert.Equal(asHtml.Body, doc.Body);
+                Assert.Contains("Statement", doc.Body);
+                Assert.Contains("Zanzibar", doc.Body);
+                foreach (var markup in new[] { "td", "style", "report-cell", "report-grid", "navy", "width", "<", "class" })
+                    Assert.DoesNotContain(markup, doc.Body, StringComparison.OrdinalIgnoreCase);
+                Assert.Equal(0, doc.Pages);
+            }
+    }
+
+    [Theory]
+    [InlineData("Row", "Cell", "Data")]
+    [InlineData("ss:Row", "ss:Cell", "ss:Data")]
+    [InlineData("ROW", "CELL", "DATA")]
+    public void An_Excel_2003_XML_sheet_under_an_old_Office_name_keeps_its_cells_apart(string row, string cell, string data)
+    {
+        // What "Export to Excel" features write as .xls: SpreadsheetML on one line, so nothing but tags parts the cells.
+        string Cell(string text) => $"<{cell}><{data} ss:Type=\"String\">{text}</{data}></{cell}>";
+        string Row(params string[] texts) => $"<{row}>{string.Concat(texts.Select(Cell))}</{row}>";
+        string sheet = "<?xml version=\"1.0\"?><?mso-application progid=\"Excel.Sheet\"?>"
+            + "<Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\" xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\">"
+            + "<Worksheet ss:Name=\"Sheet1\"><Table>" + Row("Foo", "Bar") + Row("Baz", "Qux") + "</Table></Worksheet></Workbook>";
+        foreach (var extension in new[] { "xls", "xlt" })
+        {
+            var doc = ReaderRun.Bytes(Encoding.UTF8.GetBytes(sheet), extension);
+            Assert.Equal(DocStatus.Ok, doc.Status);
+            Assert.Equal(["Foo\tBar", "Baz\tQux"], doc.Body.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        }
+    }
+
+    [Fact]
+    public void RTF_under_any_old_Office_name_is_read_as_RTF()
+    {
+        var rtf = Encoding.ASCII.GetBytes("{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Arial;}}\\b Quarterly\\b0  memo text\\par}");
+        var asRtf = ReaderRun.Bytes(rtf, "rtf");
+        Assert.Contains("Quarterly memo text", asRtf.Body);
+        byte[][] files = [rtf, [.. Encoding.UTF8.GetPreamble(), .. Encoding.ASCII.GetBytes("\r\n  "), .. rtf]];
+        foreach (var bytes in files)
+            foreach (var extension in OldNames)
+            {
+                var doc = ReaderRun.Bytes(bytes, extension);
+                Assert.Equal(DocStatus.Ok, doc.Status);
+                Assert.Equal(asRtf.Body, doc.Body);
+                foreach (var word in new[] { "rtf1", "ansi", "fonttbl", "Arial", "par", "\\" })
+                    Assert.DoesNotContain(word, doc.Body);
+            }
+    }
+
+    [Fact]
+    public void An_empty_file_under_an_old_Office_name_has_no_text_and_is_no_problem()
+    {
+        foreach (var bytes in new[] { Array.Empty<byte>(), Encoding.ASCII.GetBytes(" \r\n"), Encoding.UTF8.GetPreamble() })
+            foreach (var extension in OldNames)
+            {
+                var doc = ReaderRun.Bytes(bytes, extension);
+                Assert.Equal(AsExtraText(bytes, extension).Status, doc.Status);
+                Assert.False(ContentFollower.IsProblem(doc.Status), extension);
+                Assert.Equal("", doc.Body.Trim());
+            }
+        Assert.Equal(DocStatus.NoText, ReaderRun.Bytes([], "xls").Status);
+    }
+
+    [Theory]
+    [InlineData("<html>", "Markup")]
+    [InlineData(" \r\n\t<?xml version=\"1.0\"?>", "Markup")]
+    [InlineData("{\\rtf1 x}", "Rtf")]
+    [InlineData("\n{\\rtf1 x}", "Rtf")]
+    [InlineData("{\\rt", "Other")]
+    [InlineData("{\"json\": 1}", "Other")]
+    [InlineData("Name\tAmount <b>", "Other")]
+    [InlineData("", "Other")]
+    [InlineData("   ", "Other")]
+    public void What_a_file_starts_with_is_read_past_white_space(string head, string expected)
+    {
+        var start = Enum.Parse<LegacyOfficeReader.Start>(expected);
+        Assert.Equal(start, LegacyOfficeReader.StartOf(Encoding.ASCII.GetBytes(head)));
+        Assert.Equal(start, LegacyOfficeReader.StartOf([.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes(head)]));
+        // UTF-16: markup is found in either byte order; RTF is always 8-bit.
+        var wide = start == LegacyOfficeReader.Start.Rtf ? LegacyOfficeReader.Start.Other : start;
+        Assert.Equal(wide, LegacyOfficeReader.StartOf([.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes(head)]));
+        Assert.Equal(wide, LegacyOfficeReader.StartOf([.. Encoding.BigEndianUnicode.GetPreamble(), .. Encoding.BigEndianUnicode.GetBytes(head)]));
+    }
+
     /// <summary>Text saved under old Office names: what banks, accounting tools and plain editors write.</summary>
     static (byte[] Bytes, string Word)[] TextFiles() =>
     [
-        (Encoding.UTF8.GetBytes("<html><body><table><tr><td>Statement</td><td>Zanzibar</td></tr></table></body></html>"), "zanzibar"),
         (Encoding.ASCII.GetBytes("Name\tAmount\nZanzibar paper\t12\n"), "zanzibar"),
         (Encoding.ASCII.GetBytes("Meeting notes\r\nZanzibar trip is booked\r\n"), "zanzibar"),
         ([.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes("Notes in UTF-16\r\nZanzibar\r\n")], "zanzibar"),

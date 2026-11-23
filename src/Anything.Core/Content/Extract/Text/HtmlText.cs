@@ -64,11 +64,12 @@ internal static class HtmlText
                         if (name.Equals("pre", StringComparison.OrdinalIgnoreCase)) pre++;
                     }
                     else if (name.Equals("pre", StringComparison.OrdinalIgnoreCase) && pre > 0) pre--;
-                    if (name.Equals("td", StringComparison.OrdinalIgnoreCase) || name.Equals("th", StringComparison.OrdinalIgnoreCase))
+                    if (name.Equals("td", StringComparison.OrdinalIgnoreCase) || name.Equals("th", StringComparison.OrdinalIgnoreCase)
+                        || IsSpreadsheet(name, "cell"))
                     {
                         if (!closing) w.Tab();
                     }
-                    else if (Blocks.Contains(name)) w.Line();
+                    else if (Blocks.Contains(name) || IsSpreadsheet(name, "row")) w.Line();
                     continue;
                 }
             }
@@ -88,6 +89,16 @@ internal static class HtmlText
             i = run;
         }
         w.Flush();
+    }
+
+    /// <summary>
+    /// Whether the tag is the whole name, case ignored, with or without the "ss:" prefix: SpreadsheetML (an Excel 2003 XML
+    /// file, often saved as .xls) puts each Cell in a Row, often on one line, so its cells would run together.
+    /// </summary>
+    static bool IsSpreadsheet(string name, string tag)
+    {
+        var local = name.StartsWith("ss:", StringComparison.OrdinalIgnoreCase) ? name.AsSpan(3) : name.AsSpan();
+        return local.Equals(tag, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>The index after the tag's closing '&gt;', quotes respected; the end of the text when it never closes.</summary>

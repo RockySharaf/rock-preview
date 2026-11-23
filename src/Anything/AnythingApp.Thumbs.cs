@@ -14,7 +14,7 @@ internal sealed partial class AnythingApp
     ThumbCensus? _thumbCensus;
     string? _thumbCensusFilter; // the Everyday files filter the estimate was counted with (null: every file)
     ThumbKeep? _thumbCensusKeep; // the choice of what is kept the estimate was counted with
-    bool _thumbFullTold;        // the "store is full" bar showed in this run (or the user lowered the limit past the size)
+    bool _thumbFullTold;        // the "store is full" bar showed in this run (or the user lowered the limit past the size); a raise clears it
     bool _thumbFullPending;     // the store became full and no window showing thumbnails has said so yet
     bool _thumbCounting;
     readonly CancellationTokenSource _thumbCountCts = new();
@@ -251,18 +251,18 @@ internal sealed partial class AnythingApp
     }
 
     /// <summary>
-    /// The limit changed: saved, and the open store keeps to it at once. Raised, the "store is full" bar goes; lowered
-    /// below what the store holds, the user knows it will drop thumbnails, so the bar doesn't say so again for this limit.
+    /// The limit changed: saved, and the open store keeps to it at once. Raised, the "store is full" bar goes and may come
+    /// back in this run once the higher limit fills; lowered below what the store holds (<paramref name="storeBytes"/>, the
+    /// figure Settings asked with; -1 when not known), the user knows it will drop thumbnails, so the bar doesn't say so
+    /// again for this limit.
     /// </summary>
-    public void SetThumbStoreLimit(int megabytes)
+    public void SetThumbStoreLimit(int megabytes, long storeBytes)
     {
         int before = Settings.ThumbnailStoreMegabytes;
         if (megabytes > before) HideThumbStoreFullBars();
-        else if (ThumbOption.LoweredLimitIsTold(before, megabytes, ThumbHost.StoreSizeBytes))
-        {
-            _thumbFullTold = true;
-            Settings.ThumbnailStoreFullToldMegabytes = megabytes;
-        }
+        int toldAt = Settings.ThumbnailStoreFullToldMegabytes;
+        if (ThumbOption.LimitChanged(before, megabytes, storeBytes, ref toldAt, ref _thumbFullTold))
+            Settings.ThumbnailStoreFullToldMegabytes = toldAt;
         Settings.ThumbnailStoreMegabytes = megabytes;
         Settings.Save();
         ThumbHost.SetCap(megabytes);

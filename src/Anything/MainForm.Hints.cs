@@ -129,8 +129,14 @@ internal sealed partial class MainForm
             if (IsDisposed || !_loaded || _pointer is not null || ActiveForm != this || WindowState == FormWindowState.Minimized || !Visible) return;
             var s = _app.Settings;
             if (!ScopePointerWanted(chipVisible: !_searchField.ScopeChipOnScreen.IsEmpty)) return;
-            // One lesson at a time: while the Get started window shows, it waits for a later moment, uncounted.
-            if (Application.OpenForms.OfType<GetStartedForm>().Any(f => f.Visible && !f.IsDisposed)) return;
+            // One lesson at a time: while the Get started window shows, it looks again after the same delay, uncounted.
+            // That window never takes the focus, so its closing brings no Activated to start the delay again. A hidden,
+            // minimized or deactivated window returns above without restarting, so this can't run on for ever.
+            if (Application.OpenForms.OfType<GetStartedForm>().Any(f => f.Visible && !f.IsDisposed))
+            {
+                _pointerDelay.Start();
+                return;
+            }
             // Never under a menu, a drop-down or a dialog, nor during a drag: it tries again after the same delay.
             switch (ScopePointerRules.WhenDue(AnyMenuOpen(), AnyDialogOpen(), MouseCaptured(), s_scopePointerTries))
             {
@@ -235,6 +241,7 @@ internal sealed partial class MainForm
         _elevatedBar.Padding = new Padding(6, 3, 6, 3);
         _elevatedBar.BackColor = SystemColors.Info;
         _elevatedBar.ForeColor = SystemColors.InfoText;
+        ExplorerTheme.StyleBarLinks(_elevatedBar);
         // The Store's copy has no background service: run normally, it scans folders instead.
         string text = StorePackage.IsInstalled
             ? "Rock Preview is running as administrator, so Windows won't let you drag files into it from programs that aren't (your browser, Outlook, the desktop, File Explorer). Run it normally to drop files in; it then scans folders, which is slower."
@@ -273,6 +280,7 @@ internal sealed partial class MainForm
         _thumbStoreBar.Padding = new Padding(6, 3, 6, 3);
         _thumbStoreBar.BackColor = SystemColors.Info;
         _thumbStoreBar.ForeColor = SystemColors.InfoText;
+        ExplorerTheme.StyleBarLinks(_thumbStoreBar);
         var turnOn = new LinkLabel { AutoSize = true, Text = "Turn on...", Margin = new Padding(0, 2, 12, 2) };
         // Opens Settings at the option and switches nothing by itself: the user decides there, with the cost in front of them.
         turnOn.LinkClicked += (_, _) => { _thumbStoreBar.Visible = false; _app.ShowSettings(this, "Thumbnails"); };

@@ -196,7 +196,13 @@ internal sealed partial class MainForm : Form
             _tab.SearchText = _search.Text;
             UpdateSearchScope();
             UpdateTitle();
-            if (!_suppress) RunSearch(SearchReason.NewQuery);
+            if (!_suppress)
+            {
+                // The user went on to search: a typed address still being looked for no longer opens over it. Text the
+                // program sets when a folder opens comes with _suppress, and keeps the lookup.
+                _addressLookups.Drop();
+                RunSearch(SearchReason.NewQuery);
+            }
             UpdateLeftView(); // empty box while browsing = Explorer view; typing = instant results
         };
         _search.KeyDown += OnSearchKeyDown;
@@ -237,6 +243,7 @@ internal sealed partial class MainForm : Form
         _infoBar.Padding = new Padding(6, 3, 6, 3);
         _infoBar.BackColor = SystemColors.Info;
         _infoBar.ForeColor = SystemColors.InfoText;
+        ExplorerTheme.StyleBarLinks(_infoBar);
         _infoLabel.AutoSize = true;
         _infoLabel.Margin = new Padding(0, 2, 6, 2);
         _infoAction.AutoSize = true;
@@ -257,6 +264,7 @@ internal sealed partial class MainForm : Form
         _updateBar.Padding = new Padding(6, 3, 6, 3);
         _updateBar.BackColor = SystemColors.Info;
         _updateBar.ForeColor = SystemColors.InfoText;
+        ExplorerTheme.StyleBarLinks(_updateBar);
         _updateNowLink.LinkClicked += (_, _) => _app.UpdateNow();
         _updateGetLink.LinkClicked += (_, _) => _app.OpenReleasePage();
         _updateCancelLink.LinkClicked += (_, _) => _app.CancelUpdate();
@@ -306,6 +314,7 @@ internal sealed partial class MainForm : Form
         _leftOutBar.Padding = new Padding(6, 3, 6, 3);
         _leftOutBar.BackColor = SystemColors.Info;
         _leftOutBar.ForeColor = SystemColors.InfoText;
+        ExplorerTheme.StyleBarLinks(_leftOutBar);
         _leftOutInclude.LinkClicked += (_, _) =>
         {
             if (!_app.IncludeLeftOutDrives(_app.LeftOutDrives)) _app.ShowSettings(this, "Folders");

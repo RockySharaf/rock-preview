@@ -1,3 +1,5 @@
+using Anything.Core.Content;
+
 namespace Anything.Core.Thumbs;
 
 /// <summary>Which source makes the real (Final) thumbnail of a kind of file, step 4 of the ladder.</summary>
@@ -94,25 +96,27 @@ public static class ThumbKinds
     static readonly HashSet<string> Text = Set(
         "txt", "text", "log", "md", "markdown", "rst", "adoc", "json", "jsonc", "json5", "xml", "xaml", "xsd",
         "xsl", "xslt", "config", "csproj", "vbproj", "fsproj", "vcxproj", "props", "targets", "sln", "slnx", "nuspec",
-        "resx", "manifest", "yml", "yaml", "toml", "ini", "cfg", "conf", "properties", "env", "editorconfig",
+        "resx", "manifest", "yml", "yaml", "toml", "ini", "cfg", "conf", "properties", "editorconfig",
         "gitignore", "gitattributes", "cs", "csx", "vb", "fs", "fsx", "c", "h", "cpp", "cc", "cxx", "hpp", "hh",
         "hxx", "inl", "m", "mm", "java", "kt", "kts", "scala", "groovy", "gradle", "go", "rs", "swift", "dart",
         "py", "pyw", "pyi", "rb", "php", "pl", "pm", "lua", "r", "jl", "js", "mjs", "cjs", "jsx", "ts", "tsx",
         "vue", "svelte", "css", "scss", "sass", "less", "html", "htm", "xhtml", "shtml", "sql", "sh",
         "bash", "zsh", "fish", "ps1", "psm1", "psd1", "bat", "cmd", "reg", "inf", "nfo", "diz", "srt", "vtt",
         "ass", "sub", "tex", "bib", "sty", "cls", "asm", "s", "hlsl", "glsl", "fx", "shader", "cmake", "mk",
-        "makefile", "dockerfile", "tf", "hcl", "graphql", "gql", "proto", "plist", "vcf", "lst",
-        "csv", "tsv", "patch", "diff", "gitmodules", "npmrc", "babelrc", "eslintrc", "prettierrc", "ahk",
+        "makefile", "dockerfile", "tf", "hcl", "graphql", "gql", "proto", "plist", "lst",
+        "csv", "tsv", "patch", "diff", "gitmodules", "babelrc", "eslintrc", "prettierrc", "ahk",
         "au3", "vbs", "vba", "bas", "frm", "pas", "dpr", "f90", "for", "cob", "ada", "erl", "ex", "exs", "hs",
         "elm", "clj", "lisp", "el", "scm", "ml", "nim", "zig", "v", "sv", "vhd", "vhdl", "tcl", "awk", "sed",
         "m3u", "m3u8", "pls", "cue", "desktop", "sol", "razor", "cshtml");
 
-    // Text kinds whose first lines tell a person nothing (markup, mail headers, coordinates, machine code) or should not be
-    // on screen (keys and certificates): no text page, also not from the text sniff. Windows is asked for a picture (an
-    // SVG's drawing, where it can draw one), else the icon. The preview pane still shows their text.
+    // Text kinds whose first lines tell a person nothing (markup, mail and contact headers, coordinates, machine code,
+    // 3D models) or should not be on screen (keys, certificates, signing requests, settings that hold passwords and
+    // tokens): no text page, also not from the text sniff. Windows is asked for a picture (an SVG's drawing, where it can
+    // draw one), else the icon. The preview pane still shows their text.
     static readonly HashSet<string> NoTextPageKinds = Set(
-        "rtf", "eml", "mbox", "url", "svg", "ics", "lock", "map", "ipynb", "geojson", "kml", "gpx", "wkt", "gcode", "nc",
-        "obj", "ply", "mtl", "pem", "crt", "cer", "key", "pub", "asc");
+        "rtf", "eml", "mbox", "url", "svg", "ics", "vcf", "lock", "map", "ipynb", "geojson", "kml", "gpx", "wkt", "gcode",
+        "nc", "ngc", "tap", "cnc", "obj", "ply", "mtl", "stl", "gltf", "step", "stp", "pem", "crt", "cer", "csr", "key", "pub",
+        "asc", "env", "npmrc");
 
     // Flat pictures: text, lines and flat colour, where JPEG 85 measured 22 to 32 dB.
     static readonly HashSet<string> FlatPictures = Set("png", "apng", "bmp", "dib", "rle", "gif", "ico", "cur");
@@ -157,15 +161,34 @@ public static class ThumbKinds
     static readonly HashSet<string> WordFiles = Set("docx", "docm", "dotx", "dotm");
     static readonly HashSet<string> ExcelFiles = Set("xlsx", "xlsm", "xltx", "xltm");
 
-    /// <summary>The route that makes the Final thumbnail of a file with this extension (a folder: <see cref="ThumbRoute.Shell"/>).</summary>
+    /// <summary>
+    /// The route that makes the Final thumbnail of a file with this extension (a folder: <see cref="ThumbRoute.Shell"/>).
+    /// Given a file name or a path, a name the text index refuses to read (<see cref="ContentTypes.IsDeniedFile"/>: a
+    /// recovery key .txt, a password export .csv, credentials.json, Passwords.docx...) of a kind whose own page shows its
+    /// text (text, Word, Excel, old Word and Excel) also goes to Windows: its picture, else the icon, never that page.
+    /// </summary>
     public static ThumbRoute RouteOf(string extensionOrPath, bool isFolder = false)
     {
         if (isFolder) return ThumbRoute.Shell;
         string ext = Ext(extensionOrPath);
         if (Pictures.Contains(ext)) return ThumbRoute.Picture;
         if (Psd.Contains(ext)) return ThumbRoute.Psd;
-        if (IsOwnExtractor(ext)) return ThumbRoute.OwnExtractor;
+        if (IsOwnExtractor(ext))
+            return ShowsOwnText(ext) && IsDeniedName(extensionOrPath) ? ThumbRoute.Shell : ThumbRoute.OwnExtractor;
         return ThumbRoute.Shell;
+    }
+
+    // Kinds whose own thumbnail can be a page of the file's text or cells (fonts draw a sample, not the file's text).
+    static bool ShowsOwnText(string ext)
+        => Text.Contains(ext) || WordFiles.Contains(ext) || ExcelFiles.Contains(ext) || OldOffice.Contains(ext);
+
+    // Whether a file name or path (anything with a dot or a folder) has a name the text index refuses to read; a bare
+    // word is an extension only, so callers that know only the extension keep the rules by kind.
+    static bool IsDeniedName(string extensionOrPath)
+    {
+        var s = extensionOrPath.AsSpan();
+        if (s.IndexOfAny('.', '\\', '/') < 0) return false;
+        return ContentTypes.IsDeniedFile(s[(s.LastIndexOfAny('\\', '/') + 1)..]);
     }
 
     /// <summary>
@@ -239,11 +262,15 @@ public static class ThumbKinds
     public static bool DrawsText(string extensionOrPath) => Text.Contains(Ext(extensionOrPath));
 
     /// <summary>
-    /// Whether this kind never gets a text page, though its file is text (rtf, eml, mbox, url, svg, ics, lock, map, ipynb,
-    /// geojson, kml, gpx, wkt, gcode, nc, obj, ply, mtl, pem, crt, cer, key, pub, asc): its first lines are markup or
-    /// numbers, or a key. Windows is asked for a picture, else the icon shows; the text sniff after Windows' miss skips it.
+    /// Whether this file never gets a text page, though it may be text: its kind's first lines are markup or numbers, or
+    /// a key, a certificate or settings with passwords (svg, eml, vcf, gcode, stl, pem, key, csr, env, npmrc...). Given a
+    /// file name or a path (anything with a dot or a folder), also a name the text index refuses to read
+    /// (<see cref="ContentTypes.IsDeniedFile"/>: private keys such as id_rsa, .env files, ppk, gpg, ovpn, password
+    /// exports...). A bare word is an extension only. Windows is asked for a picture, else the icon shows; the text sniff
+    /// after Windows' miss skips it.
     /// </summary>
-    public static bool NoTextPage(string extensionOrPath) => NoTextPageKinds.Contains(Ext(extensionOrPath));
+    public static bool NoTextPage(string extensionOrPath)
+        => NoTextPageKinds.Contains(Ext(extensionOrPath)) || IsDeniedName(extensionOrPath);
 
     /// <summary>
     /// Whether a picture of this kind may be kept on disk: exactly the kinds the space estimate counts

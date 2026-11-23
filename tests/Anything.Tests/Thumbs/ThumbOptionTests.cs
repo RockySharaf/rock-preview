@@ -207,7 +207,7 @@ public sealed class ThumbOptionTests
         Assert.Equal("1.2 GB of 2 GB: pictures 900 MB, videos 100 MB, documents 200 MB",
             ThumbOption.SizeNowText(1_200_000_000, 2000, new ThumbStoreSplit(900_000_000, 100_000_000, 200_000_000, 0)));
         // Thumbnails from before this version carry no kind: they are said apart, and kinds holding nothing are not named.
-        Assert.Equal("400 MB of 500 MB: pictures 100 MB, saved by an earlier version 300 MB",
+        Assert.Equal("400 MB of 500 MB: pictures 100 MB, from an earlier version 300 MB",
             ThumbOption.SizeNowText(400_000_000, 500, new ThumbStoreSplit(100_000_000, 0, 0, 300_000_000)));
         // One kind alone: nothing to split.
         Assert.Equal("123 MB of 500 MB", ThumbOption.SizeNowText(123_456_789, 500, new ThumbStoreSplit(123_456_789, 0, 0, 0)));
@@ -328,8 +328,8 @@ public sealed class ThumbOptionTests
     [Fact]
     public void Full_at_the_most_thumbnails_it_can_hold_does_not_suggest_a_higher_limit()
     {
-        Assert.Equal("Full: Instant thumbnails holds as many thumbnails as it can (3 million). New pictures replace the oldest ones.", ThumbOption.FullByCountText);
-        Assert.Equal("Instant thumbnails holds as many thumbnails as it can. The oldest make room for new ones.", ThumbOption.FullByCountBarText);
+        Assert.Equal("Full: Instant thumbnails holds as many thumbnails as it can (3 million). To make room, documents and videos go first, then the oldest pictures.", ThumbOption.FullByCountText);
+        Assert.Equal("Instant thumbnails holds as many thumbnails as it can. To make room, documents and videos go first, then the oldest pictures.", ThumbOption.FullByCountBarText);
         Assert.DoesNotContain("limit", ThumbOption.FullByCountText);
         Assert.DoesNotContain("limit", ThumbOption.FullByCountBarText);
         // The bar: Raise the limit only when the limit is the reason.
@@ -367,8 +367,38 @@ public sealed class ThumbOptionTests
         // Raised, or kept.
         Assert.False(ThumbOption.LoweredLimitIsTold(2000, 8000, saved));
         Assert.False(ThumbOption.LoweredLimitIsTold(2000, 2000, saved));
-        // The store isn't open: nothing known to delete.
+        // The size isn't known: nothing known to delete.
         Assert.False(ThumbOption.LoweredLimitIsTold(8000, 2000, -1));
+    }
+
+    [Fact]
+    public void A_raised_limit_may_tell_again_in_the_same_run_and_once_for_each_limit()
+    {
+        long saved = 5000 * ThumbStore.BytesPerMegabyte;
+        // The bar showed for 8 GB in this run.
+        int toldAt = 0;
+        bool toldThisRun = false;
+        Assert.True(ThumbOption.TakeFullNotice(8000, ref toldAt, ref toldThisRun));
+        // Raised: nothing to save, but the higher limit may say so once it fills, in this run.
+        Assert.False(ThumbOption.LimitChanged(8000, 12_000, saved, ref toldAt, ref toldThisRun));
+        Assert.False(toldThisRun);
+        Assert.Equal(8000, toldAt);
+        Assert.True(ThumbOption.ShouldTellFull(12_000, toldAt, toldThisRun));
+        Assert.True(ThumbOption.TakeFullNotice(12_000, ref toldAt, ref toldThisRun));
+        Assert.False(ThumbOption.TakeFullNotice(12_000, ref toldAt, ref toldThisRun));
+        // Lowered below what is saved: the new limit counts as told, to be saved.
+        Assert.True(ThumbOption.LimitChanged(12_000, 2000, saved, ref toldAt, ref toldThisRun));
+        Assert.True(toldThisRun);
+        Assert.Equal(2000, toldAt);
+        // Lowered to a size still above what is saved, or with the size unknown: nothing changes.
+        toldThisRun = false;
+        Assert.False(ThumbOption.LimitChanged(12_000, 6000, saved, ref toldAt, ref toldThisRun));
+        Assert.False(ThumbOption.LimitChanged(12_000, 2000, -1, ref toldAt, ref toldThisRun));
+        Assert.False(toldThisRun);
+        Assert.Equal(2000, toldAt);
+        // Kept the same: nothing changes, and the limit already told about doesn't tell again.
+        Assert.False(ThumbOption.LimitChanged(2000, 2000, saved, ref toldAt, ref toldThisRun));
+        Assert.False(ThumbOption.ShouldTellFull(2000, toldAt, toldThisRun));
     }
 
     [Fact]

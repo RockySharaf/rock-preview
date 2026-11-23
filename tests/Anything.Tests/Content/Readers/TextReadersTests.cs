@@ -66,6 +66,16 @@ public class TextReadersTests
     }
 
     [Theory]
+    [InlineData("<table cellspacing=\"0\"><tr><td>one</td><td>two</td></tr></table>", "one\ttwo")]
+    [InlineData("<p>a<my-cell>b</my-cell>c<rowgroup>d</rowgroup>e<x:row>f</x:row>g<cells>h</cells>i</p>", "abcdefghi")]
+    public void Html_only_whole_spreadsheet_tag_names_part_cells_and_rows(string body, string expected)
+    {
+        // SpreadsheetML's Row and Cell end a line and part cells; tags that only start or end with those names don't.
+        var doc = ReaderRun.Bytes(Encoding.UTF8.GetBytes($"<html><body>{body}</body></html>"), "html");
+        Assert.Equal(expected, doc.Body.Trim('\n'));
+    }
+
+    [Theory]
     [InlineData("description")]
     [InlineData("keywords")]
     [InlineData("generator")]

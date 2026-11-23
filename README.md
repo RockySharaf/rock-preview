@@ -66,8 +66,8 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
   folders first to search only inside them ("images"). Everything stays chosen until you open another folder. When a
   search in a folder finds nothing, the empty list says where it looked, with a **Search everything instead** link.
   Until you have clicked the folder's name or Everything once, a small note under the search box points at it and says
-  what clicking it does, on two starts at most and after the Get started window has gone, if it shows; **Got it** ends
-  it for good.
+  what clicking it does. It shows on two starts at most, never while the Get started window is open, and **Got it**
+  ends it for good.
 - Results start newest first, **folders before files**, and words match anywhere in a name ("port" also finds
   report); turn on **whole word** to find port alone. With it on, a word that starts or ends with punctuation needs
   no word break there: `.pdf` finds every PDF and `c:\projects\ .cs` the .cs files under that folder. In Chinese,
@@ -248,9 +248,9 @@ Like Windows 11 File Explorer, one window holds several folders and searches as 
 | Other | Archives (ZIP, 7z, RAR…), fonts, executables, certificates, and a hex view for anything else |
 
 Office and other installed shell preview handlers are hosted in place; embedded thumbnails are used where a format has one.
-When an Office program is busy (a hidden copy can wait on a message nobody sees), the line under the preview names it
-and Rock Preview shows the file itself meanwhile; hover that line for what to do: close that Office program (in Task
-Manager if none of its windows is open) and select the file again.
+When an Office program is busy (a hidden copy can wait on a message nobody sees), Rock Preview shows the file's text or
+a simpler view meanwhile, and the line under the preview says so, naming the program when it can. Hover that line for
+what to do: close that Office program (in Task Manager if none of its windows is open) and select the file again.
 Videos and songs are opened only when you press **Play**, so the one selected can still be deleted, renamed or moved.
 
 ### Thumbnails

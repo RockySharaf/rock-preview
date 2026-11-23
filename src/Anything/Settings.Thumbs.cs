@@ -19,7 +19,10 @@ internal sealed partial class AppSettings
     /// <summary>Which thumbnails are kept (the groups ticked, the file types never kept): everything unless the user changes it.</summary>
     public ThumbKeep ThumbnailStoreKeep { get; set; } = ThumbKeep.All;
 
-    /// <summary>The limit (MB) at which the "store is full" bar was last shown; 0 when never. Another limit tells again.</summary>
+    /// <summary>
+    /// The limit (MB) for which the "store is full" bar has been said (shown, or the user lowered the limit below what
+    /// was saved); 0 when never. Another limit tells again.
+    /// </summary>
     public int ThumbnailStoreFullToldMegabytes { get; set; }
 
     /// <summary>The folder the user chose for them (Change location...); empty: beside the index database.</summary>

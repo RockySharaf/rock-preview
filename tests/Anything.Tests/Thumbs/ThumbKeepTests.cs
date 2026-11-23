@@ -68,11 +68,11 @@ public sealed class ThumbKeepTests
         Assert.False(none.Keeps("a.pdf"));
         Assert.Equal("Nothing is being saved.", ThumbOption.KeepNote(none));
         // The store keeps the kinds apart now: switching one off deletes its thumbnails.
-        Assert.Equal("When it is full, thumbnails of documents are dropped first, then videos, then the oldest pictures. "
+        Assert.Equal("When the space is full, thumbnails of documents are dropped first, then videos, then the oldest pictures. "
             + "Switching a kind off deletes its saved thumbnails.",
             ThumbOption.KeepNote(ThumbKeep.All));
         // Types left out still stay: said only when some are listed.
-        Assert.Equal("When it is full, thumbnails of documents are dropped first, then videos, then the oldest pictures. "
+        Assert.Equal("When the space is full, thumbnails of documents are dropped first, then videos, then the oldest pictures. "
             + "Switching a kind off deletes its saved thumbnails. Those already saved for the file types listed stay until room is needed, or until you clear them.",
             ThumbOption.KeepNote(Keep(skip: "pdf")));
         // A store carried over from an earlier version: its thumbnails carry no kind, so neither rule holds for them.
@@ -259,7 +259,7 @@ public sealed class ThumbKeepTests
         Assert.Equal("Instant thumbnails is full (8 GB). To make room, documents and videos go first, then the oldest pictures.", ThumbOption.FullBarText(8000));
         Assert.Equal("Instant thumbnails is full (120 GB). To make room, documents and videos go first, then the oldest pictures.", ThumbOption.FullBarText(120_000));
         Assert.Equal("Not saving new thumbnails now: drive E: is nearly full.", ThumbOption.DiskLowText(@"E:\Rock Preview Thumbnails"));
-        Assert.Equal("Full: new pictures replace the oldest ones. Thumbnails of documents and videos go first, and once theirs are gone, new ones aren't saved. Raise the limit to keep more.", ThumbOption.FullText);
+        Assert.Equal("Full: to make room, thumbnails of documents go first, then videos, then the oldest pictures. Once those of documents or videos are all gone, new ones of that kind aren't saved. Raise the limit to keep more.", ThumbOption.FullText);
     }
 
     [Theory]

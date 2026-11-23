@@ -61,7 +61,8 @@ namespace Anything.Core.Thumbs;
 // Groups: each pack holds one group (PackGroup), written in byte 6 of every record's header and read from its first
 // record at open, so the names, the index and the records keep the layout of 1.7.30 and 1.7.31. Those versions wrote that
 // byte as zero and never read it: their packs open here as "earlier versions", and they open this version's store as
-// their own (they append their records to its newest pack and drop packs oldest first; nothing is lost or damaged).
+// their own (they append their records to its newest pack and drop packs oldest first; nothing is damaged). What they
+// append counts here as that pack's group, so it is dropped or deleted with that group's thumbnails.
 
 /// <summary>What a stored record says about a key.</summary>
 public enum StoredKind : byte
@@ -222,14 +223,16 @@ public sealed class ThumbStore : IDisposable
 
     /// <summary>
     /// The order packs are dropped in when the store is over its limit, lowest first: earlier versions' packs, then
-    /// documents, videos, pictures. Records without a picture go with the pictures, by age: a "crashed" record lost
-    /// early would let a file that kills the program be tried again, and they take next to no room.
+    /// documents, videos, pictures, and last the records without a picture: a "crashed" record lost early would let a
+    /// file that kills the program be tried again, and they take next to no room. They live in one long-lived pack with
+    /// a low number, so sharing the pictures' rank would drop every one of them at once among the first.
     /// </summary>
     static int DropRank(PackGroup group) => group switch
     {
         PackGroup.Documents => 1,
         PackGroup.Videos => 2,
-        PackGroup.Pictures or PackGroup.NoPicture => 3,
+        PackGroup.Pictures => 3,
+        PackGroup.NoPicture => 4,
         _ => 0,
     };
 
@@ -1047,12 +1050,17 @@ public sealed class ThumbStore : IDisposable
     /// </summary>
     bool RefusesNow(PackGroup group) => _full && DropRank(group) < LowestRankHeld();
 
-    /// <summary>The lowest <see cref="DropRank"/> among the groups whose packs take any space; 0 when none do. Needs no lock.</summary>
+    /// <summary>
+    /// The lowest <see cref="DropRank"/> among the groups whose packs take any space; 0 when none do. Needs no lock.
+    /// Records without a picture count as pictures here: a full store holding only those must still take new pictures,
+    /// and still refuses documents and videos, which would be the first to go.
+    /// </summary>
     int LowestRankHeld()
     {
         int lowest = int.MaxValue;
         for (int g = 0; g < GroupCount; g++)
-            if (Interlocked.Read(ref _groupBytes[g]) > 0) lowest = Math.Min(lowest, DropRank((PackGroup)g));
+            if (Interlocked.Read(ref _groupBytes[g]) > 0)
+                lowest = Math.Min(lowest, DropRank(g == (int)PackGroup.NoPicture ? PackGroup.Pictures : (PackGroup)g));
         return lowest == int.MaxValue ? 0 : lowest;
     }
 
@@ -1152,11 +1160,11 @@ public sealed class ThumbStore : IDisposable
 
     /// <summary>
     /// Deletes packs while the store is over its cap or holds more than <see cref="ThumbStoreOptions.MaxRecords"/> records:
-    /// earlier versions' packs first, then documents, videos and pictures (<see cref="DropRank"/>), the oldest first within
-    /// each, so no picture goes while a document or video thumbnail is left. A group's open pack goes in its turn (the
-    /// group starts a new one); the last pack holding anything only when it alone is over. Every pack that has to go is
-    /// chosen first, so their records leave the map in one pass, whatever their number. While full, WriteBatch doesn't
-    /// write what this would drop first. Under _io.
+    /// earlier versions' packs first, then documents, videos, pictures and the records without a picture
+    /// (<see cref="DropRank"/>), the oldest first within each, so no picture goes while a document or video thumbnail is
+    /// left. A group's open pack goes in its turn (the group starts a new one); the last pack holding anything only when it
+    /// alone is over. Every pack that has to go is chosen first, so their records leave the map in one pass, whatever their
+    /// number. While full, WriteBatch doesn't write what this would drop first. Under _io.
     /// </summary>
     void EnforceCap()
     {

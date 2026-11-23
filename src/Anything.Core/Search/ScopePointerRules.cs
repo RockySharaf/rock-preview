@@ -54,7 +54,6 @@ public static class ScopePointerRules
     {
         public int Right => X + Width;
         public int Bottom => Y + Height;
-        public bool Intersects(Box o) => X < o.Right && o.X < Right && Y < o.Bottom && o.Y < Bottom;
         public bool Inside(Box o) => X >= o.X && Y >= o.Y && Right <= o.Right && Bottom <= o.Bottom;
     }
 

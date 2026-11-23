@@ -9,10 +9,11 @@ namespace Anything.Core.Content.Extract;
 /// main text, then text boxes, footnotes and endnotes as LegacyWord gives them. Excel: every sheet in workbook order as its
 /// own page starting with its name, cells separated by tabs, as OoxmlReader writes xlsx. PowerPoint: every slide in
 /// presentation order, one page each. The compound file's streams decide the format, the extension only which is tried
-/// first. A file that isn't a compound file: an RTF saved with a .doc or .dot name is read as RTF, anything else (a web
-/// page or tab-separated export saved as .xls, a text .doc) as a user's extra text extension is, by PlainTextReader. An encrypted one
-/// is PasswordProtected; a broken one Damaged. The limits are OoxmlReader's: the sink's text and page limits, the
-/// budget's time and bytes read, and its cancellation, which the readers' parses get as a token.
+/// first. A file that isn't a compound file is read by what it starts with: RTF as RTF, a web page (a report exported
+/// as .xls) as HTML with its tags left out, anything else (a tab-separated export, a text .doc) as a user's extra text
+/// extension is, by PlainTextReader. An encrypted one is PasswordProtected; a broken one Damaged. The limits are
+/// OoxmlReader's: the sink's text and page limits, the budget's time and bytes read, and its cancellation, which the
+/// readers' parses get as a token.
 /// </summary>
 /// <param name="beforeParse">Tests: called with the token a reader's parse gets, just before the parse.</param>
 internal sealed class LegacyOfficeReader(Action<CancellationToken>? beforeParse = null) : IContentReader
@@ -52,24 +53,57 @@ internal sealed class LegacyOfficeReader(Action<CancellationToken>? beforeParse 
     }
 
     /// <summary>
-    /// A file with an old Office name that isn't a compound file. RTF under a Word name (WordPad and many programs save it
-    /// as .doc) is read as RtfReader reads it. Anything else is read as a user's extra text extension was read before this
-    /// reader: by PlainTextReader, with its limits and its answer for a file that isn't text. So a web page or a
-    /// tab-separated export saved as .xls and a text .doc stay searchable. Such a file has no page count, so a match in it
-    /// gets no sheet or slide place (SnippetFormatter).
+    /// A file with an old Office name that isn't a compound file, read by its first bytes whatever its extension (after a
+    /// byte-order mark and white space): "{\rtf" is RTF (WordPad and many programs save it as .doc, others as .xls or
+    /// .ppt), read as RtfReader reads it; '&lt;' is a web page or XML (a report exported from a website or Excel as .xls),
+    /// read as HTML so its tags, styles and class names stay out of the index. Anything else is read as a user's extra
+    /// text extension was read before this reader: by PlainTextReader, with its limits and its answer for a file that
+    /// isn't text. So a tab-separated export saved as .xls and a text .doc stay searchable. Such a file has no page
+    /// count, so a match in it gets no sheet or slide place (SnippetFormatter).
     /// </summary>
     static DocStatus NotCompound(IByteSource source, ReadOnlySpan<char> extension, ExtractSink sink, ExtractBudget budget)
     {
-        if (extension is "doc" or "dot")
+        // A small head, read once and charged to the budget; then only the reader it picks reads the file.
+        Span<byte> head = stackalloc byte[HeadBytes];
+        head = head[..source.ReadFully(0, head)];
+        switch (StartOf(head))
         {
-            var rtf = new RtfReader.Parser(source, sink, budget);
-            if (rtf.Start())
-            {
+            case Start.Rtf:
+                var rtf = new RtfReader.Parser(source, sink, budget);
+                if (!rtf.Start()) break;
                 rtf.Run();
                 return rtf.Cut ? DocStatus.Truncated : DocStatus.Ok;
-            }
+            case Start.Markup:
+                return PlainText.Read(source, "html", sink, budget);
         }
         return PlainText.Read(source, extension, sink, budget);
+    }
+
+    /// <summary>How much of a file's start is looked at for RTF or markup (white space before them included).</summary>
+    const int HeadBytes = 1024;
+
+    internal enum Start { Other, Rtf, Markup }
+
+    /// <summary>
+    /// What a file starts with after an optional byte-order mark (UTF-8, or UTF-16 in either byte order) and white space:
+    /// "{\rtf" (8-bit only, as RTF always is), '&lt;', or something else.
+    /// </summary>
+    internal static Start StartOf(ReadOnlySpan<byte> head)
+    {
+        int at = 0, step = 1, low = 0;
+        if (head.StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF])) at = 3;
+        else if (head.StartsWith((ReadOnlySpan<byte>)[0xFF, 0xFE])) (at, step, low) = (2, 2, 0);
+        else if (head.StartsWith((ReadOnlySpan<byte>)[0xFE, 0xFF])) (at, step, low) = (2, 2, 1);
+        // Each character is its low byte, with a zero high byte in UTF-16.
+        for (; at + step <= head.Length; at += step)
+        {
+            if (step == 2 && head[at + 1 - low] != 0) return Start.Other;
+            byte c = head[at + low];
+            if (c is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n') continue;
+            if (c == '<') return Start.Markup;
+            return step == 1 && head[at..].StartsWith("{\\rtf"u8) ? Start.Rtf : Start.Other;
+        }
+        return Start.Other;
     }
 
     static readonly PlainTextReader PlainText = new();

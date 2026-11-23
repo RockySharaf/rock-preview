@@ -1,4 +1,6 @@
 using System.Drawing;
+using System.Reflection;
+using System.Windows.Forms;
 using Anything.Preview;
 using Anything.Preview.UI;
 
@@ -53,6 +55,88 @@ public sealed class PreviewColorsTests
     }
 
     [Fact]
+    public void The_set_is_fixed_for_the_run()
+    {
+        // Windows switching between light and dark mid-run must not flip the text colours while the backgrounds
+        // stay: Now is read once, into a field nothing can change.
+        var now = typeof(PreviewColors).GetProperty(nameof(PreviewColors.Now), BindingFlags.Public | BindingFlags.Static)!;
+        Assert.Null(now.SetMethod);
+        var field = typeof(PreviewColors).GetField("<Now>k__BackingField", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(field);
+        Assert.True(field.IsInitOnly);
+        Assert.Same(PreviewColors.Now, PreviewColors.Now);
+        Assert.True(ReferenceEquals(PreviewColors.Now, PreviewColors.Light) || ReferenceEquals(PreviewColors.Now, PreviewColors.Dark));
+    }
+
+    [Fact]
+    public void A_selected_match_cell_has_dark_text_in_both_modes()
+    {
+        AssertRgb(30, 30, 30, PreviewColors.SelectedMatchText);
+        Assert.Equal(PreviewColors.Dark.MatchText, PreviewColors.SelectedMatchText);
+        foreach (var back in new[] { PreviewColors.MatchSelected, PreviewColors.CurrentMatchSelected })
+        {
+            Assert.True(Contrast(PreviewColors.SelectedMatchText, back) >= 4.5, $"{back}: {Contrast(PreviewColors.SelectedMatchText, back):0.00} to 1");
+            // The grid's default selection text, white, is what it replaces.
+            Assert.True(Contrast(Color.White, back) < 4.5);
+        }
+    }
+
+    [Fact]
+    public void Only_match_cells_get_the_dark_selected_text()
+    {
+        // The table's own formatting, in memory (no window shown): a match cell gets the match colours and dark
+        // selected text, a cell that does not match keeps the grid's own.
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+                using var table = new TableView();
+                table.SetData(new TableData { Columns = ["A", "B"], Rows = [["apple", "pear"], ["plum", "apple pie"]] });
+                table.Highlight(text => text.Contains("apple") ? [(0, 5)] : []);
+                var bound = DateTime.UtcNow.AddSeconds(30);
+                while (table.MatchState.Count < 2 && DateTime.UtcNow < bound)
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(10);
+                }
+                Assert.Equal(2, table.MatchState.Count);
+
+                var gridField = typeof(TableView).GetField("_grid", BindingFlags.NonPublic | BindingFlags.Instance)!;
+                var grid = (DataGridView)gridField.GetValue(table)!;
+                DataGridViewCellStyle? seen = null;
+                // Added after the table's own handler, so it sees the style that handler left.
+                grid.CellFormatting += (_, e) => seen = e.CellStyle;
+                DataGridViewCellStyle Format(int row, int col)
+                {
+                    seen = null;
+                    _ = grid.Rows[row].Cells[col].FormattedValue;
+                    return Assert.IsType<DataGridViewCellStyle>(seen);
+                }
+
+                var match = Format(1, 1);
+                Assert.Equal(PreviewColors.SelectedMatchText, match.SelectionForeColor);
+                Assert.Equal(PreviewColors.MatchSelected, match.SelectionBackColor);
+                var current = Format(0, 0);
+                Assert.Equal(PreviewColors.SelectedMatchText, current.SelectionForeColor);
+                Assert.Equal(PreviewColors.CurrentMatchSelected, current.SelectionBackColor);
+                var plain = Format(0, 1);
+                Assert.NotEqual(PreviewColors.SelectedMatchText, plain.SelectionForeColor);
+                Assert.NotEqual(PreviewColors.MatchSelected, plain.SelectionBackColor);
+            }
+            catch (Exception e)
+            {
+                failure = e;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(60)), "The table test did not finish.");
+        if (failure != null) throw new Xunit.Sdk.XunitException(failure.ToString());
+    }
+
+    [Fact]
     public void Dark_text_reads_on_what_it_is_drawn_on()
     {
         var c = PreviewColors.Dark;
@@ -70,7 +154,7 @@ public sealed class PreviewColorsTests
             ("info keys", c.InfoKey, c.Background),
             ("info diagnostics", c.InfoDiag, c.Background),
             ("pane subtitle", c.PaneSub, c.Background),
-            ("pane footer", c.PaneFooter, c.Background),
+            ("pane footer and the empty pane's line", c.PaneFooter, c.Background),
             ("loading", c.PaneLoading, c.Background),
             ("an .rtf file's page", c.FilePageText!.Value, c.FilePageBack!.Value),
             ("a match on an .rtf file's page", c.FilePageText!.Value, PreviewColors.CurrentMatch),

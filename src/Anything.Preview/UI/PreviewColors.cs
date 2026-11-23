@@ -71,8 +71,18 @@ internal sealed class PreviewColors
     /// <summary>A selected matching cell in a table, and the selected current one.</summary>
     public static readonly Color MatchSelected = Color.FromArgb(214, 190, 70), CurrentMatchSelected = Color.FromArgb(230, 140, 40);
 
-    /// <summary>The set for the app's colour mode now; read when painting, like the main window's colours.</summary>
-    public static PreviewColors Now => For(Application.IsDarkModeEnabled);
+    /// <summary>
+    /// Dark text on a selected match cell in a table, in both sets: the grid's default white is hard to read on it.
+    /// </summary>
+    public static readonly Color SelectedMatchText = Color.FromArgb(30, 30, 30);
+
+    /// <summary>
+    /// The set for this run, fixed when this class is first used. Application.IsDarkModeEnabled follows Windows live
+    /// when the theme is "system", but the window colours and the colours set when a view is made stay as they were at
+    /// start, so the set must too. First use comes after Program has called Application.SetColorMode (no window exists
+    /// before that).
+    /// </summary>
+    public static PreviewColors Now { get; } = For(Application.IsDarkModeEnabled);
 
     public static PreviewColors For(bool dark) => dark ? Dark : Light;
 
@@ -106,7 +116,10 @@ internal sealed class PreviewColors
     public Color InfoSub { get; private init; }
     public Color InfoKey { get; private init; }
     public Color InfoDiag { get; private init; }
-    /// <summary>The pane's line under the file name (and the zoom), its details line at the bottom and "Loading…".</summary>
+    /// <summary>
+    /// The pane's line under the file name (and the zoom), its details line at the bottom (also "Select a file to
+    /// preview.") and "Loading…".
+    /// </summary>
     public Color PaneSub { get; private init; }
     public Color PaneFooter { get; private init; }
     public Color PaneLoading { get; private init; }

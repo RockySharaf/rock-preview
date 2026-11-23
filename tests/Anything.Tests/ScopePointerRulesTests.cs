@@ -103,7 +103,7 @@ public sealed class ScopePointerRulesTests
         Assert.True(p.Below);
         Assert.Equal(Field.Bottom + Gap, p.Bounds.Y);
         Assert.True(p.Bounds.Inside(Area));
-        Assert.False(p.Bounds.Intersects(Field));
+        Assert.True(p.Bounds.Y >= Field.Bottom); // clear of the search box
         Assert.Equal(Chip.X + Chip.Width / 2, p.Bounds.X + p.ArrowX); // the arrow's tip at the chip's middle
     }
 
@@ -116,7 +116,7 @@ public sealed class ScopePointerRulesTests
         Assert.False(p.Below);
         Assert.Equal(field.Y - Gap - Height, p.Bounds.Y);
         Assert.True(p.Bounds.Inside(Area));
-        Assert.False(p.Bounds.Intersects(field));
+        Assert.True(p.Bounds.Bottom <= field.Y); // clear of the search box
     }
 
     [Fact]

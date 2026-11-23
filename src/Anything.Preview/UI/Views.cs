@@ -79,7 +79,8 @@ internal sealed class TableView : UserControl
             bool current = _current >= 0 && _hits[_current] == (e.RowIndex, e.ColumnIndex);
             e.CellStyle.BackColor = current ? PreviewColors.CurrentMatch : PreviewColors.Match;
             e.CellStyle.SelectionBackColor = current ? PreviewColors.CurrentMatchSelected : PreviewColors.MatchSelected;
-            if (PreviewColors.Now.MatchText is { } onMatch) e.CellStyle.ForeColor = e.CellStyle.SelectionForeColor = onMatch;
+            if (PreviewColors.Now.MatchText is { } onMatch) e.CellStyle.ForeColor = onMatch;
+            e.CellStyle.SelectionForeColor = PreviewColors.SelectedMatchText;
         };
         _grid.SizeChanged += (_, _) => ApplyPendingScroll();
         _grid.VisibleChanged += (_, _) => ApplyPendingScroll();
@@ -903,7 +904,7 @@ internal sealed class DocumentView : RichTextBox
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref Point lParam);
 
     /// <param name="find">Colours its matches in each paragraph (\highlight4); null = no colours, the RTF as always.</param>
-    /// <param name="colors">The text colours; null = the app's colour mode now.</param>
+    /// <param name="colors">The text colours; null = the set for this run.</param>
     internal static string BuildRtf(IReadOnlyList<DocBlock> blocks, Func<string, IReadOnlyList<(int Start, int Length)>>? find = null, PreviewColors? colors = null)
     {
         colors ??= PreviewColors.Now;

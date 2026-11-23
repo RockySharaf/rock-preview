@@ -401,7 +401,8 @@ internal sealed partial class SettingsForm : Form
             Card("Sort by", "How results are ordered when a search starts.", _defaultSort),
             Card("Folders first", "Folders found come before files, each in the order above.", _foldersFirst),
             // Above the match switches only: Sort by and Folders first are not in the Search menu.
-            Note("These are the same switches as in the Search menu. A change here applies to every open tab.", top: 12),
+            // Named as the menu names them, in the order of the cards below, as the cards' own names differ.
+            Note("These are the Search menu's switches (Match Whole Word, Match Case, Match Path, Match Diacritics, Enable Regex, Match Inside Files). A change here applies to every open tab.", top: 12),
             Card("Match whole words", "\"port\" finds port, not report.", _wholeWord),
             Card("Match case", "\"Report\" finds Report, not report.", _matchCase),
             Card("Match the full path", "Search words can match folder names on the way to a file.", _matchPath),

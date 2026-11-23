@@ -23,6 +23,7 @@ internal sealed partial class MainForm
         _thumbStoreFullBar.Padding = new Padding(6, 3, 6, 3);
         _thumbStoreFullBar.BackColor = SystemColors.Info;
         _thumbStoreFullBar.ForeColor = SystemColors.InfoText;
+        ExplorerTheme.StyleBarLinks(_thumbStoreFullBar);
         _thumbStoreFullBar.AccessibleName = "Instant thumbnails is full";
         // Opens Settings at the option, where the limit is typed.
         _thumbStoreFullRaise.LinkClicked += (_, _) => { _app.ThumbStoreFullAnswered(); _app.ShowSettings(this, "Thumbnails"); };
