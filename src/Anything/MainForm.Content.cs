@@ -121,6 +121,25 @@ internal sealed partial class MainForm
         if (from._tabContent.TryGetValue(t, out var c)) _tabContent.AddOrUpdate(t, c);
     }
 
+    /// <summary>
+    /// Settings › Defaults › Find words inside files changed: every tab takes it, as with the match switches there
+    /// (<see cref="OnDefaultsChanged"/>), and the results show it at once.
+    /// </summary>
+    internal void OnMatchContentDefaultChanged(bool on)
+    {
+        foreach (var t in _tabs)
+        {
+            ContentTab(t).MatchContent = on;
+            if (t != _tab) t.Stale = t.StaleNewQuery = true;
+        }
+        if (!_loaded) return;
+        SyncContentMenu();
+        ApplyContentColumn();
+        UpdateStatus();
+        if (Visible) RunSearch(SearchReason.NewQuery);
+        else _tab.Stale = _tab.StaleNewQuery = true;
+    }
+
     /// <summary>The search's SearchOptions.MatchContent: the tab's toggle, while search inside files is on.</summary>
     bool ContentMatchOn() => _app.ContentOn && ContentTab().MatchContent;
 

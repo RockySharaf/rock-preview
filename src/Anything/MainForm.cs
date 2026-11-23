@@ -202,7 +202,7 @@ internal sealed partial class MainForm : Form
         _search.KeyDown += OnSearchKeyDown;
         _searchField = new SearchField(_search) { Dock = DockStyle.Right, Width = 300 };
         _searchField.ClearClicked += CloseSearch;
-        _searchField.ScopeClicked += ToggleSearchScope;
+        _searchField.ScopeClicked += () => ToggleSearchScope(chip: true);
         WireSearchHistory();
         _addressGap.BackColor = ExplorerTheme.Chrome;
 

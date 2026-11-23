@@ -51,8 +51,7 @@ public static class SearchHelp
 
     /// <summary>Under the title: how to use the help itself.</summary>
     public const string Intro =
-        "Type these in the search box. Double-click a name or an example to put it in the search box; " +
-        "right-click an entry to copy it, or press Ctrl+C to copy all of this help.";
+        "Type these in the search box. Double-click a name or an example to try it.";
 
     /// <summary>Where the meanings start in <see cref="PlainText"/>, in characters, as in the old help.</summary>
     internal const int PlainCodeColumn = 29;
@@ -113,7 +112,7 @@ public static class SearchHelp
                 "Equal to, less than, at most, more than, at least, from start to end.", "size:>=1gb", "dm:2024-01-01..2024-03-31"),
         ], null),
 
-        new("Kinds of file", "Filter macros: alone they filter, before a term they narrow it.",
+        new("Kinds of file", "Alone they show only that kind; before a word they look for it in that kind only.",
         [
             E("audio:", "Music and other sound files (.mp3, .flac, .wav...)."),
             E("zip:", "Archives (.zip, .rar, .7z...)."),
@@ -170,7 +169,7 @@ public static class SearchHelp
             Example("*.mp3 | *.flac", "mp3 or flac files."),
             Example("ext:jpg;png size:>2mb", "Large images."),
             Example("\"my documents\" !temp", "The phrase, leaving out \"temp\"."),
-            Example("c:\\projects\\ .cs", ".cs files under c:\\projects."),
+            Example("c:\\projects\\ ext:cs", ".cs files under c:\\projects."),
             Example("dm:today folder:", "Folders modified today."),
             Example("content:invoice ext:pdf", "PDFs with \"invoice\" inside."),
             Example("dpi:<300 cmyk:", "CMYK pictures under 300 dpi."),

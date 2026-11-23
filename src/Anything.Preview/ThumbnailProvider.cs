@@ -153,19 +153,20 @@ public static class ThumbnailProvider
             case ".doc": case ".dot":
             {
                 // The service asks Windows first (the picture the author saved, if any); this runs after a miss. The
-                // reader loads whole streams, so a big file gets no page; a file that is no Word 97-2003 document (RTF,
-                // HTML or text named .doc) goes on to the text sniff, as when only Windows was asked.
+                // reader loads whole streams, so a big file gets no page; a file that is no Word 97-2003 document (HTML
+                // or text named .doc) goes on to the text sniff, as when only Windows was asked. RTF named .doc gets no
+                // page (its first lines are markup): its icon, as a real .rtf.
                 if (OldOfficeReadable(path, OldOfficeMaxBytes))
                 {
                     string? text = LegacyWord.ReadText(path, LegacyWordMaxChars, ct);
                     if (text != null) return FirstLines(text) is { } lines ? TextPage(lines, size) : null;
                 }
-                return ThumbSources.TextSniff(path, size);
+                return ThumbSources.TextSniff(path, size, noPageForRtf: true);
             }
             case ".xls": case ".xlt":
             {
                 // As for .doc: after Windows had no picture; a file that is no Excel 97-2003 workbook (HTML or CSV named
-                // .xls) goes on to the text sniff. Its own, lower size cap.
+                // .xls) goes on to the text sniff, RTF named .xls to its icon. Its own, lower size cap.
                 if (OldOfficeReadable(path, OldExcelMaxBytes))
                 {
                     int chosen = -1;
@@ -173,7 +174,7 @@ public static class ThumbnailProvider
                     if (sheets != null)
                         return chosen >= 0 && chosen < sheets.Count && !sheets[chosen].NotRead ? SheetPage(sheets[chosen].Rows, size) : null;
                 }
-                return ThumbSources.TextSniff(path, size);
+                return ThumbSources.TextSniff(path, size, noPageForRtf: true);
             }
         }
         if (OfficePreview.WordExt.Contains(ext) || OfficePreview.ExcelExt.Contains(ext) || OfficePreview.PowerPointExt.Contains(ext) ||

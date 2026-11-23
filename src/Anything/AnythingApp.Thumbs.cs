@@ -252,13 +252,17 @@ internal sealed partial class AnythingApp
 
     /// <summary>
     /// The limit changed: saved, and the open store keeps to it at once. Raised, the "store is full" bar goes; lowered
-    /// below what the store holds, the user knows it will drop thumbnails, so the bar doesn't say so again in this run.
+    /// below what the store holds, the user knows it will drop thumbnails, so the bar doesn't say so again for this limit.
     /// </summary>
     public void SetThumbStoreLimit(int megabytes)
     {
         int before = Settings.ThumbnailStoreMegabytes;
         if (megabytes > before) HideThumbStoreFullBars();
-        else if (megabytes < before && ThumbHost.StoreSizeBytes > ThumbStore.CapBytesFor(megabytes)) _thumbFullTold = true;
+        else if (ThumbOption.LoweredLimitIsTold(before, megabytes, ThumbHost.StoreSizeBytes))
+        {
+            _thumbFullTold = true;
+            Settings.ThumbnailStoreFullToldMegabytes = megabytes;
+        }
         Settings.ThumbnailStoreMegabytes = megabytes;
         Settings.Save();
         ThumbHost.SetCap(megabytes);
@@ -303,8 +307,8 @@ internal sealed partial class AnythingApp
     bool ThumbFullDue => ThumbOption.ShouldTellFull(Settings.ThumbnailStoreMegabytes, Settings.ThumbnailStoreFullToldMegabytes, _thumbFullTold);
 
     /// <summary>
-    /// The store started dropping thumbnails (UI thread). Said once per run, in a window showing thumbnails now
-    /// or the next one that does, and never again for a limit the user answered at.
+    /// The store started dropping thumbnails (UI thread). Said once for each limit, in a window showing thumbnails now
+    /// or the next one that does.
     /// </summary>
     void OnThumbStoreFull()
     {
@@ -316,24 +320,22 @@ internal sealed partial class AnythingApp
 
     /// <summary>
     /// A window showing thumbnails asks whether to say the store is full: true once (then it shows the bar), while the
-    /// store still is and the bar is due.
+    /// store still is and the bar is due. The limit is remembered as told now, answered or not (ThumbOption.TakeFullNotice).
     /// </summary>
     public bool TakeThumbStoreFullNotice()
     {
         if (!_thumbFullPending) return false;
         _thumbFullPending = false;
-        if (IsDemo || !Settings.ThumbnailStore || !ThumbHost.StoreIsFull || !ThumbFullDue) return false;
-        _thumbFullTold = true;
+        if (IsDemo || !Settings.ThumbnailStore || !ThumbHost.StoreIsFull) return false;
+        int toldAt = Settings.ThumbnailStoreFullToldMegabytes;
+        if (!ThumbOption.TakeFullNotice(Settings.ThumbnailStoreMegabytes, ref toldAt, ref _thumbFullTold)) return false;
+        Settings.ThumbnailStoreFullToldMegabytes = toldAt;
+        Settings.Save();
         return true;
     }
 
-    /// <summary>The user answered the bar (OK, or Raise the limit): not said again for this limit, and gone from every window.</summary>
-    public void ThumbStoreFullAnswered()
-    {
-        Settings.ThumbnailStoreFullToldMegabytes = Settings.ThumbnailStoreMegabytes;
-        Settings.Save();
-        HideThumbStoreFullBars();
-    }
+    /// <summary>The user answered the bar (OK, or Raise the limit): it goes from every window.</summary>
+    public void ThumbStoreFullAnswered() => HideThumbStoreFullBars();
 
     void HideThumbStoreFullBars()
     {

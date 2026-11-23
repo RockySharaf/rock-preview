@@ -72,8 +72,9 @@ public sealed class ThumbServiceKeepTests : IDisposable
         });
         service.StoreKeep = LeaveOutBmp;
         service.UseStore(() => ThumbStore.Open(_storeFolder));
-        // Opened now (Clear opens it on the thread pool), so no picture meets a store still opening.
-        service.ClearStore();
+        // Opened now, so no picture meets a store still opening. Not ClearStore: its Clear runs on the thread pool after
+        // the store is published and could wipe a picture this test has already saved (the folder is new: nothing to clear).
+        service.OpenStoreSoon();
         Assert.True(WaitFor(() => service.CurrentStore is { IsEnabled: true }), "the store opened");
         return service;
     }
@@ -204,7 +205,9 @@ public sealed class ThumbServiceKeepTests : IDisposable
             Name = "full store test thumbnails",
         });
         service.UseStore(() => ThumbStore.Open(_storeFolder, new ThumbStoreOptions { PackBytes = 4096, CapBytes = 64 * 1024 }));
-        service.ClearStore();
+        // Opened now, so no picture meets a store still opening. Not ClearStore: its Clear runs on the thread pool after
+        // the store is published and could wipe a picture this test has already saved (the folder is new: nothing to clear).
+        service.OpenStoreSoon();
         Assert.True(WaitFor(() => service.CurrentStore is { IsEnabled: true }), "the store opened");
         var store = service.CurrentStore!;
         var client = service.CreateClient(a => a.Bitmap?.Dispose());

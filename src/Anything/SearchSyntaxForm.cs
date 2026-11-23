@@ -96,7 +96,7 @@ internal sealed class SearchSyntaxForm : Form
         if (_contentMade && hotkey == _hotkey) return;
         _hotkey = hotkey;
         _contentMade = true;
-        _view.Content = HelpContent.Build(hotkey);
+        _view.Content = HelpContent.Build(hotkey, StorePackage.IsInstalled);
     }
 
     bool _contentMade;
@@ -114,13 +114,6 @@ internal sealed class SearchSyntaxForm : Form
     /// <summary>Whether <paramref name="hwnd"/> is the help shown for <paramref name="owner"/> (the hotkey hides both).</summary>
     internal static bool IsHelpOf(Form owner, IntPtr hwnd) =>
         s_open is { IsDisposed: false, Visible: true, IsHandleCreated: true } help && help.Handle == hwnd && ReferenceEquals(help._ownerForm, owner);
-
-    /// <summary>The open help, for the window probe.</summary>
-    internal static SearchSyntaxForm? Current => s_open is { IsDisposed: false } f ? f : null;
-
-    internal SearchHelpView View => _view;
-
-    internal HelpStrip Strip => _strip;
 
     void Attach(Form owner, Func<Rectangle?> searchBox, Action<string, HelpInsert>? tryText)
     {
@@ -289,7 +282,7 @@ internal sealed class SearchSyntaxForm : Form
         // Ctrl+C and Ctrl+Insert copy the whole help wherever the focus is, the strip too.
         if (IsCopyAll(e.KeyData))
         {
-            SearchHelpView.CopyText(_view.AllText());
+            FileOps.SetClipboardText(_view.AllText());
             e.Handled = e.SuppressKeyPress = true;
             return;
         }
@@ -390,9 +383,6 @@ internal sealed class HelpStrip : Control
             if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.StateChange, value);
         }
     }
-
-    /// <summary>The button the keyboard is on.</summary>
-    internal int FocusIndex => _focus;
 
     /// <summary>Each button's place, from the left: lined up with the help's own margin under it.</summary>
     internal IReadOnlyList<Rectangle> Buttons

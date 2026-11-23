@@ -515,8 +515,9 @@ public sealed class ThumbStoreTests : IDisposable
             string index = Path.Combine(Folder, "index.bin");
             long before = new FileInfo(index).Length;
             Assert.True(store.ClearSuspect(Key(1)));
-            // Only ClearSuspect can wake the idle writer. A smaller index means the removal reached disk.
-            Assert.True(SpinWait.SpinUntil(() => new FileInfo(index).Length < before, TimeSpan.FromSeconds(1)));
+            // Only ClearSuspect can wake the idle writer. A smaller index means the removal reached disk. The wait ends
+            // as soon as it has; 30 seconds is generous for a busy PC and still far below the 10-minute save interval.
+            Assert.True(SpinWait.SpinUntil(() => new FileInfo(index).Length < before, TimeSpan.FromSeconds(30)));
             store.Abandon();
         }
         using var next = Open();

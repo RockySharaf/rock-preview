@@ -49,11 +49,6 @@ public sealed class ThumbKindsTests
         Assert.Equal(EmbeddedPreview.Raw, ThumbKinds.EmbeddedPreviewOf("nef"));
         Assert.Equal(EmbeddedPreview.None, ThumbKinds.EmbeddedPreviewOf("heic"));
         Assert.Equal(EmbeddedPreview.None, ThumbKinds.EmbeddedPreviewOf("png"));
-        Assert.True(ThumbKinds.IsRaw("DNG"));
-        Assert.True(ThumbKinds.IsJpeg("jfif"));
-        Assert.True(ThumbKinds.IsGif("gif"));
-        Assert.False(ThumbKinds.HasOwnDecoder("mp4"));
-        Assert.True(ThumbKinds.HasOwnDecoder("pdf"));
     }
 
     [Fact]
@@ -73,7 +68,7 @@ public sealed class ThumbKindsTests
         Assert.Equal(ThumbEncoding.Jpeg85, ThumbKinds.EncodingFor("jpg", hasAlpha: false, 256));
         Assert.Equal(ThumbEncoding.Jpeg85, ThumbKinds.EncodingFor("mp4", hasAlpha: false, 512));
         Assert.Equal(ThumbEncoding.Png, ThumbKinds.EncodingFor("jpg", hasAlpha: true, 256));
-        foreach (var flat in new[] { "pdf", "docx", "txt", "ttf", "png", "bmp", "gif", "ico", "dxf", "emf", "svg" })
+        foreach (var flat in new[] { "pdf", "docx", "txt", "ttf", "png", "bmp", "gif", "ico", "dxf", "emf" })
             Assert.Equal(ThumbEncoding.Png, ThumbKinds.EncodingFor(flat, hasAlpha: false, 256));
         // A PNG that came out too big becomes JPEG 90, unless it needs its transparency.
         Assert.Equal(ThumbEncoding.Png, ThumbKinds.EncodingFor("pdf", false, 256, pngBytes: 48 * 1024));
@@ -117,23 +112,18 @@ public sealed class ThumbKindsTests
     }
 
     [Theory]
-    [InlineData("pem")]
-    [InlineData("KEY")]
     [InlineData("env")]
-    [InlineData("eml")]
-    [InlineData("mbox")]
     [InlineData("npmrc")]
-    [InlineData("asc")]
     [InlineData("txt")]
     [InlineData("md")]
     [InlineData("cs")]
     [InlineData("json")]
     [InlineData("html")]
-    [InlineData("svg")]
     [InlineData("csv")]
-    [InlineData("rtf")]
-    [InlineData("ics")]
     [InlineData("vcf")]
+    [InlineData("m3u")]
+    [InlineData("cue")]
+    [InlineData("desktop")]
     [InlineData(@"C:\Users\me\.ssh\config.yml")]
     public void Text_pages_are_shown_but_never_kept_on_disk_planned_for_idle_or_counted(string kind)
     {
@@ -146,6 +136,53 @@ public sealed class ThumbKindsTests
         Assert.Equal(ThumbCost.Nothing, ThumbKinds.CostOf(kind));
         var census = ThumbEstimator.Count(["page." + ThumbKinds.Ext(kind)]);
         Assert.Equal((0L, 0L), (census.Files, census.BytesAt(256)));
+    }
+
+    [Theory]
+    [InlineData("rtf")]
+    [InlineData("eml")]
+    [InlineData("mbox")]
+    [InlineData("url")]
+    [InlineData("svg")]
+    [InlineData("ics")]
+    [InlineData("lock")]
+    [InlineData("map")]
+    [InlineData("ipynb")]
+    [InlineData("geojson")]
+    [InlineData("kml")]
+    [InlineData("gpx")]
+    [InlineData("wkt")]
+    [InlineData("gcode")]
+    [InlineData("nc")]
+    [InlineData("obj")]
+    [InlineData("ply")]
+    [InlineData("mtl")]
+    [InlineData("pem")]
+    [InlineData("crt")]
+    [InlineData("cer")]
+    [InlineData("KEY")]
+    [InlineData("pub")]
+    [InlineData("asc")]
+    [InlineData(@"D:\Work\drawing.SVG")]
+    public void Machine_text_and_keys_get_Windows_picture_or_their_icon_never_a_text_page(string kind)
+    {
+        Assert.True(ThumbKinds.NoTextPage(kind), kind);
+        // Asked of Windows like any kind Rock Preview doesn't draw (its cache, then its extractor) ...
+        Assert.Equal(ThumbRoute.Shell, ThumbKinds.RouteOf(kind));
+        Assert.True(ThumbKinds.AskWindowsCache(kind, 0));
+        // ... and no page of its text, so no text turn either.
+        Assert.False(ThumbKinds.DrawsText(kind), kind);
+        Assert.False(ThumbKinds.DrawsTextWhenMade(kind), kind);
+        // What Windows gives stays in memory, as for other kinds only it pictures.
+        Assert.False(ThumbKinds.KeepOnDisk(kind), kind);
+        Assert.Equal(ThumbCost.Nothing, ThumbKinds.CostOf(kind));
+    }
+
+    [Fact]
+    public void Text_kinds_with_a_readable_start_keep_their_page()
+    {
+        foreach (var kind in new[] { "txt", "cs", "vcf", "m3u", "m3u8", "pls", "cue", "desktop", "html", "" })
+            Assert.False(ThumbKinds.NoTextPage(kind), kind);
     }
 
     [Fact]
@@ -232,7 +269,6 @@ public sealed class ThumbKindsTests
         Assert.True(ThumbKinds.ShellFirst(kind));
         // After a miss, Rock Preview's own extractor draws a page: a text job, one at a time.
         Assert.Equal(ThumbRoute.OwnExtractor, ThumbKinds.RouteOf(kind));
-        Assert.True(ThumbKinds.HasOwnDecoder(kind));
         Assert.True(ThumbKinds.DrawsTextWhenMade(kind));
         Assert.False(ThumbKinds.RendersPdfPage(kind));
         // Not cache-only (that is folders, shortcuts and the PDF kinds): Windows' extractor is asked, and a miss is
@@ -293,6 +329,10 @@ public sealed class ThumbKindsTests
     [InlineData(@"\\server\share\Template.AIT", false, true)]
     [InlineData(@"C:\Docs\Report.pdf.lnk", false, true)]
     [InlineData(@"C:\Docs\Tools.LNK", false, true)]
+    // Internet shortcuts too: one may point at a local PDF.
+    [InlineData("url", false, true)]
+    [InlineData(@"C:\Docs\Report.URL", false, true)]
+    [InlineData(@"C:\Docs\Site.url ", false, true)]
     // Names as Windows opens them: trailing spaces and dots ignored, a stream name cut off.
     [InlineData(@"C:\Docs\a.pdf ", false, true)]
     [InlineData(@"C:\Docs\a.pdf.", false, true)]
@@ -345,8 +385,8 @@ public sealed class ThumbKindsTests
     {
         Assert.Equal(ThumbCost.Nothing, ThumbKinds.CostOf("Holiday.jpg", isFolder: true));
         Assert.Equal(ThumbCost.Photo, ThumbKinds.CostOf(@"C:\Photos\Holiday.JPG"));
-        Assert.True(ThumbKinds.IsVideo("MOV"));
-        Assert.False(ThumbKinds.IsVideo("mp3"));
+        Assert.Equal(ThumbCost.Video, ThumbKinds.CostOf("MOV"));
+        Assert.Equal(ThumbCost.Nothing, ThumbKinds.CostOf("mp3"));
         // Every video takes the route through Windows' extractor.
         Assert.Equal(ThumbRoute.Shell, ThumbKinds.RouteOf("webm"));
     }
@@ -386,7 +426,7 @@ public sealed class ThumbKindsTests
         Assert.False(ThumbKinds.IsPageLike(""));
         // Every page-like kind is one Rock Preview or Windows pictures: never a kind that only shows its icon.
         foreach (var ext in new[] { "pptx", "pdf", "ttf", "png", "dwg", "doc" })
-            Assert.True(ThumbKinds.HasOwnDecoder(ext), ext);
+            Assert.NotEqual(ThumbRoute.Shell, ThumbKinds.RouteOf(ext));
     }
 
     [Fact]

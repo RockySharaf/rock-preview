@@ -46,7 +46,7 @@ internal sealed class SearchField : Control
         ApplyColors();
     }
 
-    /// <summary>How much the scope chip is lit up to be noticed (0 to 1): a search in a folder that found nothing.</summary>
+    /// <summary>How much the scope chip is lit up to be noticed (0 to 1): while the pointer for those who haven't used it points at it.</summary>
     public void SetScopeGlow(float amount)
     {
         amount = Math.Clamp(amount, 0f, 1f);
@@ -55,7 +55,7 @@ internal sealed class SearchField : Control
         _chip.Invalidate();
     }
 
-    /// <summary>The scope chip on the screen, or empty while it can't be seen (the pointer for new users points at it).</summary>
+    /// <summary>The scope chip on the screen, or empty while it can't be seen (the pointer at it needs it).</summary>
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public Rectangle ScopeChipOnScreen =>
         IsHandleCreated && Visible && _chip.Visible && _chip.Width > 0 && _chip.Height > 0 ? _chip.RectangleToScreen(_chip.ClientRectangle) : Rectangle.Empty;

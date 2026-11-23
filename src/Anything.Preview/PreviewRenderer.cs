@@ -72,7 +72,8 @@ public static class PreviewRenderer
             }
             catch (Exception ex)
             {
-                diag.Add($"{step.Name}: {ex.GetType().Name}: {ex.Message}");
+                // The user reads this list: the message, not the exception's type.
+                diag.Add($"{step.Name}: {ex.Message}");
                 continue;
             }
             if (r == null) continue;
@@ -154,6 +155,7 @@ public static class PreviewRenderer
         bool isPdf = Bytes.StartsWithAscii(head, "%PDF") || Bytes.IndexOf(head.AsSpan(0, Math.Min(head.Length, 1024)), "%PDF"u8) >= 0;
         bool isZip = ArchivePreview.IsZip(head);
         bool isOle = head.Length >= 8 && head[0] == 0xD0 && head[1] == 0xCF && head[2] == 0x11 && head[3] == 0xE0;
+        bool isRtf = Bytes.StartsWithAscii(head, "{\\rtf");
 
         switch (ext)
         {
@@ -243,6 +245,9 @@ public static class PreviewRenderer
                 steps.Add(Text);
                 break;
             case ".rtf":
+            // Word can save RTF under a .doc name: it takes the same steps as a real .rtf, not the raw text view.
+            case ".doc" when isRtf:
+            case ".dot" when isRtf:
                 if (text)
                 {
                     steps.Add(BuiltIn("RTF", () => RtfResult(path), thumbnailFirst: false));
@@ -328,13 +333,15 @@ public static class PreviewRenderer
                     {
                         steps.Add(BuiltIn("PowerPoint 97-2003", () => LegacyOfficePreview.RenderPpt(path, ct), thumbnailFirst: false));
                         steps.Add(Handler);
+                        steps.Add(ShellThumb);
                     }
                     else
                     {
+                        // Windows' picture of the slide before the outline, as for .pptx.
                         steps.Add(Handler);
+                        steps.Add(ShellThumb);
                         AddSync("PowerPoint 97-2003", () => LegacyOfficePreview.RenderPpt(path, ct));
                     }
-                    steps.Add(ShellThumb);
                     steps.Add(Text);
                 }
                 else if (OleExt.Contains(ext) && isOle || OtherHandlerExt.Contains(ext))

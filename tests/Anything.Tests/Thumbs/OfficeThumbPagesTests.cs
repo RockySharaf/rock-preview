@@ -97,7 +97,6 @@ public sealed class OfficeThumbPagesTests : IDisposable
     }
 
     [Theory]
-    [InlineData("letter.doc", "{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Arial;}} \\f0 Dear reader, this is RTF.\\par }")]
     [InlineData("notes.doc", "Plain text saved with a .doc name.\r\nSecond line.\r\n")]
     [InlineData("table.xls", "<html><body><table><tr><td>Name</td><td>Value</td></tr></table></body></html>")]
     [InlineData("list.xls", "Name,Value\r\nRent,1200\r\n")]
@@ -113,6 +112,21 @@ public sealed class OfficeThumbPagesTests : IDisposable
         using var page = Extract(path, 256);
         IsPageOfClass(page, 256);
         Assert.Equal(before.Size, page!.Size);
+    }
+
+    [Theory]
+    [InlineData("letter.doc")]
+    [InlineData("letter.dot")]
+    [InlineData("sheet.xls")]
+    [InlineData("sheet.xlt")]
+    public void RTF_that_only_carries_an_old_Office_name_gets_no_page_as_a_real_rtf(string name)
+    {
+        string path = Write(name, Encoding.ASCII.GetBytes("{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Arial;}} \\f0 Dear reader, this is RTF.\\par }"));
+        // It is text to the plain sniff, but its first lines are markup: no page, so it ends as its icon.
+        using var sniffed = ThumbSources.TextSniff(path, 256);
+        Assert.NotNull(sniffed);
+        Assert.Null(ThumbSources.TextSniff(path, 256, noPageForRtf: true));
+        Assert.Null(Extract(path, 256));
     }
 
     [Fact]

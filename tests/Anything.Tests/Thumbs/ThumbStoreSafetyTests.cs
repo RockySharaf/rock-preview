@@ -179,7 +179,8 @@ public sealed class ThumbStoreSafetyTests : IDisposable
     public void After_a_failed_write_writing_pauses_for_one_disk_check_interval()
     {
         bool fail = false;
-        var options = new ThumbStoreOptions { Power = Roomy, DiskCheckInterval = TimeSpan.FromMilliseconds(300), FailWrite = () => Volatile.Read(ref fail) };
+        // A long pause, so a busy PC still writes the next batch within it; the sleep below counts from the failure.
+        var options = new ThumbStoreOptions { Power = Roomy, DiskCheckInterval = TimeSpan.FromSeconds(5), FailWrite = () => Volatile.Read(ref fail) };
         using var store = Open(options);
         PutMany(store, 1);
         Volatile.Write(ref fail, true);
@@ -189,7 +190,7 @@ public sealed class ThumbStoreSafetyTests : IDisposable
         PutMany(store, 1, from: 2);
         Assert.False(store.TryGet(Key(2), out _));
         Assert.Equal(1, store.PackCount);
-        Thread.Sleep(350);
+        Thread.Sleep(5100);
         // After it: stored again.
         PutMany(store, 1, from: 3);
         AssertPicture(store, Key(3), Payload(3));

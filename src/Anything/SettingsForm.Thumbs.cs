@@ -6,8 +6,9 @@ namespace Anything;
 /// Settings › Thumbnails › Instant thumbnails: keep small copies of thumbnails on disk so they appear at once. Off unless
 /// turned on; before it is, the card says what it would take for this PC's files (once indexing is complete). It shows
 /// the limit (typed, in GB) with the free space on its drive, which kinds of thumbnails are kept, where they are kept,
-/// what they take now, and Clear; and says when the store is full or its drive nearly is. Turning it off asks first,
-/// saying how much space that frees, and so does a limit lower than what the store holds. Not in the demo.
+/// what they take now, and Clear; and says when the store is full or its drive nearly is. Turning it off asks first when
+/// something is saved, saying how much space that frees, and so does a limit lower than what the store holds. A new
+/// location says afterwards that the thumbnails in the old one were deleted. Not in the demo.
 /// </summary>
 internal sealed partial class SettingsForm
 {
@@ -29,8 +30,8 @@ internal sealed partial class SettingsForm
     bool _keepShowing;      // the boxes are being set from the settings: their events are ours
     bool _thumbLimitAsking; // the question before a lower limit is showing: a commit meanwhile waits for its answer
     int _thumbStoreLook;    // the last look's number: an older one that answers later is dropped
-    int _thumbStoreEnoughMb; // what "Enough for everything" sets (0: not offered)
-    string _thumbStoreDone = ""; // what the last change did, when it is worth saying (a folder left alone)
+    int _thumbStoreEnoughMb; // what "Use 3 GB: enough for everything on this PC" sets (0: not offered)
+    string _thumbStoreDone = ""; // what the last change did, when it is worth saying (a folder left alone, thumbnails deleted by a move)
 
     SettingCard ThumbStoreCard()
     {
@@ -227,7 +228,7 @@ internal sealed partial class SettingsForm
         finally { _thumbLimitAsking = false; }
     }
 
-    /// <summary>"Enough for everything": the limit becomes the estimate for this PC, rounded up to whole GB.</summary>
+    /// <summary>"Use 3 GB: enough for everything on this PC": the limit becomes the estimate for this PC, rounded up to whole GB (a lower one still asks).</summary>
     void UseEnoughForEverything()
     {
         if (_thumbStoreEnoughMb <= 0) return;
@@ -236,7 +237,7 @@ internal sealed partial class SettingsForm
     }
 
     /// <summary>
-    /// Where "Enough for everything" goes for rows <paramref name="width"/> wide: beside the box while the label and its
+    /// Where the "enough for everything" link goes for rows <paramref name="width"/> wide: beside the box while the label and its
     /// second line keep room to be read, else on its own line under it; hidden while not offered. Asked before the rows
     /// are measured and laid out, so both see the same.
     /// </summary>
@@ -278,7 +279,7 @@ internal sealed partial class SettingsForm
             RefreshThumbStore();
             return;
         }
-        // Off: asked first, with the space it frees. The switch shows On until the answer.
+        // Off: asked first, with the space it frees, when something is saved. The switch shows On until the answer.
         _thumbStoreBusy = true;
         try
         {
@@ -287,17 +288,21 @@ internal sealed partial class SettingsForm
             string folder = _app.Settings.ThumbnailStoreFolder;
             if (bytes < 0) bytes = await Task.Run(() => ThumbStore.MeasureFolder(folder));
             if (IsDisposed) return;
-            var turnOff = new TaskDialogButton("Turn off");
-            var page = new TaskDialogPage
+            // Nothing worth asking about (under 1 MB saved): it just turns off.
+            if (ThumbOption.AskBeforeTurningOff(bytes))
             {
-                Caption = Text,
-                Heading = "Turn off instant thumbnails?",
-                Text = ThumbOption.TurnOffQuestion(bytes),
-                Buttons = { turnOff, TaskDialogButton.Cancel },
-                DefaultButton = TaskDialogButton.Cancel,
-                Icon = TaskDialogIcon.Information,
-            };
-            if (TaskDialog.ShowDialog(this, page) != turnOff) return;
+                var turnOff = new TaskDialogButton("Turn off");
+                var page = new TaskDialogPage
+                {
+                    Caption = Text,
+                    Heading = "Turn off instant thumbnails?",
+                    Text = ThumbOption.TurnOffQuestion(bytes),
+                    Buttons = { turnOff, TaskDialogButton.Cancel },
+                    DefaultButton = TaskDialogButton.Cancel,
+                    Icon = TaskDialogIcon.Information,
+                };
+                if (TaskDialog.ShowDialog(this, page) != turnOff) return;
+            }
             _thumbStore.Checked = false;
             var removal = await _app.TurnOffThumbStore();
             _thumbStoreDone = ThumbOption.RemovalNote(removal, folder);
@@ -330,8 +335,17 @@ internal sealed partial class SettingsForm
         {
             _thumbStoreDone = "";
             string old = _app.Settings.ThumbnailStoreFolder;
+            // What the old place holds, read before the move deletes it: a move that deleted thumbnails says so.
+            bool on = _app.Settings.ThumbnailStore;
+            long held = on ? ThumbHost.StoreSizeBytes : -1;
+            if (on && held < 0) held = await Task.Run(() => ThumbStore.MeasureFolder(old));
+            if (IsDisposed) return;
             var (moved, removal) = await _app.MoveThumbStore(fb.SelectedPath);
-            if (moved) _thumbStoreDone = ThumbOption.RemovalNote(removal, old);
+            if (moved)
+            {
+                string note = ThumbOption.RemovalNote(removal, old);
+                _thumbStoreDone = note.Length > 0 ? note : ThumbOption.MovedNote(moved, on, held, removal);
+            }
             else if (ThumbOption.IsWithin(ThumbOption.StoreFolder(_app.Settings.Index.DatabasePath, fb.SelectedPath), old)
                      && !AppSettings.SamePath(ThumbOption.StoreFolder(_app.Settings.Index.DatabasePath, fb.SelectedPath), old))
                 _thumbStoreDone = "That folder is inside the one the thumbnails are kept in now. Choose a folder outside it.";
@@ -380,8 +394,9 @@ internal sealed partial class SettingsForm
         }
         // The box shows the limit as saved, except while the user is typing in it.
         if (!_thumbStoreLimit.Focused) _thumbStoreLimit.Text = ThumbOption.LimitBoxText(cap);
-        // "Enough for everything" once the estimate is known, and only when it would change the limit.
-        int enough = _app.IndexingComplete && census is { Files: > 0 } c ? ThumbOption.EnoughMegabytes(c.BytesAt(_app.ThumbEstimateClass)) : 0;
+        // "Enough for everything" once the estimate is known, only when it would change the limit, and not for more files
+        // than the store can hold at all.
+        int enough = _app.IndexingComplete && census is { } c && ThumbOption.OffersEnough(c.Files) ? ThumbOption.EnoughMegabytes(c.BytesAt(_app.ThumbEstimateClass)) : 0;
         if (enough == cap) enough = 0;
         bool enoughChanged = enough != _thumbStoreEnoughMb;
         _thumbStoreEnoughMb = enough;
@@ -389,17 +404,17 @@ internal sealed partial class SettingsForm
         // Opened now (on a worker) so that a location that can't be used says so here, not later while browsing.
         var service = on ? ThumbHost.Service : null;
         var leftovers = s.ThumbnailStoreLeftovers.ToList();
-        var (free, size, problem, usable, isPrivate, leftoverBytes, full, diskLow, split) = await Task.Run(() =>
+        var (free, size, problem, usable, isPrivate, leftoverBytes, full, fullByCount, diskLow, split) = await Task.Run(() =>
         {
             long freeBytes = ThumbOption.FreeBytes(folder);
             long left = 0;
             foreach (var f in leftovers) left += ThumbStore.MeasureFolder(f);
-            if (service == null) return (freeBytes, -1L, ThumbStoreProblem.None, false, true, left, false, false, default(ThumbStoreSplit));
+            if (service == null) return (freeBytes, -1L, ThumbStoreProblem.None, false, true, left, false, false, false, default(ThumbStoreSplit));
             var store = ThumbHost.OpenNow(service);
             // What each kind takes comes from figures the open store keeps in memory: no disk is read for it.
             if (store is { IsEnabled: true })
-                return (freeBytes, store.SizeBytes, ThumbStoreProblem.None, true, ThumbHost.StoreIsPrivate, left, store.IsFull, store.DiskLow, store.Split);
-            return (freeBytes, ThumbStore.MeasureFolder(folder), store?.Problem ?? ThumbStoreProblem.None, false, true, left, false, false, default(ThumbStoreSplit));
+                return (freeBytes, store.SizeBytes, ThumbStoreProblem.None, true, ThumbHost.StoreIsPrivate, left, store.IsFull, store.FullByCount, store.DiskLow, store.Split);
+            return (freeBytes, ThumbStore.MeasureFolder(folder), store?.Problem ?? ThumbStoreProblem.None, false, true, left, false, false, false, default(ThumbStoreSplit));
         });
         if (IsDisposed || look != _thumbStoreLook) return;
         // Under the limit: the free space on its drive, and whether the limit is more than that leaves room for.
@@ -429,7 +444,7 @@ internal sealed partial class SettingsForm
         void Say(string line) => note = note.Length > 0 ? note + " " + line : line;
         // What the store does now that it can't keep everything: dropping the oldest, or not saving at all.
         if (on && usable && diskLow) Say(ThumbOption.DiskLowText(folder));
-        else if (on && usable && full) Say(ThumbOption.FullText);
+        else if (on && usable && full) Say(fullByCount ? ThumbOption.FullByCountText : ThumbOption.FullText);
         if (on && usable && !isPrivate) Say("This drive can't keep them private: anyone who can open it can see these pictures.");
         if (_thumbStoreDone.Length > 0) Say(_thumbStoreDone);
         // The Microsoft Store removes only the package's own data when Rock Preview is uninstalled: a folder chosen

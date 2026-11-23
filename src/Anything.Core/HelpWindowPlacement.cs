@@ -1,7 +1,7 @@
 namespace Anything.Core;
 
 /// <summary>
-/// Where the Search Syntax help window opens: under the search box, lined up with its right edge, inside the window
+/// Where the Help window (F1) opens: under the search box, lined up with its right edge, inside the window
 /// that asked, so the box stays free to type in while reading. Never off the screen; never over the search box while
 /// the screen has any other room. Pure arithmetic on screen rectangles (device pixels), so it is tested.
 /// </summary>

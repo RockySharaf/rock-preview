@@ -48,11 +48,12 @@ public static class HelpContent
     /// <summary>The strip's buttons, one per part, in order.</summary>
     public static IReadOnlyList<string> StripLabels { get; } = ["How to use", "Keys", "Search syntax"];
 
-    /// <summary>The key set to open Rock Preview when none is known: Settings' own default.</summary>
+    /// <summary>The key that opens Rock Preview unless changed; Settings uses this same constant, so the two never differ.</summary>
     public const string DefaultHotkey = "Alt+X";
 
     /// <param name="hotkey">The shortcut that opens Rock Preview now, or null when none is working (then Alt+X, said as the usual one).</param>
-    public static IReadOnlyList<HelpPart> Build(string? hotkey) => [HowToPart(hotkey), KeysPart(hotkey), SearchHelp.Part];
+    /// <param name="store">The Microsoft Store's copy, which the Store keeps up to date: the Updates row says so.</param>
+    public static IReadOnlyList<HelpPart> Build(string? hotkey, bool store = false) => [HowToPart(hotkey, store), KeysPart(hotkey), SearchHelp.Part];
 
     /// <summary>The whole help as plain text, every part with its heading, for Copy all and screen readers.</summary>
     public static string PlainText(IReadOnlyList<HelpPart> parts) =>
@@ -62,7 +63,7 @@ public static class HelpContent
     static HelpEntry Key(string key, string text) => new([key], text, [], HelpInsert.None);
     static HelpEntry Key(string[] keys, string text) => new(keys, text, [], HelpInsert.None);
 
-    static HelpPart HowToPart(string? hotkey)
+    static HelpPart HowToPart(string? hotkey, bool store)
     {
         string press = hotkey is { Length: > 0 } key ? $"Press {key}" : $"Press the shortcut ({DefaultHotkey} unless you changed it)";
         return new("How to use Rock Preview",
@@ -70,13 +71,13 @@ public static class HelpContent
         [
             new("Opening", null,
             [
-                Row("The shortcut", $"{press} in any program to open Rock Preview, ready to search everything; press it again " +
+                Row("The shortcut", $"{press} in any program to open Rock Preview, ready to search everything. Press it again " +
                     "while Rock Preview is in front to hide it. Change the key in Settings › Keyboard."),
                 Row("The tray icon", "The icon by the clock opens Rock Preview with a click; right-click it for a new search " +
                     "window, Settings or Exit. To hide it, turn off Settings › General › Show the tray icon."),
                 Row("Closing the window", "Rock Preview keeps running in the background, with your searches as you left them, " +
-                    "so the shortcut brings it back at once (Settings › General › Keep running in the background). To end " +
-                    "it, choose File › Exit under the gear's arrow, or press Ctrl+Q."),
+                    "so the shortcut brings it back at once. Settings › General › Keep running in the background turns this " +
+                    "off. To end it, choose File › Exit under the gear's arrow, or press Ctrl+Q."),
             ], null),
 
             new("Searching", null,
@@ -90,16 +91,16 @@ public static class HelpContent
                     $"Click it to switch. When a search in a folder finds nothing, click {SearchScope.EverythingInsteadLink} in the empty list."),
                 Row("Everyday files", "Shown next to Thumbnails while every file in a folder shows, or search results show " +
                     "as thumbnails. On unless you turn it off, it keeps to pictures, videos, music, documents and other " +
-                    "everyday files, not code or system files; click it for every file, and use its arrow to pick the kinds."),
+                    "everyday files, not code or system files. Click it to see every file; its arrow picks the kinds."),
                 Row("Kind of file", "Choose Search options › Kind, or right-click the status bar, to show only audio, " +
                     "compressed files, documents, programs, folders, pictures or videos. The kind chosen shows on the Search options " +
-                    "button and at the bottom right; the \u00D7 beside the button shows every kind again."),
+                    "button and at the bottom right; the \u00D7 beside the button, or All kinds in the same list, shows every kind again."),
                 Row("Matching", "Match case, whole word, path, diacritics (accents) and regular expressions are off unless " +
-                    "you turn them on: in Search options, in the Search menu under the gear's arrow, with Ctrl+I, Ctrl+B, " +
-                    "Ctrl+U, Ctrl+M and Ctrl+R, or with a right-click on the status bar. Those that are on show at the bottom " +
-                    "right. A switch stays as you set it: new tabs, new windows and the next start begin with it."),
-                Row("Inside files", "With Settings › Indexing › Search inside files set to \"Also search inside documents\", " +
-                    "a word also finds the documents that have it inside, while Search › Match inside files is on. The Search " +
+                    "you turn them on. Switch them in Search options, in the Search menu under the gear's arrow, with Ctrl+I, " +
+                    "Ctrl+B, Ctrl+U, Ctrl+M and Ctrl+R, or by right-clicking the status bar. Those that are on show at the " +
+                    "bottom right. A switch stays as you set it: new tabs, new windows and the next start begin with it."),
+                Row("Inside files", "Set Settings › Indexing › Search inside files to \"Also search inside documents\" and " +
+                    "turn on Search › Match inside files. Then a word also finds the documents that have it inside. The Search " +
                     "syntax part has the details."),
             ], null),
 
@@ -108,8 +109,8 @@ public static class HelpContent
                 Row("Address bar", "It shows where you are. Click a part to go there, the arrow after it to pick a folder " +
                     "inside, or the empty space to type a path (Ctrl+L too)."),
                 Row("Back and Forward", "Go back and forward with the arrows at the top left, Alt+Left and Alt+Right, or the " +
-                    "mouse's side buttons. They also go back to a search you left, with its words."),
-                Row("Up", "Opens the folder that holds this one (Alt+Up)."),
+                    "mouse's side buttons. They also go back to a search you left, with its words. The up arrow beside them, " +
+                    "or Alt+Up, opens the folder that holds this one."),
                 Row("Tabs", "Ctrl+T, or the + after the tabs, opens a tab; Ctrl+W, its \u00D7 or a middle click closes it. Drag a " +
                     "tab to move it, or out of the strip to give it a window of its own; right-click it for more."),
                 Row("Navigation pane", "The folders on the left: click one to open it, or middle-click it to open it in a new tab."),
@@ -127,9 +128,8 @@ public static class HelpContent
                     "shown by Office when it can, otherwise Rock Preview shows their text."),
                 Row("Instant thumbnails", "Off unless you turn it on in Settings › Thumbnails. It keeps small copies of " +
                     "thumbnails on disk, so thumbnails you have seen before appear at once, also after a restart. Type how " +
-                    "much space it may use in Keep at most (in GB), choose where with Change location, and tick the kinds " +
-                    "of files under Keep thumbnails of. When it is full, thumbnails of documents are dropped first, then " +
-                    "videos, then the oldest pictures; switching a kind off deletes its saved thumbnails."),
+                    "much space it may use in Keep at most (in GB) and tick the kinds of files under Keep thumbnails of. " +
+                    "Choose where with Change location (the new place starts empty)."),
             ], null),
 
             new("Files", null,
@@ -153,9 +153,13 @@ public static class HelpContent
             [
                 Row("Settings", "Click the gear on the command bar, or press Ctrl+, (comma). The arrow beside the gear has " +
                     "every other command: File, Edit, View, Browse, Search, Bookmarks, Tools and Help."),
-                Row("Updates", "Rock Preview looks for a new version once a day and says when there is one. With Settings › " +
-                    "General › Update automatically on, the installed copy updates itself at night or while it is closed, " +
-                    "keeping your settings; to look now, choose Help › Check for Updates under the gear's arrow."),
+                // The Store's copy has neither the update switches nor its own check: the Store does both.
+                Row("Updates", store
+                    ? "The Microsoft Store keeps Rock Preview up to date. To look now, choose Help › Check for Updates under " +
+                      "the gear's arrow: it opens Rock Preview's page in the Store."
+                    : "Rock Preview looks for a new version once a day and says when there is one. With Settings › General › " +
+                      "Update automatically on, the installed copy updates itself at night or while it is closed, keeping " +
+                      "your settings. To look now, choose Help › Check for Updates under the gear's arrow."),
                 Row("Get Started", "To see the short tour again, choose Help › Get Started under the gear's arrow."),
             ], null),
         ], HelpLabel.Names);
@@ -197,7 +201,7 @@ public static class HelpContent
                 Key(["Down", "PageDown"], "Go to the results."),
                 Key("Ctrl+Enter", "Go to the folder the selected result is in."),
                 Key("Alt+Down", "Earlier searches (Delete forgets the highlighted one)."),
-                Key("Ctrl+Backspace", "Delete the word before the caret."),
+                Key("Ctrl+Backspace", "Delete the word before the cursor."),
                 Key("Ctrl+Z", "Undo typing."),
             ], null),
 
@@ -205,8 +209,8 @@ public static class HelpContent
             [
                 Key("Enter", "Open."),
                 Key("Ctrl+Enter", "Go to the folder it is in."),
-                Key("F2", "Rename; one search result is renamed in place (Enter keeps the name, Esc leaves it, Tab goes on to " +
-                    "the next item and Shift+Tab to the one before, F2 again selects all, then the extension)."),
+                Key("F2", "Rename; with one search result selected, it is renamed in place. Enter keeps the name, Esc leaves " +
+                    "it, Tab and Shift+Tab go to the next or previous item, F2 again selects all, then the extension."),
                 Key(["Delete", "Shift+Delete"], "To the Recycle Bin / delete for good (Windows asks first if the Recycle Bin " +
                     "is set to ask)."),
                 Key(["Ctrl+Z", "Ctrl+Y"], "Undo / redo the last file operation (in the search box, Ctrl+Z undoes typing)."),
@@ -218,8 +222,8 @@ public static class HelpContent
                 Key("Up", "On the first result: back to the search box."),
                 Key("Any letter", "Typing in the results goes on in the search box."),
                 Key("Ctrl+1 .. 9", "Sort the results by name, path, size, extension, type, date modified, date created, " +
-                    "attributes; 9 by date recently changed (in a picture in the preview you have clicked in, Ctrl+1 shows the " +
-                    "picture at its actual size)."),
+                    "attributes; 9 by date recently changed. In a picture in the preview you have clicked in, Ctrl+1 shows the " +
+                    "picture at its actual size."),
             ], null),
 
             new("Thumbnails and layout", null,

@@ -11,9 +11,11 @@ namespace Anything.Core.Thumbs;
 //   ThumbOption.CapMegabytesFrom(ini value)               the limit, kept within its bounds (500 when unknown).
 //   ThumbOption.TryParseSize(typed text, out megabytes)   a limit typed in a box labelled in GB ("8", "1.5 TB", "500 MB").
 //   ThumbOption.LimitBoxText / LimitTyped / EnoughMegabytes   the limit box: what it shows, what a typed text sets, and
-//                                                          "Enough for everything" (the estimate rounded up to whole GB).
-//   ThumbOption.ShouldTellFull(limit, toldAt, toldThisRun) whether the "store is full" bar may show.
-//   ThumbOption.EstimateText / RecommendationText / SizeNowText / TurnOffQuestion / ProblemText / FreeSpaceText
+//                                                          "Use 3 GB: enough for everything on this PC" (the estimate
+//                                                          rounded up to whole GB).
+//   ThumbOption.ShouldTellFull(limit, toldAt, toldThisRun) whether the "store is full" bar may show; TakeFullNotice counts
+//                                                          it as told when it shows, and FullBar gives its text and links.
+//   ThumbOption.EstimateText / RecommendationText / SizeNowText / TurnOffQuestion / ProblemText / MovedNote
 //                                                          the sentences, with the real numbers in them.
 //   ThumbOption.ShouldRecommend(...)                      whether the bar may show now.
 //   ThumbFillWatch.Observe(now, unanswered)               a grid's screen: true once when it has taken more than a second
@@ -74,6 +76,22 @@ public static class ThumbOption
         StoreRemoval.Failed => $"Some saved thumbnails in {folder} couldn't be deleted (a file was in use, or the drive isn't there). Delete that folder when you no longer need it.",
         _ => "",
     };
+
+    /// <summary>
+    /// What Settings says after a new location was chosen, when the old one held saved thumbnails (<paramref name="heldBytes"/>,
+    /// measured before the move) and its folder really went; "" otherwise, since nothing was lost or another note applies.
+    /// Under 64 KB counts as nothing saved: a folder measured unopened may hold only an empty index.
+    /// </summary>
+    public static string MovedNote(bool moved, bool optionOn, long heldBytes, StoreRemoval removal)
+        => moved && optionOn && heldBytes >= 64 * 1024 && removal == StoreRemoval.Removed
+            ? "Thumbnails are saved in the new place from now on. The ones in the old place were deleted."
+            : "";
+
+    /// <summary>
+    /// Whether turning the option off asks first: only when the store holds 1 MB or more (an unknown size is measured
+    /// before this, and reads 0 when it can't be).
+    /// </summary>
+    public static bool AskBeforeTurningOff(long storeBytes) => storeBytes >= MB;
 
     /// <summary>
     /// The limit from the ini (megabytes): the whole number written there, kept within <see cref="ThumbStore.MinCapMegabytes"/>
@@ -141,7 +159,7 @@ public static class ThumbOption
     /// the store's size rounded up, so the size always reads larger than the limit ("2.1 GB" against "2 GB", never "2.0 GB").
     /// </summary>
     public static string LowerLimitQuestion(long storeBytes, int newMegabytes)
-        => $"The store holds {StoreSizeUpText(storeBytes)} now. With a limit of {ExactCapText(newMegabytes)}, the oldest thumbnails are deleted until it fits. Lower the limit?";
+        => $"The saved thumbnails take {StoreSizeUpText(storeBytes)} now. With a limit of {ExactCapText(newMegabytes)}, thumbnails are deleted until they fit. Lower the limit?";
 
     // A limit to the megabyte: "500 MB", "2 GB", "2.05 GB", "1.25 TB" (CapText rounds to a tenth, which could read as more).
     static string ExactCapText(int megabytes)
@@ -164,15 +182,21 @@ public static class ThumbOption
             : Up(bytes, 1_000_000m * MB, 1).ToString("0.0", C) + " TB";
     }
 
-    /// <summary>"Enough for everything": the estimate rounded up to the next whole GB, at least 1 GB (and within the bounds).</summary>
+    /// <summary>What "enough for everything" sets: the estimate rounded up to the next whole GB, at least 1 GB (and within the bounds).</summary>
     public static int EnoughMegabytes(long estimateBytes)
     {
         long gb = Math.Max(1, (Math.Max(0, estimateBytes) + 1000 * MB - 1) / (1000 * MB));
         return (int)Math.Clamp(gb * 1000, ThumbStore.MinCapMegabytes, ThumbStore.MaxCapMegabytes);
     }
 
-    /// <summary>The link beside the limit box: "Enough for everything: 3 GB".</summary>
-    public static string EnoughText(int megabytes) => $"Enough for everything: {CapText(megabytes)}";
+    /// <summary>The link beside the limit box: "Use 3 GB: enough for everything on this PC" (it may raise or lower the limit).</summary>
+    public static string EnoughText(int megabytes) => $"Use {CapText(megabytes)}: enough for everything on this PC";
+
+    /// <summary>
+    /// Whether that link may be offered for <paramref name="files"/> counted: not when there are more than the store can
+    /// hold at all (<see cref="ThumbStore.MaxRecords"/>), since no limit would then keep everything.
+    /// </summary>
+    public static bool OffersEnough(long files) => files is > 0 and <= ThumbStore.MaxRecords;
 
     /// <summary>"drive C:" for a folder on a lettered drive, else "this drive" (a network share). Pure: reads no disk.</summary>
     public static string DriveName(string folder)
@@ -198,10 +222,17 @@ public static class ThumbOption
     }
 
     /// <summary>
-    /// The card's line while the store is full: documents and videos are dropped before pictures, and new ones of a kind
-    /// that would go first are not saved (<see cref="ThumbStore.Refuses"/>).
+    /// The card's line while the store is full at its limit: documents and videos are dropped before pictures, and new
+    /// ones of a kind that would go first are not saved once that kind is gone (<see cref="ThumbStore.Refuses"/>).
     /// </summary>
-    public const string FullText = "Full: to keep your pictures, thumbnails of documents and videos go first, and new ones aren't saved while it is full. Raise the limit to keep more.";
+    public const string FullText = "Full: new pictures replace the oldest ones. Thumbnails of documents and videos go first, and once theirs are gone, new ones aren't saved. Raise the limit to keep more.";
+
+    /// <summary>
+    /// The card's line while the store is full because it holds <see cref="ThumbStore.MaxRecords"/> thumbnails, not because
+    /// of the limit: raising the limit would not help, so it isn't suggested.
+    /// </summary>
+    public static readonly string FullByCountText =
+        $"Full: Instant thumbnails holds as many thumbnails as it can ({(ThumbStore.MaxRecords / 1_000_000m).ToString("0.#", C)} million). New pictures replace the oldest ones.";
 
     /// <summary>The card's line while new pictures are refused because the drive is nearly full.</summary>
     public static string DiskLowText(string folder) => $"Not saving new thumbnails now: {DriveName(folder)} is nearly full.";
@@ -209,6 +240,9 @@ public static class ThumbOption
     /// <summary>The bar above the files when the store has filled up: "Instant thumbnails is full (8 GB). ..."</summary>
     public static string FullBarText(int capMegabytes)
         => $"Instant thumbnails is full ({CapText(capMegabytes)}). To make room, documents and videos go first, then the oldest pictures.";
+
+    /// <summary>The bar when the store holds as many thumbnails as it can (<see cref="ThumbStore.MaxRecords"/>), whatever the limit.</summary>
+    public const string FullByCountBarText = "Instant thumbnails holds as many thumbnails as it can. The oldest make room for new ones.";
 
     /// <summary>
     /// Whether the "store is full" bar may show: not yet in this run, and not for the limit the user was last told about
@@ -218,16 +252,45 @@ public static class ThumbOption
         => !toldThisRun && capMegabytes != toldAtMegabytes;
 
     /// <summary>
+    /// The "store is full" bar is about to show: true when it is due (<see cref="ShouldTellFull"/>), and then the limit
+    /// counts as told at once, answered or not (the caller saves <paramref name="toldAtMegabytes"/>): a full store is the
+    /// usual state of a limited one, and the bar would otherwise come back at every start.
+    /// </summary>
+    public static bool TakeFullNotice(int capMegabytes, ref int toldAtMegabytes, ref bool toldThisRun)
+    {
+        if (!ShouldTellFull(capMegabytes, toldAtMegabytes, toldThisRun)) return false;
+        toldAtMegabytes = capMegabytes;
+        toldThisRun = true;
+        return true;
+    }
+
+    /// <summary>
+    /// The limit changed: true when it was lowered below what the store holds (<paramref name="storeBytes"/>, -1 when not
+    /// open). The user confirmed that thumbnails will be deleted, so the new limit counts as told: the "store is full"
+    /// bar doesn't say it again, also not at the next start. Raised, or lowered to a size still above what is saved: false.
+    /// </summary>
+    public static bool LoweredLimitIsTold(int beforeMegabytes, int afterMegabytes, long storeBytes)
+        => afterMegabytes < beforeMegabytes && storeBytes > ThumbStore.CapBytesFor(afterMegabytes);
+
+    /// <summary>
+    /// The bar's text, and whether it offers "Raise the limit": not when full because it holds as many thumbnails as it
+    /// can (<paramref name="byCount"/>), since no limit would help then.
+    /// </summary>
+    public static (string Text, bool OffersRaise) FullBar(bool byCount, int capMegabytes)
+        => byCount ? (FullByCountBarText, false) : (FullBarText(capMegabytes), true);
+
+    /// <summary>
     /// The grey line under "Keep thumbnails of": that nothing new is saved when no box is ticked; otherwise which kinds
-    /// go first when the store is full, and what happens to thumbnails already saved for a kind switched off (deleted:
-    /// the store keeps the kinds apart) or a file type left out (they stay: the store doesn't keep types apart). With
-    /// <paramref name="earlierSaved"/> (the store holds thumbnails an earlier version saved, which carry no kind) one more
-    /// sentence says those are the exception to both rules.
+    /// go first when the store is full, and that thumbnails already saved for a kind switched off are deleted (the store
+    /// keeps the kinds apart). Only when file types are listed, that theirs stay (the store doesn't keep types apart).
+    /// With <paramref name="earlierSaved"/> (the store holds thumbnails an earlier version saved, which carry no kind) one
+    /// more sentence says those are the exception to both rules.
     /// </summary>
     public static string KeepNote(ThumbKeep keep, bool earlierSaved = false)
         => keep.KeepsNothing ? "Nothing is being saved."
-            : "When the store is full, thumbnails of documents are dropped first, then videos, then the oldest pictures. "
-              + "Switching a kind off deletes its saved thumbnails; those of the file types listed here stay until the store needs their room, or until you clear it."
+            : "When it is full, thumbnails of documents are dropped first, then videos, then the oldest pictures. "
+              + "Switching a kind off deletes its saved thumbnails."
+              + (keep.Skipped.Count > 0 ? " Those already saved for the file types listed stay until room is needed, or until you clear them." : "")
               + (earlierSaved ? " Thumbnails saved by an earlier version go first, and stay when you switch a kind off." : "");
 
     /// <summary>A limit as it reads: "250 MB", "1 GB", "1.5 GB", "120 GB", "2 TB" (decimal: 1 GB is 1,000 MB, 1 TB 1,000 GB).</summary>
@@ -274,23 +337,24 @@ public static class ThumbOption
             : (bytes / (1_000_000 * MB)).ToString("#,0", C) + " TB";
 
     /// <summary>
-    /// The card's line, before the option is turned on: what it gains, what it could take on this PC, what the limit
-    /// does. While indexing isn't complete (or nothing is counted yet) the cost can't be known, so only the gain is said.
+    /// The card's description: what the option gains, what it could take on this PC, and the limit it keeps to. While
+    /// indexing isn't complete (or nothing is counted yet) the cost can't be known, so only the gain is said; so too with
+    /// no kind ticked, where the note under the boxes says nothing is being saved.
     /// </summary>
     public static string EstimateText(ThumbCensus? census, bool indexingComplete, int capMegabytes, int sizeClass, ThumbKeep? keep = null)
     {
-        const string gain = "Thumbnails you have seen before appear at once, also after a restart, because small copies are kept on disk. ";
-        if (!indexingComplete || census is not { } c) return gain + "The space this needs is worked out when indexing has finished.";
-        string cap = CapText(capMegabytes);
+        const string gain = "Thumbnails you have seen before appear at once, also after a restart, because small copies are kept on disk.";
+        if (keep is { KeepsNothing: true }) return gain;
+        if (!indexingComplete || census is not { } c) return gain + " The space this needs is worked out when indexing has finished.";
         // With some types switched off, the count is of the types chosen, not of every picture, video and document.
         bool chosen = keep is not null && !keep.Equals(ThumbKeep.All);
         if (c.Files == 0)
-            return gain + (chosen ? "No files of the types you chose were found on this PC" : "No pictures, videos or documents were found on this PC")
-                        + $", so this takes almost no space; Rock Preview keeps at most {cap}.";
+            return gain + (chosen ? " No files of the types you chose were found on this PC" : " No pictures, videos or documents were found on this PC")
+                        + $", so this takes almost no space; Rock Preview keeps at most {CapText(capMegabytes)}.";
         string files = chosen
             ? c.Files == 1 ? "the 1 file of the types you chose on this PC it" : $"the {CountText(c.Files)} files of the types you chose on this PC they"
             : c.Files == 1 ? "the 1 picture, video or document on this PC it" : $"the {CountText(c.Files)} pictures, videos and documents on this PC they";
-        return gain + $"For {files} could take {About(c.BytesAt(sizeClass))}; Rock Preview keeps at most {cap} and drops the oldest when that is full.";
+        return gain + $" For {files} could take {About(c.BytesAt(sizeClass))}; Rock Preview keeps at most {CapText(capMegabytes)}.";
     }
 
     // A count the card can show while indexing goes on: from 10,000 up rounded to the thousand ("roughly 372,000"), so it
@@ -325,22 +389,18 @@ public static class ThumbOption
         => $"{StoreSizeText(bytes)} saved earlier are still in {folder}; Rock Preview deletes them when it can (at the next start)";
 
     /// <summary>
-    /// The question before turning the option off: what it deletes and the space that frees (unknown: not said). Only the
-    /// store's own files are deleted, also from a folder that holds other things, so the space is what they take.
+    /// The question before turning the option off: what it deletes and the space that frees. Asked only at 1 MB or more
+    /// (<see cref="AskBeforeTurningOff"/>). Only the store's own files are deleted, also from a folder that holds other
+    /// things, so the space is what they take.
     /// </summary>
     public static string TurnOffQuestion(long storeBytes)
-        => storeBytes >= MB
-            ? $"The saved thumbnails are deleted, which frees {StoreSizeText(storeBytes)}. Thumbnails go on working the normal way: made as you browse, not kept."
-            : "The saved thumbnails are deleted. Thumbnails go on working the normal way: made as you browse, not kept.";
+        => $"The saved thumbnails are deleted, which frees {StoreSizeText(storeBytes)}. Thumbnails go on working the normal way: made as you browse, not kept.";
 
     /// <summary>
     /// The free bytes for this user on the drive that holds <paramref name="folder"/> (or its nearest existing parent);
     /// -1 when unknown. The one thing here that touches the disk: call it off the UI thread (it may be a network share).
     /// </summary>
     public static long FreeBytes(string folder) => Content.Indexing.ContentNative.DiskSpace(folder).Free;
-
-    /// <summary>The free space on the store's drive: "120 GB free on this drive"; "" when unknown (negative).</summary>
-    public static string FreeSpaceText(long freeBytes) => freeBytes < 0 ? "" : $"{ContentPresentation.Size(freeBytes)} free on this drive";
 
     /// <summary>
     /// The line Settings shows when the store can't work where it is; "" when it can (or the option is off). The option

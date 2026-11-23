@@ -42,6 +42,7 @@ namespace Anything.Core.Thumbs;
 //       false again when the limit is raised, the store is cleared, a group dropped makes room, or it is reopened with
 //       room. BecameFull comes on the writer
 //       thread: subscribe, then read IsFull (it may have become full while opening).
+//   store.FullByCount                      full because of the record ceiling alone: a higher limit wouldn't help.
 //   store.DiskLow                          the last picture was not kept because the drive is nearly full.
 //   store.Clear()                          deletes every picture; the store stays open (the setting's Clear button).
 //   store.Dispose()                        when the program exits: the writer writes what is queued and saves the index;
@@ -388,6 +389,8 @@ public sealed class ThumbStore : IDisposable
     bool _diskLow;
     // The signals for the window (IsFull, DiskLow): read from any thread without a lock.
     volatile bool _full, _diskLowRefused;
+    // The last packs dropped went for the record ceiling alone, not the limit (FullByCount).
+    volatile bool _fullByCount;
     // 1 when the store became full; the writer raises BecameFull once it has let go of the locks.
     int _becameFullPending;
     // How often a changed index may be saved, from the size of the last one written.
@@ -544,6 +547,12 @@ public sealed class ThumbStore : IDisposable
     /// Lowering the limit makes it full too, as packs are dropped to fit.
     /// </summary>
     public bool IsFull => _full;
+
+    /// <summary>
+    /// Whether the store is full (<see cref="IsFull"/>) because it holds <see cref="MaxRecords"/> thumbnails while within
+    /// its limit, so a higher limit would not help. Any thread; never waits.
+    /// </summary>
+    public bool FullByCount => _full && _fullByCount;
 
     /// <summary>
     /// Whether a thumbnail of <paramref name="group"/>, handed to <see cref="Put"/> now, would be thrown away because the
@@ -1165,6 +1174,7 @@ public sealed class ThumbStore : IDisposable
             long bytes = _total + _undeletedBytes, packsBytes = _total;
             int records = _map.Count;
             if (bytes <= _cap && records <= _maxRecords) return false;
+            bool byCount = bytes <= _cap; // within the limit: only the ceiling makes packs go
             // _packs is by number (age); the stable sort keeps that order within each rank.
             var order = _packs.Values.OrderBy(p => DropRank(p.Group)).ToList();
             int holding = 0;
@@ -1194,6 +1204,7 @@ public sealed class ThumbStore : IDisposable
                 _groupBytes[(int)pack.Group] -= pack.Length;
             }
             _indexDirty = true;
+            _fullByCount = byCount;
             if (!_full)
             {
                 _full = true;

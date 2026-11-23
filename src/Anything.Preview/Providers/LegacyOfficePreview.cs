@@ -22,7 +22,8 @@ internal static class LegacyOfficePreview
     private const int MaxSlideChars = 1_000_000;
     /// <summary>
     /// The provider the header names ("via ..."): not the Office program's name, which would read as if Word, Excel or
-    /// PowerPoint had made the preview, often right above a line saying that program could not show the file.
+    /// PowerPoint had made the preview, often right above a line saying that program could not show the file. The new
+    /// Office and OpenDocument renderers in <see cref="OfficePreview"/> use it too.
     /// </summary>
     internal const string BuiltInReader = "built-in reader";
 

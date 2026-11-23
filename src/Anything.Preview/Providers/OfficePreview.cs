@@ -132,7 +132,7 @@ internal static class OfficePreview
             }
             // drop leading/trailing empties
             while (blocks.Count > 0 && blocks[^1].Text.Length == 0) blocks.RemoveAt(blocks.Count - 1);
-            var res = new PreviewResult(path, PreviewKind.Document, "OOXML") { FormatName = "Word document", Document = blocks };
+            var res = new PreviewResult(path, PreviewKind.Document, LegacyOfficePreview.BuiltInReader) { FormatName = "Word document", Document = blocks };
             res.AddMeta("Paragraphs", blocks.Count.ToString(CultureInfo.InvariantCulture));
             res.AddMeta("Words", words.ToString("N0", CultureInfo.InvariantCulture));
             AddCoreProps(z, res);
@@ -383,7 +383,7 @@ internal static class OfficePreview
                 for (int i = 0; i < arr.Length; i++) arr[i] ??= "";
                 outRows.Add(arr);
             }
-            var res = new PreviewResult(path, PreviewKind.Table, "OOXML")
+            var res = new PreviewResult(path, PreviewKind.Table, LegacyOfficePreview.BuiltInReader)
             {
                 FormatName = "Excel workbook",
                 Table = new TableData
@@ -877,7 +877,7 @@ internal static class OfficePreview
                     foreach (var note in SlideNotes(z, e)) blocks.Add(new DocBlock(note, DocBlockStyle.Caption));
                 if (blocks.Count > MaxParagraphs) break;
             }
-            var res = new PreviewResult(path, PreviewKind.Document, "OOXML") { FormatName = "PowerPoint presentation", Document = blocks, ShapedByMatch = presentationOrder };
+            var res = new PreviewResult(path, PreviewKind.Document, LegacyOfficePreview.BuiltInReader) { FormatName = "PowerPoint presentation", Document = blocks, ShapedByMatch = presentationOrder };
             res.AddMeta("Slides", slides.Count.ToString(CultureInfo.InvariantCulture));
             AddCoreProps(z, res);
             return res;
@@ -993,7 +993,7 @@ internal static class OfficePreview
                 }
                 while (rows.Count > 0 && rows[^1].Length == 0) rows.RemoveAt(rows.Count - 1);
                 var norm = rows.Select(r => r.Length == maxCols ? r : r.Concat(Enumerable.Repeat("", maxCols - r.Length)).ToArray()).ToList();
-                return new PreviewResult(path, PreviewKind.Table, "OpenDocument")
+                return new PreviewResult(path, PreviewKind.Table, LegacyOfficePreview.BuiltInReader)
                 {
                     FormatName = "OpenDocument spreadsheet",
                     Table = new TableData
@@ -1021,7 +1021,7 @@ internal static class OfficePreview
                 blocks.Add(new DocBlock(sb.ToString(), st));
             }
             if (blocks.Count == 0) return null;
-            return new PreviewResult(path, PreviewKind.Document, "OpenDocument") { FormatName = "OpenDocument text", Document = blocks };
+            return new PreviewResult(path, PreviewKind.Document, LegacyOfficePreview.BuiltInReader) { FormatName = "OpenDocument text", Document = blocks };
         }
     }
 

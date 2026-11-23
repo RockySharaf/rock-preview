@@ -18,9 +18,6 @@ internal sealed class SearchHelpView : ScrollableControl
     const TextFormatFlags Wrap = TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix;
     const TextFormatFlags Line = TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix;
 
-    /// <summary>Copies text; the window probe swaps it so a test never touches the real clipboard.</summary>
-    internal static Action<string> CopyText = FileOps.SetClipboardText;
-
     // The Settings window's colours (its background is Explorer's title-bar colour; the cards are SettingsForm's).
     static Color Back => ExplorerTheme.TitleBar;
     static Color CodeFill => ExplorerTheme.Dark ? Color.FromArgb(0x3A, 0x3A, 0x3A) : Color.FromArgb(0xEC, 0xEC, 0xEC);
@@ -312,45 +309,6 @@ internal sealed class SearchHelpView : ScrollableControl
             Line | TextFormatFlags.VerticalCenter | (b.Clipped ? TextFormatFlags.EndEllipsis : 0));
     }
 
-    /// <summary>
-    /// The help drawn into a picture, as the window shows it at <paramref name="dpi"/> in a client area of
-    /// <paramref name="width"/> x <paramref name="height"/> pixels with a scroll bar, scrolled to
-    /// <paramref name="scroll"/> (0 the top, 1 the very end). For checking the look without a window on the screen.
-    /// </summary>
-    internal static Bitmap RenderPicture(int dpi, int width, int height, double scroll, IReadOnlyList<HelpPart>? parts = null)
-    {
-        parts ??= HelpContent.Build(null);
-        var fonts = MakeFonts(dpi);
-        try
-        {
-            int bar = SystemInformation.GetVerticalScrollBarWidthForDpi(dpi);
-            var layout = Arrange(parts, fonts, dpi, width);
-            if (layout.Height > height) layout = Arrange(parts, fonts, dpi, width - bar);
-            else bar = 0;
-            int y = (int)Math.Round(Math.Clamp(scroll, 0, 1) * Math.Max(0, layout.Height - height));
-            // Painted in a double buffer made for the screen, as the window paints: text drawn straight into a bitmap's
-            // Graphics comes out heavier than on the screen, so the picture would not show the real look.
-            using var screen = Graphics.FromHwnd(IntPtr.Zero);
-            using var buffer = BufferedGraphicsManager.Current.Allocate(screen, new Rectangle(0, 0, width, height));
-            var g = buffer.Graphics;
-            PaintHelp(g, layout, fonts, dpi, y, new Rectangle(0, 0, width, height), null);
-            if (bar > 0)
-            {
-                // A plain stand-in for the scroll bar (the real one is drawn by Windows): its track and thumb.
-                using var track = new SolidBrush(ExplorerTheme.Dark ? Color.FromArgb(0x2B, 0x2B, 0x2B) : Color.FromArgb(0xE9, 0xE9, 0xE9));
-                using var thumb = new SolidBrush(ExplorerTheme.Dark ? Color.FromArgb(0x6E, 0x6E, 0x6E) : Color.FromArgb(0xA0, 0xA0, 0xA0));
-                g.FillRectangle(track, width - bar, 0, bar, height);
-                int th = Math.Max(bar, height * height / layout.Height);
-                int ty = (int)((height - th) * (layout.Height <= height ? 0 : y / (double)(layout.Height - height)));
-                g.FillRectangle(thumb, width - bar + bar / 4, ty, bar / 2, th);
-            }
-            var bmp = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
-            using (var target = Graphics.FromImage(bmp)) buffer.Render(target);
-            return bmp;
-        }
-        finally { foreach (var f in fonts) f.Dispose(); }
-    }
-
     // ---- scrolling and keys ------------------------------------------------------------------------
 
     protected override bool IsInputKey(Keys keyData) =>
@@ -374,7 +332,7 @@ internal sealed class SearchHelpView : ScrollableControl
             case Keys.End: ScrollTo(MaxScroll); break;
             case Keys.C when e.Control:
             case Keys.Insert when e.Control:
-                CopyText(AllText());
+                FileOps.SetClipboardText(AllText());
                 break;
             case Keys.Apps:
             case Keys.F10 when e.Shift:
@@ -482,7 +440,7 @@ internal sealed class SearchHelpView : ScrollableControl
         if (row is not null)
         {
             var entry = _layout.Sections[row.Section].Entries[row.Entry];
-            menu.Items.Add(new ToolStripMenuItem("&Copy", null, (_, _) => CopyText(entry.PlainText())));
+            menu.Items.Add(new ToolStripMenuItem("&Copy", null, (_, _) => FileOps.SetClipboardText(entry.PlainText())));
         }
         // Only the search syntax has names and examples to try; keys and how-to rows have nothing for the search box.
         if (chip is not null && TryText is { } tryText && InsertOf(_layout, chip) is var how && how != HelpInsert.None)
@@ -493,7 +451,7 @@ internal sealed class SearchHelpView : ScrollableControl
             menu.Items.Add(new ToolStripMenuItem(label, null, (_, _) => tryText(text, how)));
         }
         if (menu.Items.Count > 0) menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(new ToolStripMenuItem("Copy &all", null, (_, _) => CopyText(AllText())) { ShortcutKeyDisplayString = "Ctrl+C" });
+        menu.Items.Add(new ToolStripMenuItem("Copy &all", null, (_, _) => FileOps.SetClipboardText(AllText())) { ShortcutKeyDisplayString = "Ctrl+C" });
         menu.Closed += (_, _) => menu.BeginInvoke(menu.Dispose);
         menu.Show(this, client);
     }

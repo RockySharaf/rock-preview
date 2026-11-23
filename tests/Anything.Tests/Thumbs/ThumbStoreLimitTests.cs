@@ -82,6 +82,31 @@ public sealed class ThumbStoreLimitTests : IDisposable
     }
 
     [Fact]
+    public void Full_at_the_record_ceiling_is_told_apart_from_full_at_the_limit()
+    {
+        // The ceiling alone: a higher limit wouldn't help, and the store says so.
+        using (var store = Open(new ThumbStoreOptions { PackBytes = 1024, MaxRecords = 10, CapBytes = 1 << 30 }))
+        {
+            Assert.False(store.FullByCount);
+            PutMany(store, 30);
+            Assert.True(SpinUntil(() => store.IsFull));
+            Assert.True(store.FullByCount);
+            // A lower limit makes packs go for the limit next: no longer the ceiling alone.
+            store.CapBytes = 1024;
+            PutMany(store, 7, from: 30);
+            Assert.True(SpinUntil(() => !store.FullByCount));
+            Assert.True(store.IsFull);
+            store.Clear();
+            Assert.False(store.FullByCount);
+        }
+        // The limit alone: not the ceiling.
+        using var capped = Open(new ThumbStoreOptions { PackBytes = 1024, CapBytes = 2048 });
+        PutMany(capped, 28);
+        Assert.True(SpinUntil(() => capped.IsFull));
+        Assert.False(capped.FullByCount);
+    }
+
+    [Fact]
     public void Many_packs_evicted_at_once_cost_one_pass_over_the_records()
     {
         var options = new ThumbStoreOptions { PackBytes = 1024, CapBytes = 1 << 30 };

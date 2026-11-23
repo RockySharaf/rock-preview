@@ -1,12 +1,10 @@
 using Anything.Core;
-using Facts = Anything.Core.PreviewHandlerRules.WindowFacts;
-using W = Anything.Core.PreviewHandlerRules.WaitingMessage;
 
 namespace Anything.Tests;
 
 /// <summary>
 /// <see cref="PreviewHandlerRules"/>: what the preview pane says when a shell preview handler could not be created,
-/// which program the handler runs in, and which window of a hidden copy of that program is a message waiting for an answer.
+/// and which program the handler runs in.
 /// </summary>
 public sealed class PreviewHandlerRulesTests
 {
@@ -17,61 +15,84 @@ public sealed class PreviewHandlerRulesTests
     const int NoInterface = unchecked((int)0x80004002);
     const int AccessDenied = unchecked((int)0x80070005);
 
-    const W NotFound = W.NotFound, InFront = W.BroughtToFront, Flashed = W.FlashedOnly;
-
-    public static TheoryData<int, int, string, W, string> Errors() => new()
+    public static TheoryData<int, int, string, string> Errors() => new()
     {
-        // Busy, from the out-of-process attempt: what is said follows what became of the waiting message.
-        { RetryLater, ClassNotReg, "Microsoft Word", InFront,
-          "Microsoft Word is waiting for an answer in one of its windows. Its message is now in front: answer it, then select the file again. (0x8001010A)" },
-        { RetryLater, ClassNotReg, "Microsoft Word", Flashed,
-          "Microsoft Word is waiting for an answer in one of its windows. Look for its message (it may be behind other windows), answer it, then select the file again. (0x8001010A)" },
-        { RetryLater, ClassNotReg, "Microsoft Word", NotFound,
+        // Busy, from the out-of-process attempt: a known program is named, with how to close it.
+        { RetryLater, ClassNotReg, "Microsoft Word",
           "Microsoft Word is busy. If it stays busy, close Microsoft Word (in Task Manager if none of its windows is open) and select the file again. (0x8001010A)" },
-        { Rejected, ClassNotReg, "Microsoft Excel", NotFound,
+        { Rejected, ClassNotReg, "Microsoft Excel",
           "Microsoft Excel is busy. If it stays busy, close Microsoft Excel (in Task Manager if none of its windows is open) and select the file again. (0x80010001)" },
-        { Rejected, 0, "Microsoft Excel", Flashed,
-          "Microsoft Excel is waiting for an answer in one of its windows. Look for its message (it may be behind other windows), answer it, then select the file again. (0x80010001)" },
-        { RetryLater, 0, "the previewer", NotFound,
+        { RetryLater, 0, "the previewer",
           "The previewer is busy. Select the file again in a moment. (0x8001010A)" },
-        { RetryLater, 0, " ", NotFound,
+        { RetryLater, 0, " ",
           "The previewer is busy. Select the file again in a moment. (0x8001010A)" },
         // A shared host is not named: closing it would not help, or could not be done.
-        { RetryLater, 0, "prevhost", NotFound,
+        { RetryLater, 0, "prevhost",
           "The previewer is busy. Select the file again in a moment. (0x8001010A)" },
-        { Rejected, 0, "DllHost", NotFound,
+        { Rejected, 0, "DllHost",
           "The previewer is busy. Select the file again in a moment. (0x80010001)" },
-        { RetryLater, 0, "SomeViewer", NotFound,
+        { RetryLater, 0, "SomeViewer",
           "SomeViewer is busy. If it stays busy, close SomeViewer (in Task Manager if none of its windows is open) and select the file again. (0x8001010A)" },
-        // Could not start: the waiting message does not apply.
-        { ExecFailure, ClassNotReg, "Microsoft PowerPoint", NotFound, "Microsoft PowerPoint could not be started (0x80080005)" },
-        { ExecFailure, ClassNotReg, "Microsoft PowerPoint", InFront, "Microsoft PowerPoint could not be started (0x80080005)" },
+        // Could not start its program.
+        { ExecFailure, ClassNotReg, "Microsoft PowerPoint", "Microsoft PowerPoint could not be started (0x80080005)" },
         // Anything else: the more telling code.
-        { ClassNotReg, NoInterface, "the previewer", NotFound, "could not create handler (0x80004002)" },
-        { AccessDenied, ClassNotReg, "the previewer", NotFound, "could not create handler (0x80070005)" },
-        { ClassNotReg, ClassNotReg, "the previewer", NotFound, "could not create handler (0x80040154)" },
-        { ClassNotReg, 0, "the previewer", NotFound, "could not create handler (0x80040154)" },
-        { 0, AccessDenied, "the previewer", NotFound, "could not create handler (0x80070005)" },
-        { 0, 0, "the previewer", NotFound, "could not create handler" },
+        { ClassNotReg, NoInterface, "the previewer", "the previewer could not be started (0x80004002)" },
+        { AccessDenied, ClassNotReg, "the previewer", "the previewer could not be started (0x80070005)" },
+        { ClassNotReg, ClassNotReg, "the previewer", "the previewer could not be started (0x80040154)" },
+        { ClassNotReg, 0, "the previewer", "the previewer could not be started (0x80040154)" },
+        { 0, AccessDenied, "the previewer", "the previewer could not be started (0x80070005)" },
+        { 0, 0, "the previewer", "the previewer could not be started" },
         // Busy only counts from the out-of-process attempt.
-        { ClassNotReg, RetryLater, "Microsoft Word", InFront, "could not create handler (0x8001010A)" },
+        { ClassNotReg, RetryLater, "Microsoft Word", "the previewer could not be started (0x8001010A)" },
     };
 
     [Theory, MemberData(nameof(Errors))]
-    public void The_error_says_what_happened_with_the_code_last(int localHr, int inprocHr, string program, W waiting, string expected)
-        => Assert.Equal(expected, PreviewHandlerRules.CreateError(localHr, inprocHr, program, waiting));
+    public void The_error_says_what_happened_with_the_code_last(int localHr, int inprocHr, string program, string expected)
+        => Assert.Equal(expected, PreviewHandlerRules.CreateError(localHr, inprocHr, program));
 
     [Theory, MemberData(nameof(Errors))]
-    public void No_sentence_of_the_error_has_two_colons(int localHr, int inprocHr, string program, W waiting, string expected)
+    public void No_sentence_of_the_error_has_two_colons(int localHr, int inprocHr, string program, string expected)
     {
         Assert.NotNull(expected);
-        foreach (string sentence in PreviewHandlerRules.CreateError(localHr, inprocHr, program, waiting).Split(". "))
+        foreach (string sentence in PreviewHandlerRules.CreateError(localHr, inprocHr, program).Split(". "))
             Assert.True(sentence.Count(c => c == ':') <= 1, sentence);
     }
 
     [Fact]
     public void A_missing_program_name_reads_as_the_previewer()
-        => Assert.Equal("the previewer could not be started (0x80080005)", PreviewHandlerRules.CreateError(ExecFailure, 0, " ", NotFound));
+        => Assert.Equal("the previewer could not be started (0x80080005)", PreviewHandlerRules.CreateError(ExecFailure, 0, " "));
+
+    [Theory]
+    [InlineData("Microsoft Word", "Microsoft Word")]
+    [InlineData("  SomeViewer ", "SomeViewer")]
+    [InlineData("the previewer", null)]
+    [InlineData("The Previewer", null)]
+    [InlineData("prevhost", null)]
+    [InlineData("dllhost.exe", null)]
+    [InlineData("", null)]
+    [InlineData("  ", null)]
+    [InlineData(null, null)]
+    public void Only_a_known_program_of_its_own_is_named(string? program, string? named)
+        => Assert.Equal(named, PreviewHandlerRules.NamedProgram(program));
+
+    [Fact]
+    public void The_busy_advice_is_the_error_without_its_code()
+    {
+        Assert.Equal("Microsoft Word is busy. If it stays busy, close Microsoft Word (in Task Manager if none of its windows is open) and select the file again.",
+            PreviewHandlerRules.BusyAdvice("Microsoft Word"));
+        Assert.Equal("The previewer is busy. Select the file again in a moment.", PreviewHandlerRules.BusyAdvice(null));
+        foreach (string program in new[] { "Microsoft Excel", "prevhost", "the previewer" })
+            Assert.Equal(PreviewHandlerRules.BusyAdvice(PreviewHandlerRules.NamedProgram(program)) + " (0x8001010A)",
+                PreviewHandlerRules.CreateError(RetryLater, 0, program));
+    }
+
+    [Theory]
+    [InlineData("Microsoft Word", true, "Microsoft Word is busy, so this is shown as text (hover here for what to do)")]
+    [InlineData("Microsoft Excel", false, "Microsoft Excel is busy, so a simpler view is shown (hover here for what to do)")]
+    [InlineData(null, true, "The previewer is busy, so this is shown as text (hover here for what to do)")]
+    [InlineData(null, false, "The previewer is busy, so a simpler view is shown (hover here for what to do)")]
+    public void The_line_under_the_preview_names_the_busy_program(string? program, bool asText, string expected)
+        => Assert.Equal(expected, PreviewHandlerRules.BusyFooter(program, asText));
 
     [Theory]
     [InlineData(RetryLater, true)]
@@ -127,67 +148,8 @@ public sealed class PreviewHandlerRulesTests
     [InlineData("", false)]
     [InlineData("   ", false)]
     [InlineData(null, false)]
-    public void Programs_that_many_things_run_in_are_never_searched(string? program, bool shared)
+    public void Programs_that_many_things_run_in_are_known(string? program, bool shared)
         => Assert.Equal(shared, PreviewHandlerRules.IsSharedHost(program));
-
-    static readonly DateTime Brought = new(2026, 1, 10, 12, 0, 0, DateTimeKind.Utc);
-
-    [Theory]
-    [InlineData(100L, 7u, -60.0, true)]   // the same window, its process older than the bringing forward
-    [InlineData(100L, 7u, null, true)]    // the process's start time unknown
-    [InlineData(101L, 7u, -60.0, false)]  // a different window
-    [InlineData(100L, 8u, -60.0, false)]  // the same handle in another process
-    [InlineData(100L, 7u, 60.0, false)]   // the process id taken by a process started later
-    public void A_waiting_window_is_brought_forward_once(long hwnd, uint pid, double? startOffsetSeconds, bool same)
-    {
-        DateTime? start = startOffsetSeconds is double s ? Brought.AddSeconds(s) : null;
-        Assert.Equal(same, PreviewHandlerRules.SameWaitingWindow((nint)hwnd, pid, start, 100, 7, Brought));
-    }
-
-    [Fact]
-    public void Nothing_brought_forward_yet_is_never_the_same_window()
-        => Assert.False(PreviewHandlerRules.SameWaitingWindow(0, 0, null, 0, 0, default));
-
-    // Facts: class, visible, enabled, has owner, process shows another visible main window (enabled or not).
-    public static TheoryData<string, Facts, int> Windows() => new()
-    {
-        // The case seen in the field: Office's dialog owned by a hidden, disabled main window.
-        { "NUIDialog owned by hidden window", new Facts("NUIDialog", true, true, true, false), 2 },
-        { "standard dialog owned by hidden window", new Facts("#32770", true, true, true, false), 2 },
-        { "bosa dialog owned by hidden window", new Facts("bosa_sdm_msword", true, true, true, false), 2 },
-        { "other window owned by hidden window", new Facts("SomeWindow", true, true, true, false), 1 },
-        { "no class name", new Facts(null, true, true, true, false), 1 },
-        // Unowned: only a dialog in a process that shows nothing else.
-        { "unowned dialog, nothing else shown", new Facts("#32770", true, true, false, false), 2 },
-        { "unowned dialog, main window shown", new Facts("#32770", true, true, false, true), 0 },
-        { "unowned main window of its own", new Facts("OpusApp", true, true, false, false), 0 },
-        // Hidden or disabled windows are never it.
-        { "hidden dialog", new Facts("NUIDialog", false, true, true, false), 0 },
-        { "disabled dialog", new Facts("NUIDialog", true, false, true, false), 0 },
-        // Any visible main window means the user's own open program, which is never touched.
-        { "user's program in use, box owned by its main window", new Facts("#32770", true, true, true, true), 0 },
-        { "user's program in use, other owned window", new Facts("SomeWindow", true, true, true, true), 0 },
-        // A box whose owner is hidden while the process shows a visible but disabled main window: that is how a
-        // program looks while it shows its own modal box to the user, so it is the user's program, not a stuck helper.
-        { "box of a hidden owner beside a visible, disabled main window", new Facts("NUIDialog", true, true, true, true), 0 },
-    };
-
-    [Theory, MemberData(nameof(Windows))]
-    public void A_waiting_message_is_a_visible_enabled_box_of_a_hidden_program(string why, Facts facts, int rank)
-        => Assert.True(rank == PreviewHandlerRules.WaitingDialogRank(facts), why);
-
-    [Theory]
-    [InlineData("#32770", true)]
-    [InlineData("NUIDialog", true)]
-    [InlineData("bosa_sdm_XL9", true)]
-    [InlineData("bosa_sdm_", true)]
-    [InlineData("BOSA_SDM_XL9", false)]
-    [InlineData("nuidialog", false)]
-    [InlineData("OpusApp", false)]
-    [InlineData("", false)]
-    [InlineData(null, false)]
-    public void Dialog_classes_are_known_by_name(string? className, bool dialog)
-        => Assert.Equal(dialog, PreviewHandlerRules.IsDialogClass(className));
 
     [Theory]
     [InlineData(null, 1_000_000L, 4)]          // never busy (or forgotten): the full retries
@@ -205,61 +167,5 @@ public sealed class PreviewHandlerRulesTests
     {
         Assert.Equal(4, PreviewHandlerRules.FullCreateAttempts);
         Assert.Equal(5000, PreviewHandlerRules.BusyMemoryMs);
-    }
-
-    [Theory]
-    [InlineData(10_000u, 9_000u, 1_000u)]
-    [InlineData(10_000u, 10_000u, 0u)]
-    [InlineData(5u, uint.MaxValue - 4, 10u)] // across the 49.7-day wrap
-    public void Input_idle_time_survives_the_tick_wrap(uint now, uint last, uint idle)
-        => Assert.Equal(idle, PreviewHandlerRules.InputIdleMs(now, last));
-
-    [Theory]
-    [InlineData(700u, false, true)]
-    [InlineData(5_000u, false, true)]
-    [InlineData(699u, false, false)]    // a key pressed or a click just now
-    [InlineData(0u, false, false)]
-    [InlineData(5_000u, true, false)]   // a key or button held down
-    public void The_foreground_is_taken_only_while_the_user_is_quiet(uint idle, bool down, bool may)
-        => Assert.Equal(may, PreviewHandlerRules.MayTakeForeground(idle, down));
-
-    [Theory]
-    [InlineData(true, false, 5_000u, false, PreviewHandlerRules.WaitingAction.Leave)]  // not responding: not even flashed
-    [InlineData(true, true, 0u, true, PreviewHandlerRules.WaitingAction.Leave)]
-    [InlineData(false, true, 5_000u, false, PreviewHandlerRules.WaitingAction.Flash)]  // brought forward before
-    [InlineData(false, false, 100u, false, PreviewHandlerRules.WaitingAction.Flash)]   // the user is typing
-    [InlineData(false, false, 5_000u, true, PreviewHandlerRules.WaitingAction.Flash)]  // a key held down
-    [InlineData(false, false, 700u, false, PreviewHandlerRules.WaitingAction.BringForward)]
-    public void What_is_done_with_a_waiting_message(bool hung, bool before, uint idle, bool down, PreviewHandlerRules.WaitingAction action)
-        => Assert.Equal(action, PreviewHandlerRules.WaitingWindowAction(hung, before, idle, down));
-
-    [Theory]
-    [InlineData(false, false, 100u, false, true)]    // flashed because the user was typing
-    [InlineData(false, false, 5_000u, true, true)]   // flashed because a key was held down
-    [InlineData(false, false, 700u, false, false)]   // quiet: it was brought forward (or Windows refused)
-    [InlineData(false, true, 100u, false, false)]    // brought forward before
-    [InlineData(true, false, 100u, false, false)]    // not responding
-    public void A_message_only_flashed_for_recent_input_is_looked_at_again(bool hung, bool before, uint idle, bool down, bool retry)
-        => Assert.Equal(retry, PreviewHandlerRules.RetryAfterFlash(hung, before, idle, down));
-
-    [Theory]
-    [InlineData(PreviewHandlerRules.WaitingLook.Found, 700u, false, 1, PreviewHandlerRules.RetryStep.BringForwardAndStop)]
-    [InlineData(PreviewHandlerRules.WaitingLook.Found, 5_000u, false, 15, PreviewHandlerRules.RetryStep.BringForwardAndStop)] // the last tick still may
-    [InlineData(PreviewHandlerRules.WaitingLook.Found, 100u, false, 1, PreviewHandlerRules.RetryStep.LookAgain)]
-    [InlineData(PreviewHandlerRules.WaitingLook.Found, 5_000u, true, 14, PreviewHandlerRules.RetryStep.LookAgain)]
-    [InlineData(PreviewHandlerRules.WaitingLook.Found, 100u, false, 15, PreviewHandlerRules.RetryStep.Stop)]   // the last tick
-    [InlineData(PreviewHandlerRules.WaitingLook.Found, 100u, false, 16, PreviewHandlerRules.RetryStep.Stop)]
-    [InlineData(PreviewHandlerRules.WaitingLook.NoWindow, 5_000u, false, 1, PreviewHandlerRules.RetryStep.Stop)]
-    [InlineData(PreviewHandlerRules.WaitingLook.Hung, 5_000u, false, 1, PreviewHandlerRules.RetryStep.Stop)]
-    [InlineData(PreviewHandlerRules.WaitingLook.BroughtBefore, 5_000u, false, 1, PreviewHandlerRules.RetryStep.Stop)]
-    [InlineData(PreviewHandlerRules.WaitingLook.BroughtBefore, 100u, false, 1, PreviewHandlerRules.RetryStep.Stop)]
-    public void What_a_look_again_leads_to(PreviewHandlerRules.WaitingLook look, uint idle, bool down, int ticks, PreviewHandlerRules.RetryStep step)
-        => Assert.Equal(step, PreviewHandlerRules.WaitingRetryStep(look, idle, down, ticks));
-
-    [Fact]
-    public void The_looks_again_last_six_seconds()
-    {
-        Assert.Equal(400, PreviewHandlerRules.RetryIntervalMs);
-        Assert.Equal(15, PreviewHandlerRules.MaxRetryTicks);
     }
 }

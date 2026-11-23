@@ -723,8 +723,10 @@ internal sealed class ThumbnailGrid : Control
         finally { g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Default; }
         // A page-like picture (a white slide, a PDF page, a screenshot) gets a hairline on its own edge pixels, so it
         // doesn't melt into the white view. Only real pictures: an icon (None) has its own shape. A text or sheet page
-        // draws a border on the same pixels, so this replaces it rather than adding a second one.
-        if (shown.Quality != ThumbQuality.None && w > 2 && h > 2 && ThumbKinds.IsPageLike(path))
+        // draws a border on the same pixels, so this replaces it rather than adding a second one. Not a picture with
+        // transparent corners (a logo, a sticker): a box round its empty canvas would pass it off as a page.
+        if (shown.Quality != ThumbQuality.None && w > 2 && h > 2 && ThumbKinds.IsPageLike(path)
+            && !ThumbSources.CornersSeeThrough(bmp))
             g.DrawRectangle(OutlinePen(faded), dest.X, dest.Y, w - 1, h - 1);
         return true;
     }

@@ -259,6 +259,19 @@ internal sealed partial class SettingsForm : Form
         ForeColor = ExplorerTheme.Text,
     };
 
+    /// <summary>
+    /// A line of grey text between a page's cards, wrapping to the page's width. <paramref name="top"/> (logical pixels):
+    /// more room above than below makes a note read as the start of the cards under it, not part of the card above.
+    /// </summary>
+    Label Note(string text, int top = 0) => new()
+    {
+        Text = text,
+        AutoSize = false,
+        UseMnemonic = false,
+        Margin = new Padding(0, S(top), 0, S(8)),
+        ForeColor = ExplorerTheme.SecondaryText,
+    };
+
     SettingCard Card(string title, string description, Control? action = null, Control? body = null) => new(title, description, action, body);
 
     Button CardButton(string text, Action click)
@@ -373,8 +386,9 @@ internal sealed partial class SettingsForm : Form
     }
 
     /// <summary>
-    /// What every new window and tab starts with, in one place. Changed here, every open tab takes it too. A match
-    /// switch flipped in a window is stored here as well (only that tab changes); Sort still changes a tab on its own.
+    /// What every new window and tab starts with, in one place. Changed here, every open tab takes it too, Find words
+    /// inside files included. A match switch flipped in a window is stored here as well (only that tab changes); Sort
+    /// still changes a tab on its own.
     /// </summary>
     PageStack DefaultsPage()
     {
@@ -386,6 +400,8 @@ internal sealed partial class SettingsForm : Form
             Header("Search results"),
             Card("Sort by", "How results are ordered when a search starts.", _defaultSort),
             Card("Folders first", "Folders found come before files, each in the order above.", _foldersFirst),
+            // Above the match switches only: Sort by and Folders first are not in the Search menu.
+            Note("These are the same switches as in the Search menu. A change here applies to every open tab.", top: 12),
             Card("Match whole words", "\"port\" finds port, not report.", _wholeWord),
             Card("Match case", "\"Report\" finds Report, not report.", _matchCase),
             Card("Match the full path", "Search words can match folder names on the way to a file.", _matchPath),
@@ -1005,6 +1021,12 @@ internal sealed partial class SettingsForm : Form
                                    _foldersFirst, _matchCase, _wholeWord, _matchPath, _diacritics, _regex, _expandTree, _usbPrompt })
             sw.CheckedChanged += (_, _) => GeneralChanged();
         _defaultSort.SelectedIndexChanged += (_, _) => GeneralChanged();
+        // Like the five switches above it, every open tab takes the change (the setting itself is saved in SettingsForm.Content.cs).
+        _matchContentDefault.CheckedChanged += (_, _) =>
+        {
+            if (_loading) return;
+            foreach (var w in _app.Windows) w.OnMatchContentDefaultChanged(_matchContentDefault.Checked);
+        };
         _autoUpdateAt.ValueChanged += (_, _) =>
         {
             if (_loading) return;

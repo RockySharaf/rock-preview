@@ -190,11 +190,20 @@ internal sealed class PreviewHandlerHost : Control
     public string? LoadedPath { get; private set; }
     public string? Error { get; private set; }
 
+    /// <summary>The last Load failed because the handler's program answered busy.</summary>
+    public bool Busy { get; private set; }
+
+    /// <summary>With <see cref="Busy"/>, the program's name when it is worth telling (see
+    /// <see cref="PreviewHandlerRules.NamedProgram"/>); otherwise null.</summary>
+    public string? BusyProgram { get; private set; }
+
     /// <summary>Creates, initializes and shows the handler. Returns false (and leaves the host empty) on failure.</summary>
     public bool Load(string path, Guid clsid)
     {
         Unload();
         Error = null;
+        Busy = false;
+        BusyProgram = null;
         if (!IsHandleCreated) CreateControl();
         object? obj = null;
         try
@@ -288,17 +297,30 @@ internal sealed class PreviewHandlerHost : Control
     private static readonly ConcurrentDictionary<Guid, long> LastBusy = new();
 
     /// <summary>
-    /// The error for a handler that could not be created, in words the user can act on. When its program answered busy
-    /// after the retries, a message it is waiting on is looked for and brought forward (see
-    /// <see cref="WaitingDialogs.BringToFront"/>), and the error says what really happened.
+    /// The error for a handler that could not be created, in words the user can act on (see
+    /// <see cref="PreviewHandlerRules.CreateError"/>); also sets <see cref="Busy"/> and <see cref="BusyProgram"/>, so the
+    /// pane need not read the text to know.
     /// </summary>
-    private static string CreateError(Guid clsid, int localHr, int inprocHr)
+    private string CreateError(Guid clsid, int localHr, int inprocHr)
     {
-        string program = PreviewHandlerRules.ProgramName(WaitingDialogs.LocalServerCommand(clsid));
-        var waiting = PreviewHandlerRules.IsBusy(localHr)
-            ? WaitingDialogs.BringToFront(clsid)
-            : PreviewHandlerRules.WaitingMessage.NotFound;
-        return PreviewHandlerRules.CreateError(localHr, inprocHr, program, waiting);
+        string program = PreviewHandlerRules.ProgramName(LocalServerCommand(clsid));
+        Busy = PreviewHandlerRules.IsBusy(localHr);
+        BusyProgram = Busy ? PreviewHandlerRules.NamedProgram(program) : null;
+        return PreviewHandlerRules.CreateError(localHr, inprocHr, program);
+    }
+
+    /// <summary>The handler's LocalServer32 command line (HKCR\CLSID\{id}\LocalServer32), or null when it has none.</summary>
+    private static string? LocalServerCommand(Guid clsid)
+    {
+        try
+        {
+            using var k = Registry.ClassesRoot.OpenSubKey("CLSID\\" + clsid.ToString("B") + "\\LocalServer32");
+            return k?.GetValue(null) as string;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private RECT ClientRect() => new() { Left = 0, Top = 0, Right = Math.Max(1, ClientSize.Width), Bottom = Math.Max(1, ClientSize.Height) };

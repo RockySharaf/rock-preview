@@ -402,7 +402,6 @@ internal sealed partial class MainForm
         _list.EmptyText = text;
         _grid.EmptyText = text;
         _list.EmptyLink = _grid.EmptyLink = text.Length > 0 ? link : null;
-        UpdateScopeHint();
     }
 
     /// <summary>
@@ -411,6 +410,6 @@ internal sealed partial class MainForm
     /// </summary>
     void SearchEverythingInstead()
     {
-        if (ScopeButton() is { Click: SearchScope.Click.ToEverything, Everything: false }) ToggleSearchScope();
+        if (ScopeButton() is { Click: SearchScope.Click.ToEverything, Everything: false }) ToggleSearchScope(chip: false);
     }
 }

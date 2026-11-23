@@ -1523,7 +1523,7 @@ internal sealed partial class ExplorerHost : Control
     {
         if (FocusInView(out bool inRename) && inRename && IsRenameKey(keyData)) return false;
         // Escape, Ctrl+N (the view's own opens a File Explorer window) and F1 (the view's own does nothing here; the
-        // window's opens Search Syntax, as the menu says): the window's, as with the keys in other places.
+        // window's opens the Help window, as the menu says): the window's, as with the keys in other places.
         if (keyData is Keys.Escape or (Keys.Control | Keys.N) or Keys.F1) return base.ProcessCmdKey(ref msg, keyData);
         var view = GetView<IShellView>(ShellNative.IID_IShellView);
         if (view != null)

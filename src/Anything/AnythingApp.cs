@@ -423,7 +423,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         e.Cancel = true;
         if (Settings.RunInBackground)
         {
-            // Closed, though only hidden: its Search Syntax help closes with it rather than coming back when it is shown.
+            // Closed, though only hidden: its Help window (F1) closes with it rather than coming back when it is shown.
             SearchSyntaxForm.CloseFor(w);
             w.Hide();
             Post(UpdateAutomaticallyIfIdle); // a new version waiting goes in now, while nothing is open
@@ -608,7 +608,7 @@ internal sealed partial class AnythingApp : ApplicationContext
     internal void OnHotkey()
     {
         IntPtr fg = Native.GetForegroundWindow();
-        // The Search Syntax help in front counts as its window: the hotkey hides both (the help goes with its window).
+        // The Help window (F1) in front counts as its window: the hotkey hides both (the help goes with its window).
         var active = _windows.FirstOrDefault(x => x.Visible && x.IsHandleCreated && (x.Handle == fg || SearchSyntaxForm.IsHelpOf(x, fg)));
         if (active is not null) active.Hide();
         else ShowSearchWindow(everything: true);

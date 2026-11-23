@@ -12,15 +12,6 @@ using System.Windows.Forms;
 
 namespace Anything.Preview.UI;
 
-/// <summary>Colours of search matches in the preview's views.</summary>
-internal static class MatchColors
-{
-    /// <summary>Every match.</summary>
-    public static readonly Color Match = Color.FromArgb(255, 236, 130);
-    /// <summary>The match F3 is on.</summary>
-    public static readonly Color Current = Color.FromArgb(255, 175, 70);
-}
-
 /// <summary>Virtual-mode, read-only grid for spreadsheets, CSV, archive and folder listings.</summary>
 internal sealed class TableView : UserControl
 {
@@ -55,10 +46,12 @@ internal sealed class TableView : UserControl
             ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
             ClipboardCopyMode = DataGridViewClipboardCopyMode.EnableWithoutHeaderText;
             EnableHeadersVisualStyles = false;
-            ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(240, 240, 240);
-            RowHeadersDefaultCellStyle.BackColor = Color.FromArgb(240, 240, 240);
+            var colors = PreviewColors.Now;
+            ColumnHeadersDefaultCellStyle.BackColor = colors.GridHeaderBack;
+            RowHeadersDefaultCellStyle.BackColor = colors.GridHeaderBack;
+            if (colors.GridSelectionText is { } selected) DefaultCellStyle.SelectionForeColor = selected;
             DefaultCellStyle.WrapMode = DataGridViewTriState.False;
-            GridColor = Color.FromArgb(225, 225, 225);
+            GridColor = colors.GridLines;
             RowTemplate.Height = 20;
         }
     }
@@ -77,15 +70,16 @@ internal sealed class TableView : UserControl
         {
             if (_data?.ShowRowNumbers != true) return;
             var r = new Rectangle(e.RowBounds.Left, e.RowBounds.Top, _grid.RowHeadersWidth - 4, e.RowBounds.Height);
-            TextRenderer.DrawText(e.Graphics, (e.RowIndex + 1).ToString(), _grid.Font, r, Color.Gray,
+            TextRenderer.DrawText(e.Graphics, (e.RowIndex + 1).ToString(), _grid.Font, r, PreviewColors.Now.GridRowNumber,
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         };
         _grid.CellFormatting += (_, e) =>
         {
             if (_hitSet == null || e.RowIndex < 0 || e.ColumnIndex < 0 || e.CellStyle == null || !_hitSet.Contains(Key(e.RowIndex, e.ColumnIndex))) return;
             bool current = _current >= 0 && _hits[_current] == (e.RowIndex, e.ColumnIndex);
-            e.CellStyle.BackColor = current ? MatchColors.Current : MatchColors.Match;
-            e.CellStyle.SelectionBackColor = current ? Color.FromArgb(230, 140, 40) : Color.FromArgb(214, 190, 70);
+            e.CellStyle.BackColor = current ? PreviewColors.CurrentMatch : PreviewColors.Match;
+            e.CellStyle.SelectionBackColor = current ? PreviewColors.CurrentMatchSelected : PreviewColors.MatchSelected;
+            if (PreviewColors.Now.MatchText is { } onMatch) e.CellStyle.ForeColor = e.CellStyle.SelectionForeColor = onMatch;
         };
         _grid.SizeChanged += (_, _) => ApplyPendingScroll();
         _grid.VisibleChanged += (_, _) => ApplyPendingScroll();
@@ -261,7 +255,7 @@ internal sealed class DocumentView : RichTextBox
     private const int WM_SETREDRAW = 0x000B, EM_SETEVENTMASK = 0x0400 + 69, EM_GETLINECOUNT = 0x00BA, EM_GETSCROLLPOS = 0x0400 + 221, EM_SETSCROLLPOS = 0x0400 + 222;
     private const int EM_EXSETSEL = 0x0400 + 55, EM_GETCHARFORMAT = 0x0400 + 58, EM_SETCHARFORMAT = 0x0400 + 68, EM_GETTEXTRANGE = 0x0400 + 75,
         EM_GETTEXTEX = 0x0400 + 94, EM_GETTEXTLENGTHEX = 0x0400 + 95;
-    private const int SCF_SELECTION = 1, CFM_BACKCOLOR = 0x04000000, CFE_AUTOBACKCOLOR = 0x04000000;
+    private const int SCF_SELECTION = 1, CFM_BACKCOLOR = 0x04000000, CFE_AUTOBACKCOLOR = 0x04000000, CFM_COLOR = 0x40000000;
     private const int GT_RAWTEXT = 4, GTL_PRECISE = 2, GTL_NUMCHARS = 8, CP_UNICODE = 1200;
 
     private readonly List<(int Start, int Length)> _hits = new();
@@ -285,6 +279,7 @@ internal sealed class DocumentView : RichTextBox
     private long _loadMs;          // time the document took to load: putting many colours back costs more than loading it again
     private int _changes;          // colour changes in the running batch
     private bool _colourQueued;    // colouring the matches on screen is queued (after a scroll)
+    private bool _onPage;          // a user's .rtf file shown on PreviewColors' white page (dark mode)
 
     public DocumentView()
     {
@@ -308,6 +303,19 @@ internal sealed class DocumentView : RichTextBox
         _changeMs = 1;
         _batchMs = 0;
         _batchChanges = 0;
+        var colors = PreviewColors.Now;
+        if (r.Rtf != null && colors.FilePageBack is { } page)
+        {
+            BackColor = page;
+            if (colors.FilePageText is { } ink) ForeColor = ink;
+            _onPage = true;
+        }
+        else if (_onPage)
+        {
+            BackColor = SystemColors.Window;
+            ResetForeColor();
+            _onPage = false;
+        }
         try
         {
             _shownRtf = r.Rtf ?? BuildRtf(_blocks!, find);
@@ -453,8 +461,8 @@ internal sealed class DocumentView : RichTextBox
         _current = next;
         WithoutRedraw(() =>
         {
-            if (old >= 0) ColourHit(old, MatchColors.Match);
-            ColourHit(next, MatchColors.Current);
+            if (old >= 0) ColourHit(old, PreviewColors.Match);
+            ColourHit(next, PreviewColors.CurrentMatch);
         });
         var at = GetPositionFromCharIndex(_hits[next].Start);
         if (at.Y < 0 || at.Y > ClientSize.Height - Font.Height * 2) ScrollToChar(_hits[next].Start);
@@ -523,7 +531,7 @@ internal sealed class DocumentView : RichTextBox
         WithoutRedraw(() =>
         {
             foreach (int i in todo) Save(i);
-            foreach (int i in todo) ColourHit(i, i == _current ? MatchColors.Current : MatchColors.Match);
+            foreach (int i in todo) ColourHit(i, i == _current ? PreviewColors.CurrentMatch : PreviewColors.Match);
         });
     }
 
@@ -556,7 +564,14 @@ internal sealed class DocumentView : RichTextBox
         Save(index);
         _coloured.Add(index);
         var (start, length) = _hits[index];
-        SetBack(start, length, 0, ColorTranslator.ToWin32(color));
+        // Built text is light in dark mode: a match coloured here gets the dark match text too (most already have it
+        // from the RTF), and since the text colour isn't saved, the built document is loaded again to put it back.
+        if (_blocks != null && PreviewColors.Now.MatchText is { } onMatch)
+        {
+            _restoreByReload = true;
+            SetBack(start, length, 0, ColorTranslator.ToWin32(color), ColorTranslator.ToWin32(onMatch));
+        }
+        else SetBack(start, length, 0, ColorTranslator.ToWin32(color));
     }
 
     /// <summary>Saves the back colours of one match's characters (its runs, when they differ), once per match.</summary>
@@ -605,12 +620,20 @@ internal sealed class DocumentView : RichTextBox
         return cf;
     }
 
-    /// <summary>Sets the back colour of a range: automatic (the window's) when effects has CFE_AUTOBACKCOLOR, else the colour.</summary>
-    private void SetBack(int start, int length, int effects, int color)
+    /// <summary>
+    /// Sets the back colour of a range: automatic (the window's) when effects has CFE_AUTOBACKCOLOR, else the colour;
+    /// with <paramref name="text"/>, the text colour too.
+    /// </summary>
+    private void SetBack(int start, int length, int effects, int color, int? text = null)
     {
         _changes++;
         SelectRange(start, length);
         var cf = new CHARFORMAT2W { cbSize = Marshal.SizeOf<CHARFORMAT2W>(), dwMask = CFM_BACKCOLOR, dwEffects = effects, crBackColor = color, szFaceName = "" };
+        if (text is { } ink)
+        {
+            cf.dwMask |= CFM_COLOR;
+            cf.crTextColor = ink;
+        }
         SendMessage(Handle, EM_SETCHARFORMAT, (IntPtr)SCF_SELECTION, ref cf);
     }
 
@@ -880,11 +903,26 @@ internal sealed class DocumentView : RichTextBox
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref Point lParam);
 
     /// <param name="find">Colours its matches in each paragraph (\highlight4); null = no colours, the RTF as always.</param>
-    internal static string BuildRtf(IReadOnlyList<DocBlock> blocks, Func<string, IReadOnlyList<(int Start, int Length)>>? find = null)
+    /// <param name="colors">The text colours; null = the app's colour mode now.</param>
+    internal static string BuildRtf(IReadOnlyList<DocBlock> blocks, Func<string, IReadOnlyList<(int Start, int Length)>>? find = null, PreviewColors? colors = null)
     {
+        colors ??= PreviewColors.Now;
         var sb = new StringBuilder();
-        sb.Append(@"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fswiss Segoe UI;}}{\colortbl;\red40\green40\blue40;\red31\green78\blue121;\red110\green110\blue110;");
-        if (find != null) sb.Append(@"\red").Append(MatchColors.Match.R).Append(@"\green").Append(MatchColors.Match.G).Append(@"\blue").Append(MatchColors.Match.B).Append(';');
+        sb.Append(@"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fswiss Segoe UI;}}{\colortbl;");
+        AppendColor(sb, colors.DocText);
+        AppendColor(sb, colors.DocHeading);
+        AppendColor(sb, colors.DocCaption);
+        // \highlight4 is the match colour; a set with its own text colour on matches adds that as \cf5.
+        string matchGroup = @"{\highlight4 ";
+        if (find != null)
+        {
+            AppendColor(sb, PreviewColors.Match);
+            if (colors.MatchText is { } onMatch)
+            {
+                AppendColor(sb, onMatch);
+                matchGroup = @"{\highlight4\cf5 ";
+            }
+        }
         sb.Append('}');
         sb.Append(@"\viewkind4\uc1\f0\fs20\cf1\sa120 ");
         int chars = 0;
@@ -903,15 +941,18 @@ internal sealed class DocumentView : RichTextBox
                 default: sb.Append(@"\pard\sa120\fs20\cf1 "); break;
             }
             if (find == null) Escape(sb, b.Text);
-            else EscapeHighlighted(sb, b.Text, find);
+            else EscapeHighlighted(sb, b.Text, find, matchGroup);
             sb.Append(@"\b0\i0\par").Append('\n');
         }
         sb.Append('}');
         return sb.ToString();
     }
 
-    /// <summary>A paragraph with its matches in {\highlight4 …} groups (sorted, clamped, overlaps merged).</summary>
-    private static void EscapeHighlighted(StringBuilder sb, string s, Func<string, IReadOnlyList<(int Start, int Length)>> find)
+    private static void AppendColor(StringBuilder sb, Color c) =>
+        sb.Append(@"\red").Append(c.R).Append(@"\green").Append(c.G).Append(@"\blue").Append(c.B).Append(';');
+
+    /// <summary>A paragraph with its matches in groups opened by <paramref name="matchGroup"/> (sorted, clamped, overlaps merged).</summary>
+    private static void EscapeHighlighted(StringBuilder sb, string s, Func<string, IReadOnlyList<(int Start, int Length)>> find, string matchGroup)
     {
         IReadOnlyList<(int Start, int Length)>? found = null;
         if (s.Length > 0)
@@ -937,7 +978,7 @@ internal sealed class DocumentView : RichTextBox
             if (b <= at) continue;
             int from = Math.Max(a, at);
             Escape(sb, s.AsSpan(at, from - at));
-            sb.Append(@"{\highlight4 ");
+            sb.Append(matchGroup);
             Escape(sb, s.AsSpan(from, b - from));
             sb.Append('}');
             at = b;
@@ -1021,7 +1062,7 @@ internal sealed class InfoView : UserControl
             Invalidate();
         }
 
-        // "Providers tried" lines wrap to the card's width (a busy previewer's advice is long): measured and drawn alike.
+        // "Tried, without success" lines wrap to the card's width (a busy previewer's advice is long): measured and drawn alike.
         private const TextFormatFlags DiagFlags = TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl;
         private int _laidOutWidth = -1;
 
@@ -1067,26 +1108,27 @@ internal sealed class InfoView : UserControl
                 TextRenderer.DrawText(g, _title, bold, new Rectangle(x, y, w, bold.Height + 2), ForeColor, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
                 y += bold.Height + 2;
             }
-            TextRenderer.DrawText(g, _sub, Font, new Rectangle(x, y, w, Font.Height + 2), Color.DimGray, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            var colors = PreviewColors.Now;
+            TextRenderer.DrawText(g, _sub, Font, new Rectangle(x, y, w, Font.Height + 2), colors.InfoSub, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
             y += Font.Height + 10;
             int keyW = 0;
             foreach (var kv in _meta) keyW = Math.Max(keyW, TextRenderer.MeasureText(kv.Key, Font).Width);
             keyW = Math.Min(keyW + 8, 140);
             foreach (var kv in _meta)
             {
-                TextRenderer.DrawText(g, kv.Key, Font, new Rectangle(x, y, keyW, Font.Height + 2), Color.Gray, TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+                TextRenderer.DrawText(g, kv.Key, Font, new Rectangle(x, y, keyW, Font.Height + 2), colors.InfoKey, TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
                 TextRenderer.DrawText(g, kv.Value, Font, new Rectangle(x + keyW, y, w - keyW, Font.Height + 2), ForeColor, TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
                 y += Font.Height + 4;
             }
             if (_diag.Count > 0)
             {
                 y += 4;
-                TextRenderer.DrawText(g, "Providers tried:", Font, new Point(x, y), Color.Gray, TextFormatFlags.NoPrefix);
+                TextRenderer.DrawText(g, "Tried, without success:", Font, new Point(x, y), colors.InfoKey, TextFormatFlags.NoPrefix);
                 y += Font.Height + 2;
                 foreach (var d in _diag)
                 {
                     int h = DiagHeight(d, w);
-                    TextRenderer.DrawText(g, d, Font, new Rectangle(x, y, w, h + 2), Color.Firebrick, DiagFlags);
+                    TextRenderer.DrawText(g, d, Font, new Rectangle(x, y, w, h + 2), colors.InfoDiag, DiagFlags);
                     y += h + 2;
                 }
             }

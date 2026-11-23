@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Anything.Core;
 using Anything.Preview.Interop;
 using Anything.Preview.UI;
 
@@ -27,16 +28,16 @@ public sealed class PreviewPane : UserControl
 
     private readonly Panel _header = new() { Dock = DockStyle.Top, Height = 46, Padding = new Padding(8, 4, 6, 2) };
     private readonly Label _name = new() { AutoSize = false, Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft, AutoEllipsis = true, UseMnemonic = false };
-    private readonly Label _sub = new() { AutoSize = false, Dock = DockStyle.Bottom, Height = 18, TextAlign = ContentAlignment.TopLeft, AutoEllipsis = true, ForeColor = Color.DimGray, UseMnemonic = false };
+    private readonly Label _sub = new() { AutoSize = false, Dock = DockStyle.Bottom, Height = 18, TextAlign = ContentAlignment.TopLeft, AutoEllipsis = true, ForeColor = PreviewColors.Now.PaneSub, UseMnemonic = false };
     private readonly FlowLayoutPanel _nav = new() { Dock = DockStyle.Right, AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(0, 6, 0, 0), Visible = false };
     private readonly Button _prev = new() { Text = "◀", Width = 30, Height = 26, FlatStyle = FlatStyle.System, TabStop = false };
     private readonly Button _next = new() { Text = "▶", Width = 30, Height = 26, FlatStyle = FlatStyle.System, TabStop = false };
     private readonly Label _page = new() { AutoSize = false, Width = 84, Height = 26, TextAlign = ContentAlignment.MiddleCenter };
-    private readonly Label _zoom = new() { AutoSize = false, Dock = DockStyle.Right, Width = 56, TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
-    private readonly Label _footer = new() { Dock = DockStyle.Bottom, Height = 22, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 4, 0), ForeColor = SystemColors.GrayText, UseMnemonic = false };
+    private readonly Label _zoom = new() { AutoSize = false, Dock = DockStyle.Right, Width = 56, TextAlign = ContentAlignment.MiddleRight, ForeColor = PreviewColors.Now.PaneSub };
+    private readonly Label _footer = new() { Dock = DockStyle.Bottom, Height = 22, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 4, 0), ForeColor = PreviewColors.Now.PaneFooter, UseMnemonic = false };
     private readonly MatchBanner _banner = new();
     private readonly Panel _content = new() { Dock = DockStyle.Fill };
-    private readonly Label _loading = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Text = "Loading…", ForeColor = Color.Gray, Visible = false };
+    private readonly Label _loading = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Text = "Loading…", ForeColor = PreviewColors.Now.PaneLoading, Visible = false };
     // What File Explorer's preview pane says when nothing is selected.
     private readonly Label _empty = new EmptyPreview() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Text = "Select a file to preview.", ForeColor = SystemColors.GrayText, UseMnemonic = false };
 
@@ -52,8 +53,9 @@ public sealed class PreviewPane : UserControl
 
     private PreviewResult? _result;
     // The result shown in place of a hosted handler that failed, and that handler's name: its footer says so, since the
-    // reason is otherwise only in the tooltip. Tied to the result so it never carries over to the next file.
-    private (PreviewResult Result, string Handler)? _handlerFallback;
+    // reason is otherwise only in the tooltip. Busy and Program say whether its program was busy and its name worth
+    // telling (from the host, not read from the error text). Tied to the result so it never carries over to the next file.
+    private (PreviewResult Result, string Handler, bool Busy, string? Program)? _handlerFallback;
     private CancellationTokenSource? _cts;
     private CancellationTokenSource? _pageCts;
     private int _generation;
@@ -421,8 +423,10 @@ public sealed class PreviewPane : UserControl
                     }
                     catch (OperationCanceledException) { return; }
                     if (gen != _generation) { fallback.Dispose(); return; }
-                    fallback.Diagnostics.Insert(0, $"PreviewHandler ({r.HandlerName}): {why}");
-                    _handlerFallback = (fallback, string.IsNullOrEmpty(r.HandlerName) ? "The file's own previewer" : r.HandlerName);
+                    string handler = string.IsNullOrEmpty(r.HandlerName) ? "The file's own previewer" : r.HandlerName;
+                    // Named in plain words, as the user reads this line in the tooltip and on the info card.
+                    fallback.Diagnostics.Insert(0, HandlerFailedLine(handler, why));
+                    _handlerFallback = (fallback, handler, host.Busy, host.BusyProgram);
                     r.Dispose();
                     _result = null;
                     await DisplayAsync(fallback, gen, ct);
@@ -440,6 +444,16 @@ public sealed class PreviewPane : UserControl
         }
         ApplyMatch(r, gen);
         PreviewShown?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// "Microsoft Word previewer: could not be started (0x80040154)": the file's own previewer and why it failed, without
+    /// saying "previewer" twice when the reason starts with "the previewer ".
+    /// </summary>
+    internal static string HandlerFailedLine(string handler, string why)
+    {
+        const string Repeat = "the previewer ";
+        return why.StartsWith(Repeat, StringComparison.Ordinal) ? $"{handler}: {why[Repeat.Length..]}" : $"{handler}: {why}";
     }
 
     // ------------------------------------------------------------------ the match
@@ -550,11 +564,17 @@ public sealed class PreviewPane : UserControl
             facts = new[] { ShownKey + ": " + window }.Concat(r.Metadata.Where(kv => kv.Key is not ("Lines" or ShownKey)).Select(kv => kv.Key + ": " + kv.Value));
         var list = facts.ToList();
         _footer.Text = string.Join("   ·   ", list);
-        // The info card lists the providers tried itself.
-        if (_handlerFallback is { } f && ReferenceEquals(f.Result, r) && r.Kind != PreviewKind.Info)
-            _footer.Text = $"{f.Handler} could not show this file (hover here to see why)" + (list.Count > 0 ? "   ·   " + _footer.Text : "");
         string tip = string.Join("\n", list);
-        if (r.Diagnostics.Count > 0) tip += "\n\nProviders that failed first:\n" + string.Join("\n", r.Diagnostics);
+        // The info card lists what was tried itself.
+        if (_handlerFallback is { } f && ReferenceEquals(f.Result, r) && r.Kind != PreviewKind.Info)
+        {
+            string line = f.Busy
+                ? PreviewHandlerRules.BusyFooter(f.Program, asText: r.Kind is PreviewKind.Text or PreviewKind.Document)
+                : $"{f.Handler} could not show this file (hover here to see why)";
+            _footer.Text = line + (list.Count > 0 ? "   ·   " + _footer.Text : "");
+            if (f.Busy) tip = PreviewHandlerRules.BusyAdvice(f.Program) + (tip.Length > 0 ? "\n\n" + tip : "");
+        }
+        if (r.Diagnostics.Count > 0) tip += "\n\nTried first, without success:\n" + string.Join("\n", r.Diagnostics);
         _tip.SetToolTip(_footer, tip);
     }
 

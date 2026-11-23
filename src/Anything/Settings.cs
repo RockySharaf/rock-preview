@@ -143,9 +143,9 @@ internal sealed partial class AppSettings
     }
     /// <summary>Times the Thumbnails button has pulsed to show itself (a folder open for 3 seconds); it stops at 10.</summary>
     public int ThumbnailsHintCount { get; set; }
-    /// <summary>How often the search box's folder button was clicked to search everything: from 3, it no longer lights up.</summary>
+    /// <summary>The search box's scope chip has been clicked (above 0; older versions counted to 3): the pointer at it no longer shows.</summary>
     public int ScopeChipUses { get; set; }
-    /// <summary>The starts of the program on which the pointer at the search box's scope showed (0 to 2): it shows on two.</summary>
+    /// <summary>The starts of the program on which the pointer at the search box's scope showed (0 to 2): it shows on two; Got it sets 2.</summary>
     public int ScopePointerStarts { get; set; }
     /// <summary>Thumbnails has been used, so its button no longer pulses.</summary>
     public bool ThumbnailsHintDone { get; set; }
@@ -179,7 +179,8 @@ internal sealed partial class AppSettings
     public bool OpenFoldersInTabs { get; set; } = true;
     /// <summary>Global hotkey that shows or hides Rock Preview from any app; empty = none.</summary>
     public string Hotkey { get; set; } = DefaultHotkey;
-    public const string DefaultHotkey = "Alt+X";
+    // One constant for Settings and the help, so the help never names another default.
+    public const string DefaultHotkey = HelpContent.DefaultHotkey;
     /// <summary>The window that shows the hotkey and asks to try it was shown (once per user, after installing).</summary>
     public bool WelcomeShown { get; set; }
     /// <summary>

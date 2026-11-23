@@ -5,11 +5,19 @@ using Box = Anything.Core.ScopePointerRules.Box;
 namespace Anything.Tests;
 
 /// <summary>
-/// <see cref="ScopePointerRules"/>: the pointer new users see at the scope chip. What it says for each state of the
+/// <see cref="ScopePointerRules"/>: the pointer at the scope chip for those who haven't used it. What it says for each state of the
 /// chip, on which starts it shows, and where it goes: under the search box, never over it, never off the screen.
 /// </summary>
 public sealed class ScopePointerRulesTests
 {
+    [Theory]
+    [InlineData(ScopePointerRules.EscTarget.SearchBox, true)]
+    [InlineData(ScopePointerRules.EscTarget.OtherTextBox, false)]
+    [InlineData(ScopePointerRules.EscTarget.NativeEdit, false)]
+    [InlineData(ScopePointerRules.EscTarget.Other, true)]
+    public void EscOnlyClosesThePointerUnlessAnotherEditBoxHasTheKeyboard(ScopePointerRules.EscTarget target, bool onlyThePointer)
+        => Assert.Equal(onlyThePointer, ScopePointerRules.EscOnlyClosesPointer(target));
+
     [Fact]
     public void InAFolderItSaysWhereAndHowToSearchEverything()
     {
@@ -50,15 +58,17 @@ public sealed class ScopePointerRulesTests
     }
 
     [Theory]
-    [InlineData(0, false, false, true, true)]
-    [InlineData(1, false, false, true, true)]
-    [InlineData(2, false, false, true, false)]  // two starts: done
-    [InlineData(5, false, false, true, false)]
-    [InlineData(0, true, false, true, false)]   // the demo
-    [InlineData(0, false, true, true, false)]   // once per start
-    [InlineData(0, false, false, false, false)] // the chip can't be seen
-    public void ItShowsOnTheFirstTwoStartsOnly(int starts, bool demo, bool shownThisStart, bool chipVisible, bool wanted) =>
-        Assert.Equal(wanted, ScopePointerRules.Wanted(starts, demo, shownThisStart, chipVisible));
+    [InlineData(0, false, false, true, 0, true)]
+    [InlineData(1, false, false, true, 0, true)]
+    [InlineData(2, false, false, true, 0, false)]  // two starts, or Got it: done
+    [InlineData(5, false, false, true, 0, false)]
+    [InlineData(0, true, false, true, 0, false)]   // the demo
+    [InlineData(0, false, true, true, 0, false)]   // once per start
+    [InlineData(0, false, false, false, 0, false)] // the chip can't be seen
+    [InlineData(0, false, false, true, 1, false)]  // the chip was used before: they know it
+    [InlineData(1, false, false, true, 3, false)]
+    public void ItShowsOnTwoStartsOnlyToThoseWhoNeverUsedTheChip(int starts, bool demo, bool shownThisStart, bool chipVisible, int chipUses, bool wanted) =>
+        Assert.Equal(wanted, ScopePointerRules.Wanted(starts, demo, shownThisStart, chipVisible, chipUses));
 
     [Theory]
     [InlineData(false, false, false, 0, ScopePointerRules.Moment.Show)]
@@ -128,36 +138,5 @@ public sealed class ScopePointerRulesTests
         Assert.True(p.Bounds.Inside(area));
         Assert.Equal(Inset, p.ArrowX);
         Assert.Equal(chip.X + chip.Width / 2, p.Bounds.X + p.ArrowX);
-    }
-
-    [Fact]
-    public void AtFullHdItClearsTheGetStartedCorner()
-    {
-        // Get started: 420 x 524 logical at 125%, 16 from the working area's bottom right.
-        var corner = new Box(1920 - 20 - 525, 1020 - 20 - 655, 525, 655);
-        var p = ScopePointerRules.Place(Chip, Field, Area, Width, Height, Gap, Inset, corner)!.Value;
-        Assert.False(p.Bounds.Intersects(corner));
-        Assert.True(p.Below);
-    }
-
-    [Fact]
-    public void ItMovesLeftOfTheCornerWindowWhenTheyWouldMeet()
-    {
-        // A window lower on the screen: the pointer would land on the corner window, so it moves left of it.
-        var field = new Box(1525, 400, 375, 40);
-        var chip = new Box(1531, 406, 60, 28);
-        var corner = new Box(1600, 365, 300, 635);
-        var p = ScopePointerRules.Place(chip, field, Area, Width, Height, Gap, Inset, corner)!.Value;
-        Assert.False(p.Bounds.Intersects(corner));
-        Assert.True(p.Bounds.Right <= corner.X - Gap);
-        Assert.Equal(chip.X + chip.Width / 2, p.Bounds.X + p.ArrowX);
-    }
-
-    [Fact]
-    public void WhenItCantClearTheCornerWindowItDoesntShow()
-    {
-        var field = new Box(1525, 400, 375, 40);
-        var corner = new Box(1375, 365, 525, 655); // the arrow couldn't reach the chip from left of it
-        Assert.Null(ScopePointerRules.Place(Chip with { Y = 406 }, field, Area, Width, Height, Gap, Inset, corner));
     }
 }

@@ -9,7 +9,7 @@ public enum ThumbRoute : byte
     Psd,
     /// <summary>PDF, Office, fonts, text and the other kinds Rock Preview renders itself: its own extractor, then Windows'.</summary>
     OwnExtractor,
-    /// <summary>Video, folders and every kind Rock Preview cannot decode: Windows' extractor, then the text sniff.</summary>
+    /// <summary>Video, folders and every kind Rock Preview cannot decode: Windows' extractor, then the text sniff (not for <see cref="ThumbKinds.NoTextPage"/> kinds).</summary>
     Shell,
 }
 
@@ -90,7 +90,7 @@ public static class ThumbKinds
         "odt", "ott", "ods", "ots", "odp", "otp", "odg");
     static readonly HashSet<string> Fonts = Set("ttf", "otf", "ttc", "otc", "woff", "fon", "fnt");
 
-    // The same list as TextPreview.KnownTextExtensions: these render as a text page.
+    // TextPreview.KnownTextExtensions minus NoTextPageKinds: these render as a text page.
     static readonly HashSet<string> Text = Set(
         "txt", "text", "log", "md", "markdown", "rst", "adoc", "json", "jsonc", "json5", "xml", "xaml", "xsd",
         "xsl", "xslt", "config", "csproj", "vbproj", "fsproj", "vcxproj", "props", "targets", "sln", "slnx", "nuspec",
@@ -98,15 +98,21 @@ public static class ThumbKinds
         "gitignore", "gitattributes", "cs", "csx", "vb", "fs", "fsx", "c", "h", "cpp", "cc", "cxx", "hpp", "hh",
         "hxx", "inl", "m", "mm", "java", "kt", "kts", "scala", "groovy", "gradle", "go", "rs", "swift", "dart",
         "py", "pyw", "pyi", "rb", "php", "pl", "pm", "lua", "r", "jl", "js", "mjs", "cjs", "jsx", "ts", "tsx",
-        "vue", "svelte", "css", "scss", "sass", "less", "html", "htm", "xhtml", "shtml", "svg", "sql", "sh",
+        "vue", "svelte", "css", "scss", "sass", "less", "html", "htm", "xhtml", "shtml", "sql", "sh",
         "bash", "zsh", "fish", "ps1", "psm1", "psd1", "bat", "cmd", "reg", "inf", "nfo", "diz", "srt", "vtt",
         "ass", "sub", "tex", "bib", "sty", "cls", "asm", "s", "hlsl", "glsl", "fx", "shader", "cmake", "mk",
-        "makefile", "dockerfile", "tf", "hcl", "graphql", "gql", "proto", "plist", "gcode", "nc", "obj", "mtl",
-        "ply", "pem", "crt", "cer", "key", "pub", "asc", "ics", "vcf", "eml", "mbox", "rtf", "lst", "map",
-        "csv", "tsv", "patch", "diff", "lock", "gitmodules", "npmrc", "babelrc", "eslintrc", "prettierrc", "ahk",
+        "makefile", "dockerfile", "tf", "hcl", "graphql", "gql", "proto", "plist", "vcf", "lst",
+        "csv", "tsv", "patch", "diff", "gitmodules", "npmrc", "babelrc", "eslintrc", "prettierrc", "ahk",
         "au3", "vbs", "vba", "bas", "frm", "pas", "dpr", "f90", "for", "cob", "ada", "erl", "ex", "exs", "hs",
         "elm", "clj", "lisp", "el", "scm", "ml", "nim", "zig", "v", "sv", "vhd", "vhdl", "tcl", "awk", "sed",
-        "m3u", "m3u8", "pls", "cue", "url", "desktop", "ipynb", "geojson", "kml", "gpx", "wkt", "sol", "razor", "cshtml");
+        "m3u", "m3u8", "pls", "cue", "desktop", "sol", "razor", "cshtml");
+
+    // Text kinds whose first lines tell a person nothing (markup, mail headers, coordinates, machine code) or should not be
+    // on screen (keys and certificates): no text page, also not from the text sniff. Windows is asked for a picture (an
+    // SVG's drawing, where it can draw one), else the icon. The preview pane still shows their text.
+    static readonly HashSet<string> NoTextPageKinds = Set(
+        "rtf", "eml", "mbox", "url", "svg", "ics", "lock", "map", "ipynb", "geojson", "kml", "gpx", "wkt", "gcode", "nc",
+        "obj", "ply", "mtl", "pem", "crt", "cer", "key", "pub", "asc");
 
     // Flat pictures: text, lines and flat colour, where JPEG 85 measured 22 to 32 dB.
     static readonly HashSet<string> FlatPictures = Set("png", "apng", "bmp", "dib", "rle", "gif", "ico", "cur");
@@ -126,9 +132,10 @@ public static class ThumbKinds
 
     // Word and Excel 97-2003 files: Windows is asked first, exactly as for any kind it pictures (the picture the author
     // saved in the file, when there is one); after a miss Rock Preview draws a page of the first lines or a sheet page of
-    // the first cells, and a file that only carries the extension (RTF, HTML or text named .doc or .xls) goes on to the
-    // text handling as before. Those pages are never kept on disk, and what Windows gives for these kinds stays in memory
-    // as before (the estimate counts them as nothing).
+    // the first cells, and a file that only carries the extension (HTML or text named .doc or .xls) goes on to the text
+    // handling as before; RTF so named gets no page (TextSniff's noPageForRtf), its icon as a real .rtf. Those pages are
+    // never kept on disk, and what Windows gives for these kinds stays in memory as before (the estimate counts them as
+    // nothing).
     static readonly HashSet<string> OldOffice = Set("doc", "dot", "xls", "xlt");
 
     // Own-extractor kinds whose own path renders a PDF page in this process (Windows.Data.Pdf, one page at a time for the
@@ -161,9 +168,6 @@ public static class ThumbKinds
         return ThumbRoute.Shell;
     }
 
-    /// <summary>Whether Rock Preview's own decoder or extractor makes this kind (pictures, PSD and the extractor kinds).</summary>
-    public static bool HasOwnDecoder(string extensionOrPath) => RouteOf(extensionOrPath) != ThumbRoute.Shell;
-
     /// <summary>
     /// Whether Windows is asked before Rock Preview's own extractor for this kind: PDF and Illustrator files (often PDFs
     /// inside), whose own path renders PDF pages in this process, one at a time for the whole program (for them only
@@ -179,21 +183,22 @@ public static class ThumbKinds
     /// <summary>
     /// Whether Windows is asked for this file's picture from its thumbnail cache only, never by its extractor in this
     /// process: any folder (<paramref name="isFolder"/>, whatever its name), the PDF kinds (pdf, ai, ait) and shortcuts
-    /// (lnk). Windows has no PDF thumbnail maker of its own, so another program's handler answers, and it may be
-    /// registered to load into the asking process (Wondershare PDFelement 12's is). Measured on 2026-11-22: that handler
-    /// ended the process, inside libPdfCore.dll with exception 0x80000003, four times in one day, also when it was asked
-    /// for one file at a time, so nothing done around the call makes it safe. Windows asks the same handler for a
-    /// folder's picture (a PDF inside it) and for a shortcut to a PDF (seen in the handler's own log); a cache-only call
-    /// (ThumbnailOnly | InCacheOnly) and an icon call never reach it (seen in the same log). So for these files: Windows'
-    /// thumbnail cache only (it may hold a picture File Explorer made), then Rock Preview's own extractor for the PDF
-    /// kinds, else the icon. The extension is read from the name as Windows opens it: a stream name after ':' is cut off,
-    /// and trailing spaces and dots are ignored ("a.pdf ", "a.pdf." and "a.pdf:x" are PDFs to Windows).
+    /// (lnk, and url, which may point at a local PDF too; Windows rarely has a picture for one). Windows has no PDF
+    /// thumbnail maker of its own, so another program's handler answers, and it may be registered to load into the asking
+    /// process (Wondershare PDFelement 12's is). Measured on 2026-11-22: that handler ended the process, inside
+    /// libPdfCore.dll with exception 0x80000003, four times in one day, also when it was asked for one file at a time, so
+    /// nothing done around the call makes it safe. Windows asks the same handler for a folder's picture (a PDF inside it)
+    /// and for a shortcut to a PDF (seen in the handler's own log); a cache-only call (ThumbnailOnly | InCacheOnly) and an
+    /// icon call never reach it (seen in the same log). So for these files: Windows' thumbnail cache only (it may hold a
+    /// picture File Explorer made), then Rock Preview's own extractor for the PDF kinds, else the icon. The extension is
+    /// read from the name as Windows opens it: a stream name after ':' is cut off, and trailing spaces and dots are ignored
+    /// ("a.pdf ", "a.pdf." and "a.pdf:x" are PDFs to Windows).
     /// </summary>
     public static bool WindowsCacheOnly(string extensionOrPath, bool isFolder = false)
     {
         if (isFolder) return true;
         string ext = Ext(AsWindowsOpensIt(extensionOrPath));
-        return ext == "lnk" || PdfPages.Contains(ext);
+        return ext is "lnk" or "url" || PdfPages.Contains(ext);
     }
 
     // The path with its file name as Windows opens it: no trailing separators, no alternate data stream (":name" after
@@ -224,14 +229,21 @@ public static class ThumbKinds
     }
 
     /// <summary>
-    /// Whether this kind's thumbnail is a page of the file's own text (source, text, markup, mail, keys...): made each
+    /// Whether this kind's thumbnail is a page of the file's own text (source, text, settings, web pages...): made each
     /// time it is needed and held in memory only. A text page is cheap to make, and a saved one would be a readable
-    /// picture of a file's first lines (perhaps a key or a password) that outlives the file, on a store that may lie on a
+    /// picture of a file's first lines (perhaps a password) that outlives the file, on a store that may lie on a
     /// stick or a shared drive. Files of other kinds can come out as text pages too (an unknown kind that turns out to be
     /// text, a Word file's page or an Excel file's sheet page drawn when it has no thumbnail): the service knows those
     /// only once drawn, and keeps them in memory as well.
     /// </summary>
     public static bool DrawsText(string extensionOrPath) => Text.Contains(Ext(extensionOrPath));
+
+    /// <summary>
+    /// Whether this kind never gets a text page, though its file is text (rtf, eml, mbox, url, svg, ics, lock, map, ipynb,
+    /// geojson, kml, gpx, wkt, gcode, nc, obj, ply, mtl, pem, crt, cer, key, pub, asc): its first lines are markup or
+    /// numbers, or a key. Windows is asked for a picture, else the icon shows; the text sniff after Windows' miss skips it.
+    /// </summary>
+    public static bool NoTextPage(string extensionOrPath) => NoTextPageKinds.Contains(Ext(extensionOrPath));
 
     /// <summary>
     /// Whether a picture of this kind may be kept on disk: exactly the kinds the space estimate counts
@@ -263,8 +275,8 @@ public static class ThumbKinds
             foreach (var ext in set) map[ext] = true;
         map["pdf"] = true;
         // Pages and slides only Windows pictures (from the picture saved in the file): old PowerPoint, PowerPoint slides,
-        // binary Excel, XPS, Visio and Publisher. "pub" is also a key file's name (a text kind): its text page's own border
-        // sits on the same edge pixels, so the outline replaces it rather than adding a second.
+        // binary Excel, XPS, Visio and Publisher. "pub" is also a key file's name: that gets no text page, only Windows'
+        // picture or its icon (NoTextPage), and an icon is never outlined.
         foreach (var ext in new[] { "ppt", "pps", "pot", "sldx", "sldm", "xlsb", "xps", "oxps", "vsd", "vsdx", "vsdm", "vstx", "pub" })
             map[ext] = true;
         map.Remove("ico");
@@ -289,12 +301,6 @@ public static class ThumbKinds
         else if (slash >= 0) return false;
         return s.Length > 0 && PageLike.ContainsKey(s);
     }
-
-    /// <summary>Whether this is a camera RAW kind.</summary>
-    public static bool IsRaw(string extensionOrPath) => Raw.Contains(Ext(extensionOrPath));
-
-    /// <summary>Whether this is a video kind (its picture comes from Windows' extractor).</summary>
-    public static bool IsVideo(string extensionOrPath) => Video.Contains(Ext(extensionOrPath));
 
     /// <summary>
     /// Which kind of stored thumbnail a file of this extension gives, for the space estimate: photos (pictures, PSD,
@@ -332,12 +338,6 @@ public static class ThumbKinds
                 if (CostOfExt(ext) is var cost and not ThumbCost.Nothing) map[ext] = cost;
         return map.GetAlternateLookup<ReadOnlySpan<char>>();
     }
-
-    /// <summary>Whether this is a JPEG (decoded once, at a scale, and may carry an EXIF thumbnail).</summary>
-    public static bool IsJpeg(string extensionOrPath) => Jpeg.Contains(Ext(extensionOrPath));
-
-    /// <summary>Whether this is an animated-capable GIF (only its first frame is decoded).</summary>
-    public static bool IsGif(string extensionOrPath) => Ext(extensionOrPath) == "gif";
 
     /// <summary>The preview inside the file worth reading as a stand-in (never for HEIC).</summary>
     public static EmbeddedPreview EmbeddedPreviewOf(string extensionOrPath)

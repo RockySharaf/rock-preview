@@ -4,7 +4,7 @@ using Box = Anything.Core.HelpWindowPlacement.Box;
 namespace Anything.Tests;
 
 /// <summary>
-/// <see cref="HelpWindowPlacement"/>: where the Search Syntax help opens. It must stay on the screen and leave the
+/// <see cref="HelpWindowPlacement"/>: where the Help window (F1) opens. It must stay on the screen and leave the
 /// search box free whenever the screen has any other room.
 /// </summary>
 public sealed class HelpWindowPlacementTests

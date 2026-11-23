@@ -44,7 +44,7 @@ public sealed class SearchHelpTests
         "rating:", "0-5", "datetaken:", "datetaken:2023", "date-taken:lastweek", "camera:", "cameramake:", "cameramaker:",
         "cameramodel:", "camera:canon", "gps:", "!gps:", "date-taken:", "\"title:draft\"", "\"camera:old.jpg\"",
         // Examples
-        "report pdf", "*.mp3 | *.flac", "ext:jpg;png size:>2mb", "\"my documents\" !temp", "c:\\projects\\ .cs",
+        "report pdf", "*.mp3 | *.flac", "ext:jpg;png size:>2mb", "\"my documents\" !temp", "c:\\projects\\ ext:cs",
         "dm:today folder:", "content:invoice ext:pdf", "dpi:<300 cmyk:", "tags:beach datetaken:2024",
         // The Search menu's switches
         "Ctrl+I", "Ctrl+B", "Ctrl+U", "Ctrl+M", "Ctrl+R",
@@ -355,14 +355,59 @@ public sealed class SearchHelpTests
         Assert.Contains("Ctrl+T, or the + after the tabs, opens a tab", how);
         Assert.Contains("Choose Search options › Kind, or right-click the status bar, to show only audio", how);
         Assert.Contains("In the list of results, drag from an empty part to select with a box, holding Ctrl to add.", how);
-        Assert.Contains("Type how much space it may use in Keep at most (in GB), choose where with Change location, and " +
-            "tick the kinds of files under Keep thumbnails of.", how);
-        Assert.Contains("When it is full, thumbnails of documents are dropped first, then videos, then the oldest pictures; " +
-            "switching a kind off deletes its saved thumbnails.", how);
+        Assert.Contains("Type how much space it may use in Keep at most (in GB) and tick the kinds of files under Keep " +
+            "thumbnails of. Choose where with Change location (the new place starts empty).", how);
+        Assert.Contains("Rename; with one search result selected, it is renamed in place.", keys);
+        // The order in which saved thumbnails go is on the Settings card itself, not repeated here.
+        Assert.DoesNotContain("dropped first", how);
         Assert.Contains($"click {SearchScope.EverythingInsteadLink} in the empty list.", how);
         Assert.Contains("A switch stays as you set it: new tabs, new windows and the next start begin with it.", how);
         Assert.Contains("Go to Home, as in File Explorer (This PC on a Windows without Home).", keys);
         Assert.Contains("In the list of results (not Thumbnails): select with a box", keys);
+    }
+
+    [Theory, MemberData(nameof(Hotkeys))]
+    public void No_sentence_is_over_thirty_words(string? hotkey)
+    {
+        var tooLong = HowToAndKeys(hotkey).SelectMany(e => Regex.Split(e.Meaning, @"(?<=\.)\s+"))
+            .Where(s => s.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length > 30);
+        Assert.Empty(tooLong);
+    }
+
+    [Fact]
+    public void Up_is_told_with_Back_and_Forward()
+    {
+        var rows = Parts[HelpContent.HowTo].Sections.SelectMany(s => s.Entries).ToList();
+        Assert.DoesNotContain(rows, e => e.Code[0] == "Up");
+        Assert.Contains("The up arrow beside them, or Alt+Up, opens the folder that holds this one.",
+            rows.Single(e => e.Code[0] == "Back and Forward").Meaning);
+    }
+
+    [Fact]
+    public void The_kind_that_shows_every_kind_is_not_called_Everything()
+    {
+        // "Everything" is the scope chip's word for searching everywhere; the kind with no filter is "All kinds".
+        Assert.Contains("the \u00D7 beside the button, or All kinds in the same list, shows every kind again.", Parts[HelpContent.HowTo].PlainText());
+    }
+
+    [Fact]
+    public void The_Store_copy_is_told_that_the_Store_updates_it()
+    {
+        static string Updates(bool store) =>
+            HelpContent.Build(null, store)[HelpContent.HowTo].Sections.SelectMany(s => s.Entries).Single(e => e.Code[0] == "Updates").Meaning;
+        Assert.Contains("Update automatically", Updates(store: false));
+        Assert.DoesNotContain("Update automatically", Updates(store: true));
+        Assert.StartsWith("The Microsoft Store keeps Rock Preview up to date.", Updates(store: true));
+        Assert.Contains("Help › Check for Updates", Updates(store: true));
+    }
+
+    [Fact]
+    public void The_syntax_part_says_how_to_try_things_once_in_plain_words()
+    {
+        Assert.Equal("Type these in the search box. Double-click a name or an example to try it.", SearchHelp.Intro);
+        string all = HelpContent.PlainText(Parts);
+        Assert.DoesNotContain("Filter macros", all);
+        Assert.DoesNotContain("caret", all);
     }
 
     // ---- examples ------------------------------------------------------------------------------------------

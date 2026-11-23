@@ -23,7 +23,6 @@ internal sealed class TextView : Control
     // How long finding the first match to scroll to may take on its own; F3 (asked for) may take longer.
     private const int FirstMatchBudgetMs = 80, FindNextBudgetMs = 1500;
     private static readonly (int Start, int Length)[] NoRanges = [];
-    private static readonly Color MatchColor = Color.FromArgb(255, 236, 130), CurrentColor = Color.FromArgb(255, 175, 70);
 
     private string _text = "";
     private string[] _lines = { "" };
@@ -48,8 +47,7 @@ internal sealed class TextView : Control
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint |
                  ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
-        BackColor = SystemColors.Window;
-        ForeColor = Color.FromArgb(30, 30, 30);
+        BackColor = PreviewColors.Now.Background;
         _font = new Font("Consolas", _fontSize);
         Controls.Add(_v);
         Controls.Add(_h);
@@ -315,19 +313,20 @@ internal sealed class TextView : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(BackColor);
+        var colors = PreviewColors.Now;
+        g.Clear(colors.Background);
         int top = _v.Value, left = _h.Value, gw = GutterWidth;
         int vis = VisibleLines + 1, cols = VisibleCols + 2;
         int width = ClientSize.Width - (_vOn ? _v.Width : 0);
         if (ShowLineNumbers)
         {
-            using var gb = new SolidBrush(Color.FromArgb(247, 247, 247));
+            using var gb = new SolidBrush(colors.GutterBack);
             g.FillRectangle(gb, 0, 0, gw - 4, ClientSize.Height);
         }
         int s0 = Math.Min(_selA, _selB), s1 = Math.Max(_selA, _selB);
-        using var selBrush = new SolidBrush(Color.FromArgb(204, 228, 247));
-        using var matchBrush = new SolidBrush(MatchColor);
-        using var currentBrush = new SolidBrush(CurrentColor);
+        using var selBrush = new SolidBrush(colors.Selection);
+        using var matchBrush = new SolidBrush(PreviewColors.Match);
+        using var currentBrush = new SolidBrush(PreviewColors.CurrentMatch);
         const TextFormatFlags flags = TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.NoClipping;
         for (int i = 0; i < vis; i++)
         {
@@ -336,25 +335,32 @@ internal sealed class TextView : Control
             int y = i * _lineH;
             if (_selA >= 0 && ln >= s0 && ln <= s1) g.FillRectangle(selBrush, gw - 4, y, width - gw + 4, _lineH);
             if (ShowLineNumbers)
-                TextRenderer.DrawText(g, (ln + FirstLineNumber).ToString(), _font, new Rectangle(0, y, gw - 10, _lineH), Color.FromArgb(150, 150, 150),
+                TextRenderer.DrawText(g, (ln + FirstLineNumber).ToString(), _font, new Rectangle(0, y, gw - 10, _lineH), colors.LineNumber,
                     flags | TextFormatFlags.Right);
             string line = _lines[ln];
-            if (_find != null) PaintMatches(g, line, ln, left, cols, gw, y, width, matchBrush, currentBrush, flags);
+            if (_find != null) PaintMatches(g, line, ln, left, cols, gw, y, width, matchBrush, currentBrush, flags, null);
             if (left < line.Length)
             {
                 string part = line.Substring(left, Math.Min(cols, line.Length - left));
-                TextRenderer.DrawText(g, part, _font, new Point(gw, y), ForeColor, flags);
+                TextRenderer.DrawText(g, part, _font, new Point(gw, y), colors.Text, flags);
+                // Light body text doesn't read on yellow: the matches are painted again with their own text colour.
+                if (_find != null && colors.MatchText is { } onMatch)
+                    PaintMatches(g, line, ln, left, cols, gw, y, width, matchBrush, currentBrush, flags, (part, onMatch));
             }
         }
         if (ShowLineNumbers)
         {
-            using var p = new Pen(Color.FromArgb(225, 225, 225));
+            using var p = new Pen(colors.GutterLine);
             g.DrawLine(p, gw - 4, 0, gw - 4, ClientSize.Height);
         }
     }
 
-    /// <summary>Fills the visible part of each match on a line behind its text.</summary>
-    private void PaintMatches(Graphics g, string line, int ln, int left, int cols, int gw, int y, int width, Brush match, Brush current, TextFormatFlags flags)
+    /// <summary>
+    /// Fills the visible part of each match on a line behind its text; with <paramref name="text"/>, fills it again over
+    /// the text drawn and draws that text in the colour given, clipped to the match.
+    /// </summary>
+    private void PaintMatches(Graphics g, string line, int ln, int left, int cols, int gw, int y, int width, Brush match, Brush current, TextFormatFlags flags,
+        (string Part, Color Color)? text)
     {
         foreach (var (s, l) in RangesOf(ln))
         {
@@ -362,7 +368,25 @@ internal sealed class TextView : Control
             if (b <= a) continue;
             int x0 = gw + ColumnX(g, line, left, a, flags), x1 = gw + ColumnX(g, line, left, b, flags);
             if (x0 >= width) continue;
-            g.FillRectangle(ln == _curLine && s == _curStart ? current : match, x0, y, Math.Max(2, Math.Min(x1, width) - x0), _lineH);
+            var box = new Rectangle(x0, y, Math.Max(2, Math.Min(x1, width) - x0), _lineH);
+            var fill = ln == _curLine && s == _curStart ? current : match;
+            if (text is not { } t)
+            {
+                g.FillRectangle(fill, box);
+                continue;
+            }
+            var clip = g.Clip;
+            try
+            {
+                g.SetClip(box);
+                g.FillRectangle(fill, box);
+                TextRenderer.DrawText(g, t.Part, _font, new Point(gw, y), t.Color, flags | TextFormatFlags.PreserveGraphicsClipping);
+            }
+            finally
+            {
+                g.Clip = clip;
+                clip.Dispose();
+            }
         }
     }
 

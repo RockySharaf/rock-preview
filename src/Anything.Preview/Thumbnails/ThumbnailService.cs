@@ -1563,7 +1563,8 @@ internal sealed class ThumbnailService : IDisposable
 
     /// <summary>
     /// Shell: Windows' extractor at the size class (for folders, shortcuts and the PDF kinds its thumbnail cache only:
-    /// <see cref="RunCacheOnly"/>), then (for kinds Rock Preview can't decode) the text sniff.
+    /// <see cref="RunCacheOnly"/>), then (for kinds Rock Preview can't decode, except <see cref="ThumbKinds.NoTextPage"/>
+    /// kinds) the text sniff.
     /// </summary>
     private Outcome RunShell(Worker me, Work w)
     {
@@ -1578,10 +1579,14 @@ internal sealed class ThumbnailService : IDisposable
                 return new Outcome { Final = ThumbSources.FitClass(bmp, w.SizeClass), StoreFinal = true };
         }
         else if (!ThumbRules.IsCleanShellNone(hr)) w.Unclean = true;
+        // A cloud placeholder's miss is no fact about the file once it is downloaded (same name, length and time), so
+        // "no picture" is never stored for it for good (also when its picture was thrown away as a blank page).
+        if (w.NotHere) w.Unclean = true;
         // A kind asked of Windows first (fonts, old Word and Excel files): Rock Preview's own extractor is next.
         if (ThumbLanes.DecodeAfterShellMiss(w.Route, w.DecodeTried, w.GateToShell)) return new Outcome { Next = Stage.Decode };
-        // The text sniff reads the file: not one whose contents would be downloaded.
-        if (w.Route == ThumbRoute.Shell && !w.IsFolder && !w.NotHere)
+        // The text sniff reads the file: not one whose contents would be downloaded, and not a kind that never gets a
+        // text page (its icon instead).
+        if (w.Route == ThumbRoute.Shell && !w.IsFolder && !w.NotHere && !ThumbKinds.NoTextPage(w.Path))
         {
             // A text page is never kept on disk, so idle work has nothing to make here (and "no picture" isn't stored
             // for a file that may well be text when someone looks at it).

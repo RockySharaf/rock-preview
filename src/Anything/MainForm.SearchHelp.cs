@@ -2,7 +2,7 @@ using Anything.Core.Search;
 
 namespace Anything;
 
-// What the Search Syntax help (F1) needs from the window that asked for it: where its search box is, and a way to try
+// What the Help window (F1) needs from the window that asked for it: where its search box is, and a way to try
 // a name or an example in it.
 internal sealed partial class MainForm
 {

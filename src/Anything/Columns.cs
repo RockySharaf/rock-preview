@@ -64,7 +64,7 @@ internal static class Filters
     // Icons from Segoe Fluent Icons: Audio, ZipFolder, Document, AppIconDefault, Folder, Picture, Video.
     public static readonly FilterDef[] All =
     [
-        new("Everything", ""),
+        new("All kinds", ""), // not "Everything": that is the scope chip's word for searching everywhere
         new("Audio", "audio:", "audio files", ''),
         new("Compressed", "zip:", "compressed files", ''),
         new("Document", "doc:", "documents", ''),

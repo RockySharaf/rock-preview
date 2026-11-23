@@ -144,6 +144,9 @@ internal sealed partial class MainForm
             _zapListItem.Checked = _zapActive && !_zapThumbs;
             _zapDeepItem.Checked = _app.Settings.ZapIncludeSubfolders;
             _zapEverydayItem.Checked = _app.Settings.EverydayFilesOnly;
+            // Not twice side by side: while the Everyday files button shows, it is the one switch. In a folder, where it
+            // doesn't, these set what every file in the folder will show.
+            _zapEverydayItem.Available = _zapEverydayChooseItem.Available = !_cmdEveryday.Available;
         };
 
         _commands.Items.AddRange([_cmdNew, new ToolStripSeparator(), _cmdCut, _cmdCopy, _cmdPaste, _cmdRename, _cmdShare, _cmdDelete,
@@ -314,15 +317,15 @@ internal sealed partial class MainForm
     }
 
     /// <summary>
-    /// The scope chip was clicked: from a folder (the open one, the selected ones, or every file in one) to everything,
-    /// and from everything back to the folder. It always switches, so it asks <see cref="ScopeButton"/> afresh rather
-    /// than trusting what the chip last showed.
+    /// The scope chip was clicked (<paramref name="chip"/>), or the empty list's link: from a folder (the open one, the
+    /// selected ones, or every file in one) to everything, and from everything back to the folder. It always switches, so
+    /// it asks <see cref="ScopeButton"/> afresh rather than trusting what the chip last showed.
     /// </summary>
-    void ToggleSearchScope()
+    void ToggleSearchScope(bool chip)
     {
         var click = ScopeButton().Click;
         if (click == SearchScope.Click.None) return;
-        if (click == SearchScope.Click.ToEverything) ScopeChipUsed();
+        if (chip) ScopeChipUsed();
         if (_zapActive)
         {
             // Everything leaves "every file in", keeping what's typed, and its thumbnails if the files showed as them.

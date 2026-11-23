@@ -2,10 +2,9 @@ namespace Anything.Core;
 
 /// <summary>
 /// Rules for a shell preview handler that could not be created (Office's previewers among them): what to tell the
-/// user, which program the handler runs in, which of that program's windows is a message waiting for an answer, how
-/// often to ask a program that was busy a moment ago, and whether its message may be pulled to the front now. Pure
-/// decisions on plain facts (times are passed in), so they are tested; the preview pane gathers the facts from COM,
-/// Win32 and the clock.
+/// user, which program the handler runs in, and how often to ask a program that was busy a moment ago. Pure decisions
+/// on plain facts (times are passed in), so they are tested; the preview pane gathers the facts from COM, the registry
+/// and the clock.
 /// </summary>
 public static class PreviewHandlerRules
 {
@@ -23,20 +22,6 @@ public static class PreviewHandlerRules
     /// <summary>REGDB_E_CLASSNOTREG: no server of this kind is registered (the usual answer of the in-process attempt
     /// for a handler that runs only in its own program).</summary>
     public const int ClassNotRegistered = unchecked((int)0x80040154);
-
-    /// <summary>What became of the search for a message the handler's busy program is waiting on.</summary>
-    public enum WaitingMessage
-    {
-        /// <summary>No waiting message was found, the program was not searched, or the window found is not responding
-        /// (it is then left alone).</summary>
-        NotFound,
-        /// <summary>The message was found and brought to the front.</summary>
-        BroughtToFront,
-        /// <summary>The message was found but only flashed in the taskbar: Windows refused the foreground, the user
-        /// was pressing keys or clicking just then, or it was brought to the front once before and is not pulled
-        /// forward again.</summary>
-        FlashedOnly,
-    }
 
     /// <summary>
     /// The handler's program turned the creation away: <see cref="ServerCallRetryLater"/> or <see cref="CallRejected"/>,
@@ -65,132 +50,61 @@ public static class PreviewHandlerRules
         return since >= 0 && since < BusyMemoryMs ? 1 : FullCreateAttempts;
     }
 
-    /// <summary>The user must have pressed or clicked nothing for this long before a waiting message is pulled forward.</summary>
-    public const uint QuietInputMs = 700;
-
     /// <summary>
-    /// Milliseconds since the last input, from GetTickCount and GetLastInputInfo's tick (both 32-bit, wrapping about
-    /// every 49.7 days: the unsigned difference stays right across a wrap).
+    /// The program's name when it is worth telling the user (see <see cref="ProgramName"/>); null when it is not known
+    /// or is a shared host, since closing that would not help, or could not be done.
     /// </summary>
-    public static uint InputIdleMs(uint nowTick, uint lastInputTick) => unchecked(nowTick - lastInputTick);
-
-    /// <summary>
-    /// A waiting message may be brought to the front only while the user is not typing or clicking: nothing pressed or
-    /// clicked for <see cref="QuietInputMs"/> and no key or mouse button held down. Otherwise the user's next key
-    /// (Enter, Space, a button's letter), meant for the file list, would answer that message unread.
-    /// </summary>
-    public static bool MayTakeForeground(uint idleMs, bool inputDown) => !inputDown && idleMs >= QuietInputMs;
-
-    /// <summary>What to do with the waiting message that was found.</summary>
-    public enum WaitingAction
+    public static string? NamedProgram(string? program)
     {
-        /// <summary>Leave it alone: its window is not responding, and even flashing it could wait on it.</summary>
-        Leave,
-        /// <summary>Only flash its taskbar button.</summary>
-        Flash,
-        /// <summary>Try to bring it to the front (flash it if Windows refuses).</summary>
-        BringForward,
+        if (string.IsNullOrWhiteSpace(program)) return null;
+        string p = program.Trim();
+        if (p.Equals("the previewer", StringComparison.OrdinalIgnoreCase) || IsSharedHost(p)) return null;
+        return p;
     }
 
     /// <summary>
-    /// What to do with a waiting message found: a window that is not responding is left alone; one brought to the front
-    /// before (<see cref="SameWaitingWindow"/>) or found while the user is typing or clicking
-    /// (<see cref="MayTakeForeground"/>) is only flashed; otherwise it is brought forward.
+    /// What to do about a busy previewer, without its code: a named program (<see cref="NamedProgram"/>) is named and
+    /// the user told how to close it; otherwise only to try again.
     /// </summary>
-    public static WaitingAction WaitingWindowAction(bool hung, bool broughtBefore, uint idleMs, bool inputDown)
-    {
-        if (hung) return WaitingAction.Leave;
-        if (broughtBefore || !MayTakeForeground(idleMs, inputDown)) return WaitingAction.Flash;
-        return WaitingAction.BringForward;
-    }
-
-    /// <summary>How often a message that was only flashed is looked at again, to bring it forward once the user is quiet.</summary>
-    public const int RetryIntervalMs = 400;
-
-    /// <summary>Most looks again after the last call that asked for them: 15 x 400 ms, six seconds.</summary>
-    public const int MaxRetryTicks = 15;
+    public static string BusyAdvice(string? namedProgram) => namedProgram is { Length: > 0 } p
+        // Its windows may all be hidden, so Task Manager is named as the way to close it.
+        ? p + " is busy. If it stays busy, close " + p + " (in Task Manager if none of its windows is open) and select the file again."
+        : "The previewer is busy. Select the file again in a moment.";
 
     /// <summary>
-    /// Whether to look at a waiting message again later: it was only flashed because the user was typing or clicking
-    /// (not because it is not responding or was brought forward before). A message box owned by a hidden program has no
-    /// taskbar button, so its flash cannot be seen, and the selection that found it is nearly always just made.
+    /// The line under a preview that Rock Preview made itself because the previewer was busy: "shown as text" for a
+    /// text or document view, otherwise "a simpler view" (a table, or a picture that may come from Windows).
     /// </summary>
-    public static bool RetryAfterFlash(bool hung, bool broughtBefore, uint idleMs, bool inputDown)
-        => !hung && !broughtBefore && !MayTakeForeground(idleMs, inputDown);
-
-    /// <summary>What a look again found for the same program.</summary>
-    public enum WaitingLook
+    public static string BusyFooter(string? namedProgram, bool asText)
     {
-        /// <summary>No waiting message (it was answered, or its program is gone).</summary>
-        NoWindow,
-        /// <summary>A waiting message whose window is not responding.</summary>
-        Hung,
-        /// <summary>The message that was brought to the front before (<see cref="SameWaitingWindow"/>).</summary>
-        BroughtBefore,
-        /// <summary>A waiting message that may be brought forward when the user is quiet.</summary>
-        Found,
-    }
-
-    /// <summary>What to do after a look again.</summary>
-    public enum RetryStep
-    {
-        /// <summary>Look again at the next tick.</summary>
-        LookAgain,
-        /// <summary>Bring the message forward and stop looking.</summary>
-        BringForwardAndStop,
-        /// <summary>Stop looking.</summary>
-        Stop,
-    }
-
-    /// <summary>
-    /// After a look again (ticksRun of them so far, this one included): a found message is brought forward once the user
-    /// is quiet (<see cref="MayTakeForeground"/>); no message, one not responding or one brought forward before ends the
-    /// looking; otherwise it goes on, at most <see cref="MaxRetryTicks"/> looks.
-    /// </summary>
-    public static RetryStep WaitingRetryStep(WaitingLook look, uint idleMs, bool inputDown, int ticksRun)
-    {
-        if (look != WaitingLook.Found) return RetryStep.Stop;
-        if (MayTakeForeground(idleMs, inputDown)) return RetryStep.BringForwardAndStop;
-        return ticksRun >= MaxRetryTicks ? RetryStep.Stop : RetryStep.LookAgain;
+        string who = namedProgram is { Length: > 0 } p ? p : "The previewer";
+        return who + (asText ? " is busy, so this is shown as text" : " is busy, so a simpler view is shown")
+            + " (hover here for what to do)";
     }
 
     /// <summary>
     /// The error shown when the handler could not be created, from what the out-of-process and the in-process attempts
-    /// answered (0 for an attempt that was not made or that answered nothing useful), the program's name (see
-    /// <see cref="ProgramName"/>) and what became of the search for a message it is waiting on. A busy program with no
-    /// message found is named and the user told how to close it, unless its name is not known or it is a shared host
-    /// (closing that would not help, or could not be done). The code goes last, in brackets, so a narrow line cuts the
-    /// code and not the advice.
+    /// answered (0 for an attempt that was not made or that answered nothing useful) and the program's name (see
+    /// <see cref="ProgramName"/>). A busy program gets <see cref="BusyAdvice"/>. The code goes last, in brackets, so a
+    /// narrow line cuts the code and not the advice.
     /// </summary>
-    public static string CreateError(int localHr, int inprocHr, string program, WaitingMessage waiting)
+    public static string CreateError(int localHr, int inprocHr, string program)
     {
-        if (string.IsNullOrWhiteSpace(program)) program = "the previewer";
-        bool named = !program.Equals("the previewer", StringComparison.OrdinalIgnoreCase) && !IsSharedHost(program);
         string text;
         int code;
         if (IsBusy(localHr))
         {
-            text = waiting switch
-            {
-                WaitingMessage.BroughtToFront => program + " is waiting for an answer in one of its windows. "
-                    + "Its message is now in front: answer it, then select the file again.",
-                WaitingMessage.FlashedOnly => program + " is waiting for an answer in one of its windows. "
-                    + "Look for its message (it may be behind other windows), answer it, then select the file again.",
-                // Its windows may all be hidden, so Task Manager is named as the way to close it.
-                _ when named => program + " is busy. If it stays busy, close " + program
-                    + " (in Task Manager if none of its windows is open) and select the file again.",
-                _ => "The previewer is busy. Select the file again in a moment.",
-            };
+            text = BusyAdvice(NamedProgram(program));
             code = localHr;
         }
         else if (localHr == ServerExecFailure)
         {
-            text = program + " could not be started";
+            text = (string.IsNullOrWhiteSpace(program) ? "the previewer" : program) + " could not be started";
             code = localHr;
         }
         else
         {
-            text = "could not create handler";
+            text = "the previewer could not be started";
             code = TellingCode(localHr, inprocHr);
         }
         return code == 0 ? text : text + " (0x" + code.ToString("X8") + ")";
@@ -254,16 +168,15 @@ public static class PreviewHandlerRules
         };
     }
 
-    /// <summary>Programs that host many unrelated things (COM surrogates, the shell, service hosts, the preview host),
-    /// so a window of theirs says nothing about the handler: they are never searched for a waiting message.</summary>
+    /// <summary>Programs that host many unrelated things (COM surrogates, the shell, service hosts, the preview host).</summary>
     private static readonly HashSet<string> SharedHosts = new(StringComparer.OrdinalIgnoreCase)
     {
         "dllhost", "explorer", "svchost", "prevhost", "rundll32", "sihost", "runtimebroker",
     };
 
     /// <summary>
-    /// The handler's program (a path, a file name, or a name without ".exe") is one that many things run in, so its
-    /// windows are not searched and the plain busy message is used. False for null or empty.
+    /// The handler's program (a path, a file name, or a name without ".exe") is one that many things run in, so it is
+    /// not named in the busy advice. False for null or empty.
     /// </summary>
     public static bool IsSharedHost(string? program)
     {
@@ -274,47 +187,4 @@ public static class PreviewHandlerRules
         if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) name = name[..^4];
         return SharedHosts.Contains(name);
     }
-
-    /// <summary>
-    /// The window now found waiting is the one brought to the front last time: the same handle in the same process,
-    /// and that process was not started after that time (a process id can be reused). An unknown start time (the
-    /// process could not be asked) does not count against it. Such a window is only flashed, never pulled forward
-    /// again, so keys meant for the file list do not land in it.
-    /// </summary>
-    public static bool SameWaitingWindow(
-        nint hwnd, uint pid, DateTime? processStartUtc, nint lastHwnd, uint lastPid, DateTime lastBroughtUtc)
-        => lastHwnd != 0 && hwnd == lastHwnd && pid == lastPid
-           && (processStartUtc is not DateTime start || start <= lastBroughtUtc);
-
-    /// <summary>The facts about one top-level window of the handler's program.</summary>
-    /// <param name="ClassName">Its window class.</param>
-    /// <param name="Visible">It is visible.</param>
-    /// <param name="Enabled">It takes input.</param>
-    /// <param name="HasOwner">It has an owner window (GW_OWNER).</param>
-    /// <param name="ProcessHasVisibleMainWindow">Its process shows another visible, unowned window, whether or not
-    /// that window takes input.</param>
-    public readonly record struct WindowFacts(
-        string? ClassName, bool Visible, bool Enabled, bool HasOwner, bool ProcessHasVisibleMainWindow);
-
-    /// <summary>
-    /// How surely a window is a message a hidden program is waiting on: 0 not at all; 1 a visible, enabled, owned
-    /// window; 2 the same with a dialog's class (the standard dialog "#32770", Office's "NUIDialog" and "bosa_sdm_"
-    /// dialogs), or an unowned dialog. Only a process that shows no visible main window at all is a hidden program: a
-    /// visible main window, even a disabled one, is the user's own open program (a main window is disabled exactly
-    /// while the program shows its own box to the user), and its windows are never touched. An unowned window of
-    /// another class is the program's own main window, never a waiting message.
-    /// </summary>
-    public static int WaitingDialogRank(WindowFacts f)
-    {
-        if (f.ProcessHasVisibleMainWindow) return 0;
-        if (!f.Visible || !f.Enabled) return 0;
-        bool dialog = IsDialogClass(f.ClassName);
-        if (!f.HasOwner) return dialog ? 2 : 0;
-        return dialog ? 2 : 1;
-    }
-
-    /// <summary>A window class that dialogs and message boxes use.</summary>
-    public static bool IsDialogClass(string? className)
-        => className is "#32770" or "NUIDialog"
-           || (className != null && className.StartsWith("bosa_sdm_", StringComparison.Ordinal));
 }

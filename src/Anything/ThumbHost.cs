@@ -134,9 +134,6 @@ internal static class ThumbHost
         return _started ? ThumbnailService.Shared.UseStore(open) : Task.FromResult(true);
     }
 
-    /// <summary>The store open now (null while none is, or the service hasn't started): Settings' line about it.</summary>
-    public static ThumbStore? CurrentStore => _started ? ThumbnailService.Shared.CurrentStore : null;
-
     /// <summary>What the open store takes now; -1 when none is open.</summary>
     public static long StoreSizeBytes => _started ? ThumbnailService.Shared.StoreSizeBytes : -1;
 
@@ -170,8 +167,11 @@ internal static class ThumbHost
     /// <summary>Whether the store in use is full now (false while none is open). Any thread; cheap.</summary>
     public static bool StoreIsFull => Volatile.Read(ref _started) && ThumbnailService.Shared.StoreIsFull;
 
-    /// <summary>Whether the store in use refuses new pictures because its drive is nearly full (false while none is open). Any thread; cheap.</summary>
-    public static bool StoreDiskLow => Volatile.Read(ref _started) && ThumbnailService.Shared.StoreDiskLow;
+    /// <summary>
+    /// Whether the store in use is full because it holds as many thumbnails as it can, not because of the limit (false
+    /// while none is open). Any thread; cheap.
+    /// </summary>
+    public static bool StoreFullByCount => Volatile.Read(ref _started) && ThumbnailService.Shared.CurrentStore is { IsEnabled: true } store && store.FullByCount;
 
     /// <summary>Settings' Clear: the store is emptied, and what the service remembers in memory is forgotten.</summary>
     public static void ClearStore()

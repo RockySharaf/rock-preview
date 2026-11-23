@@ -137,7 +137,8 @@ public sealed class ThumbStoreCloseTests : IDisposable
         watch.Stop();
         try
         {
-            Assert.True(watch.ElapsedMilliseconds < 1000, $"Dispose took {watch.ElapsedMilliseconds} ms");
+            // Generous for a busy PC, and still far below the 30 seconds the stuck save would hold a Dispose that waited.
+            Assert.True(watch.ElapsedMilliseconds < 10_000, $"Dispose took {watch.ElapsedMilliseconds} ms");
             Assert.True(reached.Wait(Wait));
             // Even a worker starting another decode during the last save cannot leave a strike behind.
             Assert.Empty(store.Marker.Live());

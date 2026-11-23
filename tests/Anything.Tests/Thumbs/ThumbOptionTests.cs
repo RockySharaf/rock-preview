@@ -122,7 +122,7 @@ public sealed class ThumbOptionTests
 
     [Fact]
     public void The_question_before_lowering_says_what_the_store_holds_and_the_new_limit()
-        => Assert.Equal("The store holds 3.0 GB now. With a limit of 2 GB, the oldest thumbnails are deleted until it fits. Lower the limit?",
+        => Assert.Equal("The saved thumbnails take 3.0 GB now. With a limit of 2 GB, thumbnails are deleted until they fit. Lower the limit?",
             ThumbOption.LowerLimitQuestion(3_000_000_000, 2000));
 
     // The size is rounded up and the limit said exactly, so a store just over the limit never reads the same as it.
@@ -134,7 +134,7 @@ public sealed class ThumbOptionTests
     [InlineData(100_001_000_000L, 100_000, "101 GB", "100 GB")]
     [InlineData(1_001_000_000_000L, 1_000_000, "1.1 TB", "1 TB")]
     public void The_question_before_lowering_shows_a_store_just_over_the_limit_as_more(long storeBytes, int newMb, string held, string limit)
-        => Assert.Equal($"The store holds {held} now. With a limit of {limit}, the oldest thumbnails are deleted until it fits. Lower the limit?",
+        => Assert.Equal($"The saved thumbnails take {held} now. With a limit of {limit}, thumbnails are deleted until they fit. Lower the limit?",
             ThumbOption.LowerLimitQuestion(storeBytes, newMb));
 
     [Fact]
@@ -231,15 +231,15 @@ public sealed class ThumbOptionTests
     {
         // 100,000 photos at 13 KB (class 256): 1,300,000,000 bytes, "about 1.3 GB". From 10,000 up the count is rounded.
         Assert.Equal(Gain + "For the roughly 100,000 pictures, videos and documents on this PC they could take about 1.3 GB; " +
-                     "Rock Preview keeps at most 500 MB and drops the oldest when that is full.",
+                     "Rock Preview keeps at most 500 MB.",
             ThumbOption.EstimateText(Census(100_000), indexingComplete: true, 500, 256));
         // At a thumbnail size of the large class the same files take about three times as much (40 KB each).
         Assert.Contains("could take about 4.0 GB;", ThumbOption.EstimateText(Census(100_000), true, 500, 400));
-        Assert.Contains("keeps at most 2 GB and", ThumbOption.EstimateText(Census(100_000), true, 2000, 256));
-        Assert.Contains("keeps at most 120 GB and", ThumbOption.EstimateText(Census(100_000), true, 120_000, 256));
+        Assert.EndsWith("keeps at most 2 GB.", ThumbOption.EstimateText(Census(100_000), true, 2000, 256));
+        Assert.EndsWith("keeps at most 120 GB.", ThumbOption.EstimateText(Census(100_000), true, 120_000, 256));
         // One file: the grammar of one. Too little to put a figure on: never "about under 10 MB".
         Assert.Equal(Gain + "For the 1 picture, video or document on this PC it could take less than 10 MB; " +
-                     "Rock Preview keeps at most 500 MB and drops the oldest when that is full.",
+                     "Rock Preview keeps at most 500 MB.",
             ThumbOption.EstimateText(Census(1), true, 500, 256));
         Assert.Equal(Gain + "No pictures, videos or documents were found on this PC, so this takes almost no space; " +
                      "Rock Preview keeps at most 500 MB.",
@@ -292,12 +292,92 @@ public sealed class ThumbOptionTests
     }
 
     [Fact]
-    public void Turning_off_says_how_much_space_it_frees_when_that_is_known()
+    public void Turning_off_says_how_much_space_it_frees()
+        => Assert.Equal("The saved thumbnails are deleted, which frees 123 MB. Thumbnails go on working the normal way: made as you browse, not kept.",
+            ThumbOption.TurnOffQuestion(123_456_789));
+
+    [Theory]
+    // Nothing saved, a few KB, or a size that couldn't be measured (read as 0): it just turns off.
+    [InlineData(0L, false)]
+    [InlineData(999_999L, false)]
+    [InlineData(-1L, false)]
+    // 1 MB or more: asked first.
+    [InlineData(1_000_000L, true)]
+    [InlineData(123_456_789L, true)]
+    public void Turning_off_asks_only_when_something_is_saved(long storeBytes, bool ask)
+        => Assert.Equal(ask, ThumbOption.AskBeforeTurningOff(storeBytes));
+
+    [Fact]
+    public void A_new_location_says_the_old_thumbnails_were_deleted_only_when_they_were()
     {
-        Assert.Contains("which frees 123 MB.", ThumbOption.TurnOffQuestion(123_456_789));
-        Assert.Contains("normal way", ThumbOption.TurnOffQuestion(123_456_789));
-        Assert.DoesNotContain("frees", ThumbOption.TurnOffQuestion(-1));
-        Assert.DoesNotContain("frees", ThumbOption.TurnOffQuestion(1000));
+        const string deleted = "Thumbnails are saved in the new place from now on. The ones in the old place were deleted.";
+        Assert.Equal(deleted, ThumbOption.MovedNote(moved: true, optionOn: true, heldBytes: 5_000_000, StoreRemoval.Removed));
+        // Not moved, the option off, nothing saved, size unknown, or the old folder not (all) removed: nothing said here.
+        Assert.Equal("", ThumbOption.MovedNote(moved: false, optionOn: true, heldBytes: 5_000_000, StoreRemoval.Removed));
+        Assert.Equal("", ThumbOption.MovedNote(moved: true, optionOn: false, heldBytes: 5_000_000, StoreRemoval.Removed));
+        Assert.Equal("", ThumbOption.MovedNote(moved: true, optionOn: true, heldBytes: 0, StoreRemoval.Removed));
+        // An empty index alone is not saved thumbnails; 64 KB is.
+        Assert.Equal("", ThumbOption.MovedNote(moved: true, optionOn: true, heldBytes: 64 * 1024 - 1, StoreRemoval.Removed));
+        Assert.Equal(deleted, ThumbOption.MovedNote(moved: true, optionOn: true, heldBytes: 64 * 1024, StoreRemoval.Removed));
+        Assert.Equal("", ThumbOption.MovedNote(moved: true, optionOn: true, heldBytes: -1, StoreRemoval.Removed));
+        Assert.Equal("", ThumbOption.MovedNote(moved: true, optionOn: true, heldBytes: 5_000_000, StoreRemoval.NotThere));
+        Assert.Equal("", ThumbOption.MovedNote(moved: true, optionOn: true, heldBytes: 5_000_000, StoreRemoval.LeftAlone));
+        Assert.Equal("", ThumbOption.MovedNote(moved: true, optionOn: true, heldBytes: 5_000_000, StoreRemoval.Failed));
+    }
+
+    [Fact]
+    public void Full_at_the_most_thumbnails_it_can_hold_does_not_suggest_a_higher_limit()
+    {
+        Assert.Equal("Full: Instant thumbnails holds as many thumbnails as it can (3 million). New pictures replace the oldest ones.", ThumbOption.FullByCountText);
+        Assert.Equal("Instant thumbnails holds as many thumbnails as it can. The oldest make room for new ones.", ThumbOption.FullByCountBarText);
+        Assert.DoesNotContain("limit", ThumbOption.FullByCountText);
+        Assert.DoesNotContain("limit", ThumbOption.FullByCountBarText);
+        // The bar: Raise the limit only when the limit is the reason.
+        Assert.Equal((ThumbOption.FullByCountBarText, false), ThumbOption.FullBar(byCount: true, 8000));
+        Assert.Equal((ThumbOption.FullBarText(8000), true), ThumbOption.FullBar(byCount: false, 8000));
+    }
+
+    [Fact]
+    public void The_full_bar_counts_as_told_when_it_shows_so_it_does_not_come_back_at_the_next_start()
+    {
+        int toldAt = 0;
+        bool toldThisRun = false;
+        Assert.True(ThumbOption.TakeFullNotice(8000, ref toldAt, ref toldThisRun));
+        Assert.Equal(8000, toldAt);
+        Assert.True(toldThisRun);
+        // Not again in this run.
+        Assert.False(ThumbOption.TakeFullNotice(8000, ref toldAt, ref toldThisRun));
+        // The next start (a new run, the saved limit read back), nothing answered: not again for this limit.
+        toldThisRun = false;
+        Assert.False(ThumbOption.TakeFullNotice(8000, ref toldAt, ref toldThisRun));
+        Assert.False(toldThisRun);
+        // Another limit tells again.
+        Assert.True(ThumbOption.TakeFullNotice(12_000, ref toldAt, ref toldThisRun));
+        Assert.Equal(12_000, toldAt);
+    }
+
+    [Fact]
+    public void Lowering_the_limit_below_what_is_saved_counts_as_told_and_nothing_else_does()
+    {
+        long saved = 5000 * ThumbStore.BytesPerMegabyte;
+        // Lowered below what is saved: the user confirmed thumbnails will be deleted.
+        Assert.True(ThumbOption.LoweredLimitIsTold(8000, 2000, saved));
+        // Lowered to a size still above what is saved: nothing will be deleted, nothing told.
+        Assert.False(ThumbOption.LoweredLimitIsTold(8000, 6000, saved));
+        // Raised, or kept.
+        Assert.False(ThumbOption.LoweredLimitIsTold(2000, 8000, saved));
+        Assert.False(ThumbOption.LoweredLimitIsTold(2000, 2000, saved));
+        // The store isn't open: nothing known to delete.
+        Assert.False(ThumbOption.LoweredLimitIsTold(8000, 2000, -1));
+    }
+
+    [Fact]
+    public void Enough_for_everything_is_not_offered_for_more_files_than_the_store_can_hold()
+    {
+        Assert.False(ThumbOption.OffersEnough(0));
+        Assert.True(ThumbOption.OffersEnough(1));
+        Assert.True(ThumbOption.OffersEnough(ThumbStore.MaxRecords));
+        Assert.False(ThumbOption.OffersEnough(ThumbStore.MaxRecords + 1L));
     }
 
     [Fact]
@@ -307,8 +387,6 @@ public sealed class ThumbOptionTests
         Assert.Equal("", ThumbOption.ProblemText(ThumbStoreProblem.Off));
         Assert.Contains("can't be used", ThumbOption.ProblemText(ThumbStoreProblem.FolderUnusable));
         Assert.Contains("Another copy of Rock Preview", ThumbOption.ProblemText(ThumbStoreProblem.InUse));
-        Assert.Equal("", ThumbOption.FreeSpaceText(-1));
-        Assert.Equal("120 GB free on this drive", ThumbOption.FreeSpaceText(120_000_000_000));
     }
 
     [Fact]

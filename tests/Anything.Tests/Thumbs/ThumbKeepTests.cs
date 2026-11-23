@@ -67,10 +67,14 @@ public sealed class ThumbKeepTests
         Assert.False(none.Keeps("a.mp4"));
         Assert.False(none.Keeps("a.pdf"));
         Assert.Equal("Nothing is being saved.", ThumbOption.KeepNote(none));
-        // The store keeps the kinds apart now: switching one off deletes its thumbnails; types left out still stay.
-        Assert.Equal("When the store is full, thumbnails of documents are dropped first, then videos, then the oldest pictures. "
-            + "Switching a kind off deletes its saved thumbnails; those of the file types listed here stay until the store needs their room, or until you clear it.",
+        // The store keeps the kinds apart now: switching one off deletes its thumbnails.
+        Assert.Equal("When it is full, thumbnails of documents are dropped first, then videos, then the oldest pictures. "
+            + "Switching a kind off deletes its saved thumbnails.",
             ThumbOption.KeepNote(ThumbKeep.All));
+        // Types left out still stay: said only when some are listed.
+        Assert.Equal("When it is full, thumbnails of documents are dropped first, then videos, then the oldest pictures. "
+            + "Switching a kind off deletes its saved thumbnails. Those already saved for the file types listed stay until room is needed, or until you clear them.",
+            ThumbOption.KeepNote(Keep(skip: "pdf")));
         // A store carried over from an earlier version: its thumbnails carry no kind, so neither rule holds for them.
         Assert.EndsWith(" Thumbnails saved by an earlier version go first, and stay when you switch a kind off.", ThumbOption.KeepNote(ThumbKeep.All, earlierSaved: true));
         Assert.Equal("Nothing is being saved.", ThumbOption.KeepNote(none, earlierSaved: true));
@@ -188,8 +192,11 @@ public sealed class ThumbKeepTests
         var census = ThumbEstimator.Count(["a.jpg", "b.jpg"], keep: Keep(videos: false));
         string text = ThumbOption.EstimateText(census, true, 500, 256, Keep(videos: false));
         Assert.Contains("For the 2 files of the types you chose on this PC they could take less than 10 MB;", text);
-        string none = ThumbOption.EstimateText(new ThumbCensus(0, 0, 0, 3, true), true, 500, 256, Keep(false, false, false));
-        Assert.Contains("No files of the types you chose were found on this PC, so this takes almost no space; Rock Preview keeps at most 500 MB.", none);
+        string few = ThumbOption.EstimateText(new ThumbCensus(0, 0, 0, 3, true), true, 500, 256, Keep(skip: "jpg png pdf"));
+        Assert.EndsWith(" No files of the types you chose were found on this PC, so this takes almost no space; Rock Preview keeps at most 500 MB.", few);
+        // No kind ticked: only the gain (the note under the boxes says nothing is being saved).
+        Assert.Equal("Thumbnails you have seen before appear at once, also after a restart, because small copies are kept on disk.",
+            ThumbOption.EstimateText(new ThumbCensus(0, 0, 0, 3, true), true, 500, 256, Keep(false, false, false)));
         // Everything ticked reads as before.
         Assert.Equal(ThumbOption.EstimateText(census, true, 500, 256), ThumbOption.EstimateText(census, true, 500, 256, ThumbKeep.All));
     }
@@ -230,7 +237,7 @@ public sealed class ThumbKeepTests
     public void Enough_for_everything_is_the_estimate_rounded_up_to_whole_GB(long bytes, int mb)
     {
         Assert.Equal(mb, ThumbOption.EnoughMegabytes(bytes));
-        Assert.StartsWith("Enough for everything: ", ThumbOption.EnoughText(mb));
+        Assert.Equal($"Use {ThumbOption.CapText(mb)}: enough for everything on this PC", ThumbOption.EnoughText(mb));
     }
 
     [Fact]
@@ -252,7 +259,7 @@ public sealed class ThumbKeepTests
         Assert.Equal("Instant thumbnails is full (8 GB). To make room, documents and videos go first, then the oldest pictures.", ThumbOption.FullBarText(8000));
         Assert.Equal("Instant thumbnails is full (120 GB). To make room, documents and videos go first, then the oldest pictures.", ThumbOption.FullBarText(120_000));
         Assert.Equal("Not saving new thumbnails now: drive E: is nearly full.", ThumbOption.DiskLowText(@"E:\Rock Preview Thumbnails"));
-        Assert.Equal("Full: to keep your pictures, thumbnails of documents and videos go first, and new ones aren't saved while it is full. Raise the limit to keep more.", ThumbOption.FullText);
+        Assert.Equal("Full: new pictures replace the oldest ones. Thumbnails of documents and videos go first, and once theirs are gone, new ones aren't saved. Raise the limit to keep more.", ThumbOption.FullText);
     }
 
     [Theory]

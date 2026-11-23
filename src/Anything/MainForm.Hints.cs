@@ -83,73 +83,11 @@ internal sealed partial class MainForm
     {
         _hintDelay.Dispose();
         _hintPulse.Dispose();
-        _scopeHintDelay.Dispose();
-        _scopeHintPulse.Dispose();
         _pointerDelay.Dispose();
         _pointer?.Dismiss();
     }
 
-    // ---- the search box's folder button ---------------------------------------------------------
-
-    /// <summary>Clicked this often to search everything, the user knows it: it no longer lights up.</summary>
-    const int ScopeHintUntilUses = 3;
-
-    readonly System.Windows.Forms.Timer _scopeHintDelay = new() { Interval = 3000 }; // nothing found for 3 seconds: the user is waiting
-    readonly System.Windows.Forms.Timer _scopeHintPulse = new() { Interval = 30 };
-    long _scopeHintStarted;
-    bool _scopeHintAnimate, _scopeHintBuilt;
-
-    /// <summary>
-    /// A search inside a folder found nothing: the user may not know it looked only there. Once nothing has been found for
-    /// 3 seconds, the folder's button at the start of the search box pulses in the accent colour (a still highlight when Windows'
-    /// animations are off), saying "click me to search everything". Not once it has been used for that 3 times.
-    /// </summary>
-    void UpdateScopeHint()
-    {
-        if (!_scopeHintBuilt)
-        {
-            _scopeHintBuilt = true;
-            _scopeHintDelay.Tick += (_, _) => { _scopeHintDelay.Stop(); StartScopeHint(); };
-            _scopeHintPulse.Tick += (_, _) => PulseScopeHint();
-        }
-        if (!ScopeHintWanted()) { StopScopeHint(); return; }
-        if (_scopeHintPulse.Enabled) return; // already showing for these results
-        _scopeHintDelay.Stop();
-        _scopeHintDelay.Start();
-    }
-
-    /// <summary>Nothing found by a search that looked only in a folder, and the button not yet used enough to be known.</summary>
-    bool ScopeHintWanted() => _loaded && !IsDisposed && _search.TextLength > 0 && !_searchPending && _ids.Length == 0
-                              && _app.Settings.ScopeChipUses < ScopeHintUntilUses && ScopeButton().Click == SearchScope.Click.ToEverything;
-
-    void StartScopeHint()
-    {
-        if (!ScopeHintWanted() || ActiveForm != this) return;
-        _scopeHintAnimate = AnimationsOn();
-        _scopeHintStarted = Environment.TickCount64;
-        _scopeHintPulse.Start();
-        PulseScopeHint();
-    }
-
-    void PulseScopeHint()
-    {
-        long t = Environment.TickCount64 - _scopeHintStarted;
-        if (IsDisposed || !ScopeHintWanted()) { StopScopeHint(); return; }
-        // Three pulses, then it stays lightly lit while nothing is found (a still highlight without animations).
-        float amount = !_scopeHintAnimate ? 1f
-            : t < HintPulses * HintPulseMs ? (float)(0.5 - 0.5 * Math.Cos(2 * Math.PI * (t % HintPulseMs) / HintPulseMs))
-            : 0.35f;
-        _searchField.SetScopeGlow(Math.Max(amount, PointerGlow));
-    }
-
-    void StopScopeHint()
-    {
-        _scopeHintDelay.Stop();
-        _scopeHintPulse.Stop();
-        _searchField.SetScopeGlow(PointerGlow);
-    }
-
-    // ---- the pointer at the search box's scope, for new users -----------------------------------
+    // ---- the pointer at the search box's scope, for those who haven't used it ---------------------
 
     /// <summary>Shown on this start of the program already (one showing per start, whichever window).</summary>
     static bool s_scopePointerShown;
@@ -163,9 +101,6 @@ internal sealed partial class MainForm
     readonly System.Windows.Forms.Timer _pointerDelay = new() { Interval = 1500 };
     ScopePointer? _pointer;
 
-    /// <summary>The chip is lit while the pointer points at it.</summary>
-    float PointerGlow => _pointer is null ? 0f : 1f;
-
     void BuildScopePointer()
     {
         _pointerDelay.Tick += (_, _) => { _pointerDelay.Stop(); ShowScopePointer(); };
@@ -175,10 +110,14 @@ internal sealed partial class MainForm
         _searchField.ScopeClicked += () => _pointer?.Dismiss();
     }
 
-    /// <summary>The window came to the front: on the first starts, the pointer shows in a moment, if it still is.</summary>
+    /// <summary>Whether the pointer is still to show on this start, as far as the settings and this start can tell.</summary>
+    bool ScopePointerWanted(bool chipVisible) => ScopePointerRules.Wanted(_app.Settings.ScopePointerStarts, _app.IsDemo,
+        s_scopePointerShown || s_scopePointerGaveUp, chipVisible, _app.Settings.ScopeChipUses);
+
+    /// <summary>The window came to the front: if the pointer is still to show, it does in a moment, if the window still is.</summary>
     void QueueScopePointer()
     {
-        if (_pointer is not null || !ScopePointerRules.Wanted(_app.Settings.ScopePointerStarts, _app.IsDemo, s_scopePointerShown || s_scopePointerGaveUp, chipVisible: true)) return;
+        if (_pointer is not null || !ScopePointerWanted(chipVisible: true)) return;
         _pointerDelay.Stop();
         _pointerDelay.Start();
     }
@@ -189,8 +128,9 @@ internal sealed partial class MainForm
         {
             if (IsDisposed || !_loaded || _pointer is not null || ActiveForm != this || WindowState == FormWindowState.Minimized || !Visible) return;
             var s = _app.Settings;
-            bool chip = !_searchField.ScopeChipOnScreen.IsEmpty;
-            if (!ScopePointerRules.Wanted(s.ScopePointerStarts, _app.IsDemo, s_scopePointerShown || s_scopePointerGaveUp, chip)) return;
+            if (!ScopePointerWanted(chipVisible: !_searchField.ScopeChipOnScreen.IsEmpty)) return;
+            // One lesson at a time: while the Get started window shows, it waits for a later moment, uncounted.
+            if (Application.OpenForms.OfType<GetStartedForm>().Any(f => f.Visible && !f.IsDisposed)) return;
             // Never under a menu, a drop-down or a dialog, nor during a drag: it tries again after the same delay.
             switch (ScopePointerRules.WhenDue(AnyMenuOpen(), AnyDialogOpen(), MouseCaptured(), s_scopePointerTries))
             {
@@ -202,20 +142,24 @@ internal sealed partial class MainForm
                     s_scopePointerGaveUp = true;
                     return;
             }
-            // The Get started corner window may be up: the pointer keeps clear of it, or waits for another time.
-            var corner = Application.OpenForms.OfType<GetStartedForm>().FirstOrDefault(f => f.Visible && !f.IsDisposed)?.Bounds;
-            var pointer = ScopePointer.TryShow(this, _searchField, ScopePointerRules.Line(ScopeButton()), corner);
+            var pointer = ScopePointer.TryShow(this, _searchField, ScopePointerRules.Line(ScopeButton()));
             if (pointer is null) return;
             _pointer = pointer;
             pointer.FormClosed += (_, _) =>
             {
                 if (_pointer == pointer) _pointer = null;
-                if (!IsDisposed && !_scopeHintPulse.Enabled) _searchField.SetScopeGlow(0);
+                if (!IsDisposed) _searchField.SetScopeGlow(0);
+                // Got it: understood, so it never comes back. Esc, a timeout or a click elsewhere only mean "not now".
+                if (pointer.GotIt && s.ScopePointerStarts < ScopePointerRules.Starts)
+                {
+                    s.ScopePointerStarts = ScopePointerRules.Starts;
+                    s.Save();
+                }
             };
             s_scopePointerShown = true;
             s.ScopePointerStarts = Math.Min(ScopePointerRules.Starts, s.ScopePointerStarts + 1);
             s.Save();
-            _searchField.SetScopeGlow(Math.Max(PointerGlow, _scopeHintPulse.Enabled ? 0.35f : 0f));
+            _searchField.SetScopeGlow(1); // the chip is lit while the pointer points at it
         }
         catch (Exception) { } // only a hint: never into the message loop
     }
@@ -332,9 +276,10 @@ internal sealed partial class MainForm
         var turnOn = new LinkLabel { AutoSize = true, Text = "Turn on...", Margin = new Padding(0, 2, 12, 2) };
         // Opens Settings at the option and switches nothing by itself: the user decides there, with the cost in front of them.
         turnOn.LinkClicked += (_, _) => { _thumbStoreBar.Visible = false; _app.ShowSettings(this, "Thumbnails"); };
-        var notNow = new LinkLabel { AutoSize = true, Text = "Not now", Margin = new Padding(0, 2, 0, 2) };
-        notNow.LinkClicked += (_, _) => _thumbStoreBar.Visible = false;
-        _thumbStoreBar.Controls.AddRange([_thumbStoreText, turnOn, notNow]);
+        // Shown once ever, so it says no for good rather than promising a later.
+        var noThanks = new LinkLabel { AutoSize = true, Text = "No thanks", Margin = new Padding(0, 2, 0, 2) };
+        noThanks.LinkClicked += (_, _) => _thumbStoreBar.Visible = false;
+        _thumbStoreBar.Controls.AddRange([_thumbStoreText, turnOn, noThanks]);
         _thumbStoreBar.Visible = false;
     }
 
@@ -369,13 +314,12 @@ internal sealed partial class MainForm
     /// <summary>Settings' Clear: the pictures this window holds go too, and the ones on screen are made again.</summary>
     internal void ClearThumbnails() => _grid.ClearThumbs();
 
-    /// <summary>The button was clicked to search everything: one more use; from the third, it never lights up again.</summary>
+    /// <summary>The scope chip was clicked to switch where a search looks: the user knows it now, so the pointer at it never shows again.</summary>
     void ScopeChipUsed()
     {
-        StopScopeHint();
         var s = _app.Settings;
-        if (s.ScopeChipUses >= ScopeHintUntilUses) return;
-        s.ScopeChipUses++;
+        if (s.ScopeChipUses > 0) return;
+        s.ScopeChipUses = 1;
         s.Save();
     }
 }

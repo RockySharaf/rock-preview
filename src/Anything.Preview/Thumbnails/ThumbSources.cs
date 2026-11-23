@@ -95,11 +95,13 @@ internal static class ThumbSources
 
     /// <summary>
     /// The first lines of a file that turns out to be text, on a small page (the "text sniff" for unknown kinds). Marked
-    /// as a text page (<see cref="ThumbnailProvider.IsTextPage"/>): shown, never kept on disk.
+    /// as a text page (<see cref="ThumbnailProvider.IsTextPage"/>): shown, never kept on disk. With
+    /// <paramref name="noPageForRtf"/>, a file that starts as RTF gets none (its first lines are markup), as a real .rtf.
     /// </summary>
-    public static Bitmap? TextSniff(string path, int sizeClass)
+    public static Bitmap? TextSniff(string path, int sizeClass, bool noPageForRtf = false)
     {
         var bytes = FileUtil.ReadHead(path, 16 * 1024);
+        if (noPageForRtf && Bytes.StartsWithAscii(bytes, "{\\rtf")) return null;
         if (!TextPreview.LooksLikeText(bytes, out _)) return null;
         var (text, _) = TextPreview.Decode(bytes);
         return text == null ? null : ThumbnailProvider.TextPage(text, sizeClass);
@@ -136,6 +138,23 @@ internal static class ThumbSources
         {
             bmp.UnlockBits(data);
         }
+    }
+
+    // CornersSeeThrough's answers, kept with each picture and dropped with it.
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Bitmap, object> SeeThroughKnown = new();
+    static readonly object SeeThroughYes = new(), SeeThroughNo = new();
+
+    /// <summary>
+    /// Whether any of a picture's four corners is less than opaque (a logo, a sticker): then the grid draws no page outline
+    /// round it. Read once per picture and remembered with it, so painting again reads no pixels.
+    /// </summary>
+    public static bool CornersSeeThrough(Bitmap bmp)
+    {
+        if (SeeThroughKnown.TryGetValue(bmp, out var known)) return ReferenceEquals(known, SeeThroughYes);
+        int r = bmp.Width - 1, b = bmp.Height - 1;
+        bool clear = bmp.GetPixel(0, 0).A < 255 || bmp.GetPixel(r, 0).A < 255 || bmp.GetPixel(0, b).A < 255 || bmp.GetPixel(r, b).A < 255;
+        SeeThroughKnown.AddOrUpdate(bmp, clear ? SeeThroughYes : SeeThroughNo);
+        return clear;
     }
 
     /// <summary>

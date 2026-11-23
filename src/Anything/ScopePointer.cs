@@ -1,13 +1,15 @@
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using Anything.Core;
 
 namespace Anything;
 
 /// <summary>
-/// A small callout for new users, its arrow pointing at the scope chip at the start of the search box: "This is where
-/// Rock Preview searches", what the chip means now, and Got it. Shown on the first two starts (<see cref="ScopePointerRules"/>).
-/// It never takes the focus, so typing in the search box goes on, and it follows nothing: Got it, Esc, a click on the
-/// chip, a menu, the window losing the focus, moving, resizing or closing, the chip moving, or 20 seconds close it.
+/// A small callout for those who haven't used the scope chip yet, its arrow pointing at it at the start of the search
+/// box: "This is where Rock Preview searches", what the chip means now, and Got it. Shown on two starts at most
+/// (<see cref="ScopePointerRules"/>); Got it or a click on the chip ends it for good. It never takes the focus, so typing
+/// in the search box goes on, and it follows nothing: Got it, Esc, a click on the chip, a menu, the window losing the
+/// focus, moving, resizing or closing, the chip moving, or 20 seconds close it.
 /// </summary>
 internal sealed class ScopePointer : Form, IMessageFilter
 {
@@ -32,6 +34,9 @@ internal sealed class ScopePointer : Form, IMessageFilter
 
     /// <summary>It closes by itself after this long.</summary>
     const int LifetimeMs = 20_000;
+
+    /// <summary>Closed by its Got it button: the user has read it, so it never shows again.</summary>
+    public bool GotIt { get; private set; }
 
     ScopePointer(MainForm owner, SearchField field, string line)
     {
@@ -58,10 +63,10 @@ internal sealed class ScopePointer : Form, IMessageFilter
     int S(int v) => (int)Math.Round(v * _scale);
 
     /// <summary>
-    /// Shows the pointer under (or over) the search box of <paramref name="owner"/>, clear of <paramref name="avoid"/>;
-    /// null when it can't be placed so, or anything fails (it is only a hint).
+    /// Shows the pointer under (or over) the search box of <paramref name="owner"/>; null when it can't be placed so, or
+    /// anything fails (it is only a hint).
     /// </summary>
-    public static ScopePointer? TryShow(MainForm owner, SearchField field, string line, Rectangle? avoid)
+    public static ScopePointer? TryShow(MainForm owner, SearchField field, string line)
     {
         ScopePointer? p = null;
         try
@@ -71,7 +76,7 @@ internal sealed class ScopePointer : Form, IMessageFilter
             p = new ScopePointer(owner, field, line);
             var area = Screen.FromRectangle(chip).WorkingArea;
             var placed = ScopePointerRules.Place(Box(chip), Box(field.RectangleToScreen(field.ClientRectangle)), Box(area),
-                p.Width, p.Height, p.S(4), p.S(Radius + ArrowHalf + 4), avoid is { } a ? Box(a) : null);
+                p.Width, p.Height, p.S(4), p.S(Radius + ArrowHalf + 4));
             if (placed is not { } at) { p.Dispose(); return null; }
             p._chipAt = chip;
             p.Arrange(at);
@@ -198,7 +203,10 @@ internal sealed class ScopePointer : Form, IMessageFilter
         catch (Exception) { }
     }
 
-    /// <summary>Keys and clicks for the whole app while it shows: Esc closes it (and only it); a menu on its way closes it.</summary>
+    /// <summary>
+    /// Keys and clicks for the whole app while it shows: Esc closes it and does nothing else, except in an edit box that is
+    /// not the search box (a rename, the address bar), where that Esc goes on to cancel it too. A menu on its way closes it.
+    /// </summary>
     public bool PreFilterMessage(ref Message m)
     {
         try
@@ -208,7 +216,7 @@ internal sealed class ScopePointer : Form, IMessageFilter
             {
                 case WM_KEYDOWN when (int)(long)m.WParam == VK_ESCAPE:
                     Dismiss();
-                    return true;
+                    return EscIsOnlyForMe(m.HWnd);
                 case WM_KEYDOWN when (int)(long)m.WParam == VK_APPS:
                 case WM_SYSKEYDOWN:
                     Dismiss(); // a menu by the keyboard (Alt, F10, the menu key)
@@ -225,6 +233,26 @@ internal sealed class ScopePointer : Form, IMessageFilter
         catch (Exception) { }
         return false;
     }
+
+    /// <summary>
+    /// True (the Esc is swallowed) unless the key went to an edit box that is not the search box: a rename box, the
+    /// address bar or the folder view's own rename edit (a plain Windows "Edit"), which the Esc cancels.
+    /// </summary>
+    bool EscIsOnlyForMe(IntPtr target) => ScopePointerRules.EscOnlyClosesPointer(EscTargetOf(target));
+
+    ScopePointerRules.EscTarget EscTargetOf(IntPtr target) =>
+        FromHandle(target) is TextBox box
+            ? box.Parent == _field ? ScopePointerRules.EscTarget.SearchBox : ScopePointerRules.EscTarget.OtherTextBox
+            : IsNativeEdit(target) ? ScopePointerRules.EscTarget.NativeEdit : ScopePointerRules.EscTarget.Other;
+
+    static bool IsNativeEdit(IntPtr hwnd)
+    {
+        var name = new char[16];
+        int n = GetClassName(hwnd, name, name.Length);
+        return n > 0 && new string(name, 0, n).Equals("Edit", StringComparison.OrdinalIgnoreCase);
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, char[] name, int max);
 
     protected override bool ShowWithoutActivation => true;
 
@@ -327,7 +355,9 @@ internal sealed class ScopePointer : Form, IMessageFilter
         bool click = _buttonDown && _buttonRect.Contains(e.Location);
         _buttonDown = false;
         Invalidate(_buttonRect);
-        if (click) Dismiss();
+        if (!click) return;
+        GotIt = true;
+        Dismiss();
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)

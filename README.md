@@ -65,20 +65,21 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
   switches, also while folders are selected (it then shows their name) or every file in a folder shows. Select
   folders first to search only inside them ("images"). Everything stays chosen until you open another folder. When a
   search in a folder finds nothing, the empty list says where it looked, with a **Search everything instead** link.
-  On the first two starts, a small note under the search box points at the folder's name (or Everything) at its start
-  and says what clicking it does.
+  Until you have clicked the folder's name or Everything once, a small note under the search box points at it and says
+  what clicking it does, on two starts at most and after the Get started window has gone, if it shows; **Got it** ends
+  it for good.
 - Results start newest first, **folders before files**, and words match anywhere in a name ("port" also finds
   report); turn on **whole word** to find port alone. With it on, a word that starts or ends with punctuation needs
   no word break there: `.pdf` finds every PDF and `c:\projects\ .cs` the .cs files under that folder. In Chinese,
   Japanese, Korean or Thai, written without spaces, any part of a name matches.
-  **Settings › Defaults** changes any of it, with the other match options, and every open tab follows. A match option
-  you switch in a window (Search options, the Search menu or its key) stays chosen until you switch it again: new
-  tabs, new windows and the next start begin with it, while the other open tabs keep theirs (a duplicated tab keeps
-  its own). Sort still changes one tab on its own.
+  **Settings › Defaults** changes any of it, with the other match options and **Find words inside files**, and every
+  open tab follows. A match option you switch in a window (Search options, the Search menu or its key) stays chosen
+  until you switch it again: new tabs, new windows and the next start begin with it, while the other open tabs keep
+  theirs (a duplicated tab keeps its own). Sort still changes one tab on its own.
 - **Search options**, on the command bar while you search, sets where to look, the kind of file (Audio, Compressed,
   Document, Executable, Folder, Picture, Video) and how words match (case, whole word, path, diacritics, regex). While a
   kind is chosen the button shows it ("Video", with its icon) and splits in two, like Windows' split buttons: the
-  **×** half shows every kind again with one click. Each tab keeps its own kind.
+  **×** half shows every kind again with one click, as **All kinds** does. Each tab keeps its own kind.
 - Powerful query language: wildcards, regular expressions, AND / OR / NOT, and functions for size, dates, type,
   extension, attributes, parent folder and more ([syntax below](#search-syntax)).
 - As much about each file as Everything shows: besides size, dates modified and created and attributes, the
@@ -247,6 +248,9 @@ Like Windows 11 File Explorer, one window holds several folders and searches as 
 | Other | Archives (ZIP, 7z, RAR…), fonts, executables, certificates, and a hex view for anything else |
 
 Office and other installed shell preview handlers are hosted in place; embedded thumbnails are used where a format has one.
+When an Office program is busy (a hidden copy can wait on a message nobody sees), the line under the preview names it
+and Rock Preview shows the file itself meanwhile; hover that line for what to do: close that Office program (in Task
+Manager if none of its windows is open) and select the file again.
 Videos and songs are opened only when you press **Play**, so the one selected can still be deleted, renamed or moved.
 
 ### Thumbnails
@@ -269,12 +273,13 @@ Thumbnails** also adds extensions of your own, like `md` or `json`; **Reset** br
 
 **Instant thumbnails** (**Settings › Thumbnails**, off until you turn it on) keeps small copies on disk of the
 thumbnails you have seen, so they appear at once, also after a restart; the card says how much space that would take
-for the files on your PC. You type the limit in GB, as much as you want to give it (**Enough for everything** fills in the
-estimate), and choose the folder. When it is full, thumbnails are dropped as new ones are saved, and a bar says so
-once, with **Raise the limit**. You also choose what is kept: pictures, videos and documents, and file types never to
-keep (`pdf`, for example). Pictures are kept longest: when it is full, thumbnails of documents are dropped first, then
-videos, then the oldest pictures, and switching a kind off deletes its saved thumbnails. **Clear** empties it; turning
-it off deletes it.
+for the files on your PC. You type the limit in GB, as much as you want to give it (the link **Use 3 GB: enough for
+everything on this PC**, with your PC's own figure, sets the limit to the estimate), and choose the folder; a new
+folder starts empty, and the thumbnails saved in the old one are deleted. You also choose what is kept: pictures,
+videos and documents, and file types never to keep (`pdf`, for example); switching a kind off deletes its saved
+thumbnails. Pictures are kept longest: when it is full, thumbnails of documents are dropped first, then videos, then
+the oldest pictures, and a bar says so once for each limit, with **Raise the limit** (not when it already holds as
+many thumbnails as it can). **Clear** empties it; turning it off deletes it.
 
 At **Home**, Thumbnails shows the files you opened lately (Windows' Recent files), as pictures.
 

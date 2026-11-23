@@ -118,7 +118,7 @@ public class SearchEngineTests : SearchTestBase
         AssertFinds("(1)", ww, Copy);
         AssertFinds("会议", ww, Meeting);
         AssertFinds("excel", ww, Excel);
-        AssertFinds(@"e:\ .pdf", ww, Invoice, Inv); // the F1 help's "c:\projects\ .cs" pattern
+        AssertFinds(@"e:\ .pdf", ww, Invoice, Inv); // a term starting with punctuation, as the README's "c:\projects\ .cs"
         // A term that starts and ends with a letter still needs boundaries on both sides.
         AssertFinds("cat", ww, Cat);
         AssertFinds("voice", ww);
