@@ -70,9 +70,11 @@ internal sealed partial class MainForm
         public MainForm? Window;
         public string SearchText = "";
         /// <summary>The search Back closed, which Forward shows again; dropped once another folder or search shows.</summary>
-        public (string Text, SortKey Sort, bool Descending)? ForwardSearch;
+        public SearchPage? ForwardSearch;
         /// <summary>Where <see cref="ForwardSearch"/> was closed: the folder, and how many places Back held there.</summary>
         public (string? Place, int BackCount) ForwardSearchAt;
+        /// <summary>A search page Back was opening when Back was pressed again: the folder shows without it (MainForm.SearchPages.cs).</summary>
+        public SearchPage? PageClosedOpening;
         public int[] Ids = [];
         public long ResultGeneration;
         /// <summary>The index the Ids came from (the app's, or <see cref="Listing"/>'s): ids mean nothing in another one.</summary>

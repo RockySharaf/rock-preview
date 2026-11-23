@@ -109,7 +109,7 @@ internal sealed partial class MainForm
         })
         {
             int s = size;
-            _miViewModes.Add((Item(title, () => SetViewMode(s), Keys.Control | Keys.Shift | key), s));
+            _miViewModes.Add((Item(title, () => ChooseViewMode(s), Keys.Control | Keys.Shift | key), s));
         }
         // The results' thumbnail sizes: in folder view Ctrl+Shift+1..8 change the folder's layout instead (the command
         // bar's View menu), so these items, which would quietly change the hidden results, are not offered there.
@@ -281,7 +281,8 @@ internal sealed partial class MainForm
         _miZapDeep.Checked = _app.Settings.ZapIncludeSubfolders;
         _miEveryday.Checked = _app.Settings.EverydayFilesOnly;
         foreach (var (item, t) in _miThemes) item.Checked = t == _app.Settings.Theme;
-        int thumb = _app.Settings.ThumbnailSize;
+        // In "every file in" the tick follows what it shows (its list is Details), not the search results' saved size.
+        int thumb = _zapActive && !ExplorerShown ? EffectiveThumbSize : _app.Settings.ThumbnailSize;
         foreach (var (item, size) in _miViewModes) item.Checked = size == thumb || (size == 160 && thumb > 0 && !_miViewModes.Any(v => v.Size == thumb));
         if (_filter.Items.Count > _filterIndex && _filter.SelectedIndex != _filterIndex)
         {

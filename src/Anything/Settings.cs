@@ -341,6 +341,7 @@ internal sealed partial class AppSettings
         ix.RecentChangesFromJournal = Bool("load_recent_changes", ix.RecentChangesFromJournal);
         if (Str("database_path", "") is { Length: > 0 } db) ix.DatabasePath = db;
         LoadContent(s, v);
+        LoadThumbs(s, v);
 
         int count = Int("bookmark_count", 0);
         for (int i = 0; i < count; i++)
@@ -456,6 +457,7 @@ internal sealed partial class AppSettings
         B("index_recent_changes", Index.IndexRecentChanges);
         B("load_recent_changes", Index.RecentChangesFromJournal);
         SaveContent(sb);
+        SaveThumbs(sb);
         W("bookmark_count", Bookmarks.Count);
         for (int i = 0; i < Bookmarks.Count; i++)
         {

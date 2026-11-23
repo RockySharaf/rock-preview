@@ -1,84 +1,106 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
-using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Anything.Preview.Interop;
+using Anything.Core.Thumbs;
+using Anything.Preview.Thumbnails;
 using Anything.Preview.Util;
 
 namespace Anything.Preview;
 
 /// <summary>
-/// Fast, thread-safe thumbnails for a results grid. Order: Explorer's shell thumbnail (cached by Windows, so cheap)
-/// → our own extractors for formats the shell can't thumbnail (CorelDRAW, PSD, TGA, DWG, DXF, InDesign/Illustrator
-/// XMP, EPS, Office docProps thumbnails, PDF, fonts, text pages) → the file-type icon. Results are kept in an LRU
-/// keyed by path + size + last-write time. Shell calls run on STA threads (normal priority, behind preview-pane work);
-/// our extractors are bounded to 4 at a time. A request whose token is cancelled before it reaches a worker costs
-/// nothing, so a scrolling grid can request/cancel freely.
+/// One thumbnail at a time, for callers that just want a picture of a file: a thin wrapper over
+/// <see cref="ThumbnailService.Shared"/> (the grid talks to the service directly, with whole viewports). Also home to
+/// Rock Preview's own extractors for the kinds Windows handles poorly (CorelDRAW, PSD, TGA, DWG, DXF, InDesign and
+/// Illustrator XMP, EPS, Office thumbnails, PDF, fonts, text pages), which the service runs as step 4 of its ladder.
 /// </summary>
 public static class ThumbnailProvider
 {
-    private static readonly SemaphoreSlim _extractors = new(4);
-    // 12M pixels = 48 MB of 32-bit thumbnails (~470 at 160 px). The grid keeps its own copies of what is on
-    // screen, so this only needs to make scrolling back and forth cheap.
-    private static readonly LruCache _cache = new(maxPixels: 12L * 1024 * 1024, maxCount: 2000);
+    private static readonly object _lock = new();
+    private static readonly List<Waiter> _waiters = new();
+    private static ThumbClient? _client;
+
+    private sealed class Waiter(ThumbRequest request, TaskCompletionSource<Bitmap?> tcs)
+    {
+        public readonly ThumbRequest Request = request;
+        public readonly TaskCompletionSource<Bitmap?> Tcs = tcs;
+    }
 
     /// <summary>
     /// Returns a thumbnail that fits in <paramref name="size"/>×<paramref name="size"/> pixels (the caller owns and must
-    /// dispose it), or null if the file is gone. Never throws except <see cref="OperationCanceledException"/>.
+    /// dispose it): the picture, or the file's icon when there is none; null if the file is gone. A request cancelled
+    /// before a worker starts on it costs nothing; one cancelled later is finished and stored, not thrown away. Never
+    /// throws except <see cref="OperationCanceledException"/>.
     /// </summary>
-    public static async Task<Bitmap?> GetThumbnailAsync(string path, int size, CancellationToken ct)
+    public static Task<Bitmap?> GetThumbnailAsync(string path, int size, CancellationToken ct)
     {
         size = Math.Clamp(size, 16, 1024);
         ct.ThrowIfCancellationRequested();
-        long stamp;
-        bool isDir;
-        try
+        var tcs = new TaskCompletionSource<Bitmap?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var waiter = new Waiter(new ThumbRequest(path, ThumbStamp.Unknown, size, ThumbPriority.Visible), tcs);
+        lock (_lock)
         {
-            var fi = new FileInfo(path);
-            isDir = (fi.Exists ? fi.Attributes : File.GetAttributes(path)).HasFlag(FileAttributes.Directory);
-            stamp = isDir ? Directory.GetLastWriteTimeUtc(path).Ticks : fi.LastWriteTimeUtc.Ticks ^ fi.Length;
+            _client ??= ThumbnailService.Shared.CreateClient(OnArrival);
+            _waiters.Add(waiter);
+            Resubmit();
         }
-        catch
+        if (ct.CanBeCanceled)
         {
-            return null;
-        }
-        string key = path.ToUpperInvariant() + "|" + size + "|" + stamp;
-        if (_cache.TryGetCopy(key, out var hit)) return hit;
-
-        Bitmap? bmp = null;
-        // 1. Shell thumbnail (thumbnail cache first; the extractor runs only on a cache miss).
-        bmp = await Shell.GetThumbnailAsync(path, size, ct, highPriority: false, biggerOk: true).ConfigureAwait(false);
-        string ext = PreviewRenderer.GetExtension(path);
-        // 2. Our extractors.
-        if (bmp == null && !isDir)
-        {
-            await _extractors.WaitAsync(ct).ConfigureAwait(false);
-            try
+            var reg = ct.Register(() =>
             {
-                ct.ThrowIfCancellationRequested();
-                bmp = await Task.Run(() => ExtractAsync(path, ext, size, ct), ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch { bmp = null; }
-            finally { _extractors.Release(); }
+                lock (_lock)
+                {
+                    if (!_waiters.Remove(waiter)) return;
+                    Resubmit();
+                }
+                tcs.TrySetCanceled(ct);
+            });
+            tcs.Task.ContinueWith(_ => reg.Dispose(), TaskScheduler.Default);
         }
-        // 3. Icon.
-        bmp ??= await Shell.GetIconAsync(path, size, ct, highPriority: false).ConfigureAwait(false);
-        if (bmp == null) return null;
-        bmp = BitmapUtil.FitOrSelf(bmp, new Size(size, size));
-        return _cache.AddAndCopy(key, bmp);
+        return tcs.Task;
     }
 
-    /// <summary>Drops all cached thumbnails.</summary>
-    public static void ClearCache() => _cache.Clear();
+    /// <summary>Forgets the icons and failures the service remembers in memory (the store on disk is kept).</summary>
+    public static void ClearCache() => ThumbnailService.Shared.ClearMemory();
 
-    private static async Task<Bitmap?> ExtractAsync(string path, string ext, int size, CancellationToken ct)
+    // Every waiting call is one "viewport": the plan holds them all, in the order asked, so a cancelled one leaves it.
+    private static void Resubmit() => _client!.SubmitViewport(1, _waiters.Select(w => w.Request).ToList());
+
+    private static void OnArrival(ThumbArrival a)
+    {
+        if (a.Quality == ThumbQuality.Low)
+        {
+            // Callers here want the real thing: the stand-in is skipped.
+            a.Bitmap?.Dispose();
+            return;
+        }
+        List<Waiter> done;
+        lock (_lock)
+        {
+            done = _waiters.Where(w => w.Request.DisplaySize == a.DisplaySize && w.Request.Key == a.Key).ToList();
+            foreach (var w in done) _waiters.Remove(w);
+        }
+        if (done.Count == 0)
+        {
+            a.Bitmap?.Dispose();
+            return;
+        }
+        for (int i = 0; i < done.Count; i++)
+        {
+            var bmp = a.Bitmap == null ? null : i == done.Count - 1 ? a.Bitmap : new Bitmap(a.Bitmap);
+            if (!done[i].Tcs.TrySetResult(bmp)) bmp?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Rock Preview's own extractor for <paramref name="path"/> (step 4 of the ladder for the kinds it renders itself),
+    /// about <paramref name="size"/> on its long side; null when it has nothing. May throw for an unreadable file.
+    /// </summary>
+    internal static async Task<Bitmap?> ExtractAsync(string path, string ext, int size, CancellationToken ct)
     {
         var box = new Size(size, size);
         switch (ext)
@@ -128,18 +150,30 @@ public static class ThumbnailProvider
             OfficePreview.OdfExt.Contains(ext))
         {
             var t = OfficePreview.EmbeddedThumbnail(path, box);
-            if (t != null) return t;
+            if (t != null)
+            {
+                // A saved thumbnail that is one flat colour is a library's empty template page, not this document's look
+                // (one pass over a picture of the box's size, well under a millisecond): it is dropped, so a Word file
+                // gets its text page and the other kinds end in their icon.
+                bool blank;
+                try { blank = ThumbBlank.IsBlank(t); }
+                catch { t.Dispose(); throw; } // GDI+ could not read it: the picture is not left for the finalizer
+                if (!blank) return t;
+                t.Dispose();
+            }
             if (OfficePreview.WordExt.Contains(ext))
             {
-                using var doc = OfficePreview.RenderDocx(path, ct);
-                if (doc?.Document != null) return TextPage(string.Join("\n", doc.Document.Select(d => d.Text)), size);
+                // Only the start of the document is read: the page shows its first lines (about 40 at the largest size).
+                // A document with no text at all (only pictures) gets no page: an empty one would pass for a thumbnail.
+                string? text = OfficePreview.DocxFirstLines(path, TextPageMaxLines, ct);
+                if (!string.IsNullOrWhiteSpace(text)) return TextPage(text, size);
             }
             return null;
         }
         if (WicImage.Extensions.Contains(ext))
         {
-            using var r = await WicImage.RenderAsync(path, ext, new Size(size / 2, size / 2), ct).ConfigureAwait(false);
-            return Detach(r);
+            var bmp = WicImage.DecodeThumbnail(path, ext, size, null, out _, out _);
+            return bmp;
         }
         if (FontPreview.Extensions.Contains(ext))
         {
@@ -162,11 +196,12 @@ public static class ThumbnailProvider
         return jpg == null ? null : BitmapUtil.Decode(jpg, box);
     }
 
+    /// <summary>The first page of a PDF rendered to fit <paramref name="box"/> (the master is made at the size class itself).</summary>
     private static async Task<Bitmap?> PdfFirstPage(string path, Size box, CancellationToken ct)
     {
         using var src = await PdfPreview.PdfPageSource.OpenAsync(path, ct).ConfigureAwait(false);
         if (src == null) return null;
-        var bmp = await src.RenderAsync(0, new Size(box.Width * 2 / 3, box.Height * 2 / 3), ct).ConfigureAwait(false);
+        var bmp = await src.RenderAsync(0, box, ct).ConfigureAwait(false);
         return BitmapUtil.FitOrSelf(bmp, box);
     }
 
@@ -183,11 +218,20 @@ public static class ThumbnailProvider
         return bmp;
     }
 
-    /// <summary>A little "page" with the first lines of text.</summary>
+    // More lines than a page at the largest size class shows (about 37 at 512).
+    private const int TextPageMaxLines = 64;
+
+    // Marks a picture drawn from a file's own text (Image.Tag), so the thumbnail service never keeps it on disk.
+    private static readonly object TextPageMark = new();
+
+    /// <summary>Whether <paramref name="bmp"/> is a page drawn from a file's own text by <see cref="TextPage"/> (shown, never kept on disk).</summary>
+    internal static bool IsTextPage(Bitmap? bmp) => bmp != null && ReferenceEquals(bmp.Tag, TextPageMark);
+
+    /// <summary>A little "page" with the first lines of text (marked as such: <see cref="IsTextPage"/>).</summary>
     internal static Bitmap TextPage(string text, int size)
     {
         int h = size, w = Math.Max(16, (int)(size * 0.78));
-        var bmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
+        var bmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb) { Tag = TextPageMark };
         using var g = Graphics.FromImage(bmp);
         g.Clear(Color.White);
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
@@ -205,70 +249,5 @@ public static class ThumbnailProvider
             y += lh;
         }
         return bmp;
-    }
-
-    /// <summary>LRU of bitmaps bounded by count and total pixels. Copies are made under the lock (GDI+ isn't thread-safe).</summary>
-    private sealed class LruCache
-    {
-        private readonly long _maxPixels;
-        private readonly int _maxCount;
-        private readonly Dictionary<string, LinkedListNode<(string Key, Bitmap Bmp)>> _map = new();
-        private readonly LinkedList<(string Key, Bitmap Bmp)> _list = new();
-        private long _pixels;
-        private readonly object _lock = new();
-
-        public LruCache(long maxPixels, int maxCount) { _maxPixels = maxPixels; _maxCount = maxCount; }
-
-        public bool TryGetCopy(string key, out Bitmap? copy)
-        {
-            lock (_lock)
-            {
-                if (_map.TryGetValue(key, out var node))
-                {
-                    _list.Remove(node);
-                    _list.AddFirst(node);
-                    copy = new Bitmap(node.Value.Bmp);
-                    return true;
-                }
-            }
-            copy = null;
-            return false;
-        }
-
-        public Bitmap AddAndCopy(string key, Bitmap bmp)
-        {
-            lock (_lock)
-            {
-                if (_map.TryGetValue(key, out var old))
-                {
-                    _list.Remove(old);
-                    _pixels -= (long)old.Value.Bmp.Width * old.Value.Bmp.Height;
-                    old.Value.Bmp.Dispose();
-                }
-                var node = _list.AddFirst((key, bmp));
-                _map[key] = node;
-                _pixels += (long)bmp.Width * bmp.Height;
-                while ((_pixels > _maxPixels || _map.Count > _maxCount) && _list.Last != null && _list.Last != node)
-                {
-                    var last = _list.Last;
-                    _list.RemoveLast();
-                    _map.Remove(last.Value.Key);
-                    _pixels -= (long)last.Value.Bmp.Width * last.Value.Bmp.Height;
-                    last.Value.Bmp.Dispose();
-                }
-                return new Bitmap(bmp);
-            }
-        }
-
-        public void Clear()
-        {
-            lock (_lock)
-            {
-                foreach (var n in _list) n.Bmp.Dispose();
-                _list.Clear();
-                _map.Clear();
-                _pixels = 0;
-            }
-        }
     }
 }

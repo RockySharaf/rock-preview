@@ -194,9 +194,18 @@ internal sealed partial class SettingsForm : Form
         if (_sections[index].Name == "Folders") _app.Tried(GettingStarted.Folders);
         if (_sections[index].Name == "About") RefreshUninstallCard();
         if (IndexingShown) RefreshRoots();
+        if (ThumbnailsShown) ThumbnailsPageShown();
+        else _thumbStoreTimer.Stop();
     }
 
     bool IndexingShown => _nav.SelectedIndex >= 0 && _sections[_nav.SelectedIndex].Name == "Indexing";
+
+    /// <summary>Goes to the section named <paramref name="name"/> (Settings already open, asked for at a section); unknown names change nothing.</summary>
+    internal void ShowSectionNamed(string name)
+    {
+        int index = _sections.FindIndex(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (index >= 0) _nav.SelectedIndex = index;
+    }
 
     void DrawNavItem(object? sender, DrawItemEventArgs e)
     {
@@ -433,13 +442,16 @@ internal sealed partial class SettingsForm : Form
         _everydayAdded.Width = S(260);
         _everydayAdded.PlaceholderText = "md; json";
         _everydayAdded.Leave += (_, _) => EverydayChanged();
-        var cards = new List<Control>
+        var cards = new List<Control>();
+        // First on the page: the one-time bar's "Turn on..." opens Settings here. The demo keeps nothing on disk.
+        if (!_app.IsDemo) cards.Add(ThumbStoreCard());
+        cards.AddRange(new List<Control>
         {
             Card("Everyday files only",
                 "Thumbnails show only the kinds of files switched on below: every file in a folder, and what a search finds. " +
                 "Off: every file, code, settings and program files too.", _everydayOnly),
             Header("Everyday files are"),
-        };
+        });
         foreach (var kind in EverydayFiles.Kinds)
         {
             var on = new ToggleSwitch();
@@ -1340,21 +1352,30 @@ internal sealed partial class SettingsForm : Form
         readonly Label? _detail;
         readonly Control _control;
         readonly Control? _extra;
+        readonly bool _wrapDetail;
         bool _extraShown;
         Font? _small;
 
         /// <param name="detail">The second line; null for a row without one. Rows with one keep its room while it's empty.</param>
-        public SubRow(string text, Control control, Control? extra = null, string? detail = null)
+        /// <param name="wrapDetail">
+        /// The second line wraps onto as many lines as it needs, breaking inside a word (a path with no spaces) when it
+        /// must, and the row grows with it, instead of being cut with "...". For a line that must always be read whole
+        /// (where the saved thumbnails are kept); the others keep one line, so a long list of rows stays even.
+        /// </param>
+        public SubRow(string text, Control control, Control? extra = null, string? detail = null, bool wrapDetail = false)
         {
             _label = new Label { Text = text, AutoSize = false, AutoEllipsis = true, UseMnemonic = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent };
             _control = control;
             _extra = extra;
+            _wrapDetail = wrapDetail && detail is not null;
             BackColor = Color.Transparent;
             Controls.Add(_label);
             if (detail is not null)
             {
                 _small = SmallFont(Font);
-                _detail = new Label { Text = detail, Font = _small, AutoSize = false, AutoEllipsis = true, UseMnemonic = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = ExplorerTheme.SecondaryText };
+                _detail = _wrapDetail
+                    ? new WrappedDetail { Text = detail, Font = _small, AutoSize = false, UseMnemonic = false, BackColor = Color.Transparent, ForeColor = ExplorerTheme.SecondaryText }
+                    : new Label { Text = detail, Font = _small, AutoSize = false, AutoEllipsis = true, UseMnemonic = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = ExplorerTheme.SecondaryText };
                 Controls.Add(_detail);
             }
             if (extra is not null)
@@ -1390,8 +1411,26 @@ internal sealed partial class SettingsForm : Form
         {
             int w = proposed.Width is > 0 and < 100_000 ? proposed.Width : Parent?.ClientSize.Width ?? 400;
             int h = Math.Max(LogicalToDeviceUnits(36), SizeOf(_control).Height + LogicalToDeviceUnits(4));
-            if (_detail is not null) h = Math.Max(h, _label.Font.Height + _detail.Font.Height + LogicalToDeviceUnits(14));
+            if (_detail is not null) h = Math.Max(h, _label.Font.Height + DetailHeight(TextWidth(w)) + LogicalToDeviceUnits(12));
             return new Size(w, h);
+        }
+
+        /// <summary>The room the label and the second line have in a row <paramref name="rowWidth"/> wide: left of the button(s).</summary>
+        int TextWidth(int rowWidth)
+        {
+            int gap = LogicalToDeviceUnits(12);
+            int right = rowWidth - SizeOf(_control).Width;
+            if (_extra is not null && _extraShown) right -= gap + SizeOf(_extra).Width;
+            return Math.Max(0, right - gap);
+        }
+
+        /// <summary>The second line's height: one line, or as many as the wrapped text takes at <paramref name="width"/>.</summary>
+        int DetailHeight(int width)
+        {
+            int one = _detail!.Font.Height + LogicalToDeviceUnits(2);
+            if (!_wrapDetail || _detail.Text.Length == 0) return one;
+            var text = TextRenderer.MeasureText(_detail.Text, _detail.Font, new Size(Math.Max(1, width), int.MaxValue), WrappedDetail.Flags);
+            return Math.Max(one, text.Height + LogicalToDeviceUnits(2));
         }
 
         protected override void OnLayout(LayoutEventArgs e)
@@ -1414,10 +1453,23 @@ internal sealed partial class SettingsForm : Form
                 _detail?.SetBounds(0, 0, 0, 0);
                 return;
             }
-            int line = _label.Font.Height, small = _detail.Font.Height + LogicalToDeviceUnits(2);
-            int top = (ClientSize.Height - line - small) / 2;
+            int line = _label.Font.Height, small = DetailHeight(width);
+            int top = Math.Max(0, (ClientSize.Height - line - small) / 2);
             _label.Bounds = new Rectangle(0, top, width, line);
             _detail.Bounds = new Rectangle(0, top + line, width, small);
+        }
+
+        /// <summary>
+        /// A second line that wraps: drawn with the same rule it is measured with, so what was measured is what shows.
+        /// TextBoxControl lets a word longer than the line (a path with no spaces) break inside itself, as a text box
+        /// does, rather than run past the edge.
+        /// </summary>
+        sealed class WrappedDetail : Label
+        {
+            public const TextFormatFlags Flags = TextFormatFlags.NoPadding | TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix;
+
+            protected override void OnPaint(PaintEventArgs e)
+                => TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor, Flags);
         }
 
         protected override void OnFontChanged(EventArgs e)

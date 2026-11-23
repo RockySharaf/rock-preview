@@ -26,6 +26,11 @@ internal sealed partial class ExplorerHost : Control
     byte[]? _stepOpening;
     string? _stepFailMessage;
     byte[]? _leavingItem;              // the item selected in the folder a navigation is leaving, kept with it in Back
+    // The search page the window showed over the folder a navigation is leaving, kept with it in Back, with where that
+    // navigation goes (so a late failure of an older navigation doesn't drop it).
+    LeavingPage<byte[]> _leaving;
+    // The page of the history entry a Back or Forward is opening inside its own BrowseToObject (_stepOpening's).
+    SearchPage? _stepOpeningPage;
     IShellItem? _pendingItem;           // keeps the navigation target alive until it completes
     string? _selectAfterNavigate;       // full path to select once the view shows it
     byte[]? _selectItemAfterNavigate;   // or an item's ID inside _selectItemIn, once that folder shows it (Back, Up)
@@ -113,12 +118,16 @@ internal sealed partial class ExplorerHost : Control
     public bool CanGoBack => _history.CanGoBack;
     public bool CanGoForward => _history.CanGoForward;
     /// <summary>Names of the places Back and Forward go to ("Downloads"), for the buttons' tooltips; null when unknown.</summary>
-    public string? BackName => _history.BackEntry?.Name;
-    public string? ForwardName => _history.ForwardEntry?.Name;
+    public string? BackName => _history.BackEntry?.Label;
+    public string? ForwardName => _history.ForwardEntry?.Label;
     /// <summary>How many places Back holds: with the folder, where in the history the view is.</summary>
     public int BackCount => _history.BackCount;
     /// <summary>The last folder opened came from Back or Forward (which keep the history on the other side).</summary>
     public bool LastNavigationWasHistory { get; private set; }
+    /// <summary>The search page of the history entry Back or Forward has just opened (shown again by the window), or null.</summary>
+    public SearchPage? LastHistoryPage { get; private set; }
+    /// <summary>A Back or Forward is still opening an entry that carries a search page: that page, else null.</summary>
+    public SearchPage? PageOpening => _stepTarget?.Page;
     /// <summary>There is a folder above this one: false at the Desktop, the top of the namespace, as in Explorer.</summary>
     public bool CanGoUp => _current != null && !IdList.IsEmpty(_current);
     /// <summary>Name of the folder Up goes to ("Documents"), for the Up button's tooltip.</summary>
@@ -297,9 +306,10 @@ internal sealed partial class ExplorerHost : Control
 
     /// <summary>
     /// Navigates to a path, "shell:" location or parsing name ("::{GUID}"). When <paramref name="selectPath"/>
-    /// is given, that item is selected once it appears. Returns false if the location can't be resolved.
+    /// is given, that item is selected once it appears. <paramref name="leavingPage"/>: the search page the window showed
+    /// over this folder, kept with it in Back. Returns false if the location can't be resolved.
     /// </summary>
-    public bool Navigate(string location, string? selectPath = null)
+    public bool Navigate(string location, string? selectPath = null, SearchPage? leavingPage = null)
     {
         if (_browser == null || string.IsNullOrWhiteSpace(location)) return false;
         location = Environment.ExpandEnvironmentVariables(location.Trim().Trim('"'));
@@ -312,7 +322,18 @@ internal sealed partial class ExplorerHost : Control
         _renameAfterSelect = false;
         _pendingItem = item;
         GiveUpStep();
-        return _browser.BrowseToObject(item, ShellNative.SBSP_ABSOLUTE) == ShellNative.S_OK;
+        var before = _leaving;
+        _leaving = _leaving.Start(leavingPage, IdListOf(item)); // before browsing: the navigation can complete inside BrowseToObject
+        if (_browser.BrowseToObject(item, ShellNative.SBSP_ABSOLUTE) == ShellNative.S_OK) return true;
+        _leaving = before; // this one never started: an earlier one still opening keeps its page
+        return false;
+    }
+
+    static byte[]? IdListOf(IShellItem item)
+    {
+        if (ShellNative.SHGetIDListFromObject(item, out var pidl) != ShellNative.S_OK || pidl == IntPtr.Zero) return null;
+        try { return ShellNative.CopyPidl(pidl); }
+        finally { Marshal.FreeCoTaskMem(pidl); }
     }
 
     /// <summary>
@@ -338,9 +359,14 @@ internal sealed partial class ExplorerHost : Control
             var iid = ShellNative.IID_IShellItem;
             if (ShellNative.SHCreateItemFromIDList(p, ref iid, out var item) != ShellNative.S_OK || item == null) return false;
             if (!historyNavigation) GiveUpStep();
+            var (wasHistory, wasPending) = (_historyNavigation, _pendingItem);
             _historyNavigation = historyNavigation;
             _pendingItem = item;
-            return _browser.BrowseToObject(item, ShellNative.SBSP_ABSOLUTE) == ShellNative.S_OK;
+            if (_browser.BrowseToObject(item, ShellNative.SBSP_ABSOLUTE) == ShellNative.S_OK) return true;
+            // Refused: the navigation still opening is the one that completes, and it isn't taken for this Back or
+            // Forward (which would keep it out of the history, the folder left and its search page with it).
+            (_historyNavigation, _pendingItem) = (wasHistory, wasPending);
+            return false;
         }
         finally { Marshal.FreeCoTaskMem(p); }
     }
@@ -348,30 +374,46 @@ internal sealed partial class ExplorerHost : Control
     public void GoBack()
     {
         if (_current == null || !_history.CanGoBack) return;
-        Step(back: true);
+        Step(back: true, leavingPage: null);
     }
 
-    public void GoForward()
+    /// <summary>Forward; <paramref name="leavingPage"/>: the search page the window showed over this folder, kept with it in Back.</summary>
+    public void GoForward(SearchPage? leavingPage = null)
     {
         if (_current == null || !_history.CanGoForward) return;
-        Step(back: false);
+        Step(back: false, leavingPage);
     }
 
-    void Step(bool back)
+    void Step(bool back, SearchPage? leavingPage)
     {
+        // Where the step starts from. A Back or Forward still opening: its entry, as the history already stands there (the
+        // folder still on screen is in the history's other side already, and taking it as "here" again would push it
+        // twice and drop that entry, with any search on it). Else the folder on screen, with the search page left over it
+        // now or by a navigation still opening (one from the results to a slow folder), which then goes with it.
+        var inFlight = _stepTarget;
+        var leaving = _leaving;
+        var here = inFlight ?? Here(leavingPage ?? leaving.Page);
+        _leaving = default;
         _stepTarget = null;
         _stepFailedEarly = false;
         _stepFailMessage = null;
         _inStep = true;
         NavigationHistory<byte[]>.Entry? opened;
-        try { opened = back ? _history.GoBack(Here(), OpenFromHistory) : _history.GoForward(Here(), OpenFromHistory); }
-        finally { _inStep = false; _stepOpening = null; }
+        try { opened = back ? _history.GoBack(here, OpenFromHistory) : _history.GoForward(here, OpenFromHistory); }
+        finally { _inStep = false; _stepOpening = null; _stepOpeningPage = null; }
         string? failed = _stepFailMessage;
         _stepFailMessage = null;
         if (opened != null)
         {
-            if (_stepFailedEarly) UndoStep(opened, back);  // the shell said it failed but BrowseToObject still returned S_OK
+            if (_stepFailedEarly) { UndoStep(opened, back); _leaving = leaving; } // the shell said it failed but BrowseToObject still returned S_OK
             else if (_historyNavigation) { _stepTarget = opened; _stepWasBack = back; } // still opening
+        }
+        else
+        {
+            // The step never started (the shell can refuse a navigation while another is opening): what was opening
+            // still is, with the search page it carries away from this folder.
+            _stepTarget = inFlight;
+            _leaving = leaving;
         }
         // After the history is put back: the window then shows Back, Forward and their tooltips as they now are.
         if (failed != null) NavigationFailed?.Invoke(failed);
@@ -386,8 +428,8 @@ internal sealed partial class ExplorerHost : Control
         else _history.GoBack(target, _ => true);
     }
 
-    /// <summary>This place as the history keeps it: with the item selected now, selected again on coming back.</summary>
-    NavigationHistory<byte[]>.Entry Here() => new(_current!, CurrentDisplayName, SelectedItemId());
+    /// <summary>This place as the history keeps it: with the item selected now, selected again on coming back, and the search page over it, if any.</summary>
+    NavigationHistory<byte[]>.Entry Here(SearchPage? page) => new(_current!, CurrentDisplayName, SelectedItemId(), page);
 
     /// <summary>Back or Forward to a place, selecting the item that was selected when it was left (nothing if none was).</summary>
     bool OpenFromHistory(NavigationHistory<byte[]>.Entry entry)
@@ -398,13 +440,17 @@ internal sealed partial class ExplorerHost : Control
         _selectItemAfterNavigate = entry.Item;
         _selectItemIn = entry.Item != null ? entry.Place : null;
         _stepOpening = entry.Place;
+        _stepOpeningPage = entry.Page;
         if (Navigate(entry.Place, historyNavigation: true)) return true;
         _selectItemAfterNavigate = _selectItemIn = null;
         return false;
     }
 
-    /// <summary>Up to the folder above, with the folder just left selected and scrolled into view, as in Explorer.</summary>
-    public void GoUp()
+    /// <summary>
+    /// Up to the folder above, with the folder just left selected and scrolled into view, as in Explorer.
+    /// <paramref name="leavingPage"/>: the search page the window showed over this folder, kept with it in Back.
+    /// </summary>
+    public void GoUp(SearchPage? leavingPage = null)
     {
         if (_browser == null || _current == null || IdList.Parent(_current) is not { } parent) return;
         _selectAfterNavigate = null;
@@ -412,8 +458,13 @@ internal sealed partial class ExplorerHost : Control
         _selectItemAfterNavigate = IdList.LastItem(_current);
         _selectItemIn = parent;
         GiveUpStep();
+        var before = _leaving;
+        _leaving = _leaving.Start(leavingPage, parent);
         if (_browser.BrowseToIDList(IntPtr.Zero, ShellNative.SBSP_PARENT) != ShellNative.S_OK)
+        {
             _selectItemAfterNavigate = _selectItemIn = null;
+            _leaving = before;
+        }
     }
 
     public void RefreshView()
@@ -492,11 +543,13 @@ internal sealed partial class ExplorerHost : Control
     {
         var bytes = ShellNative.CopyPidl(pidl);
         LastNavigationWasHistory = _historyNavigation;
+        LastHistoryPage = _historyNavigation ? StepPage(bytes) : null;
         _stepTarget = null;
         if (_historyNavigation) _historyNavigation = false;
-        else if (_current != null && !_current.AsSpan().SequenceEqual(bytes))
-            _history.Visit(new(_current, CurrentDisplayName, _leavingItem));
+        else if (_current != null && SearchPageRules.RecordsLeaving(_current.AsSpan().SequenceEqual(bytes), _leaving.Page != null))
+            _history.Visit(new(_current, CurrentDisplayName, _leavingItem, _leaving.Page));
         _leavingItem = null;
+        _leaving = default;
         _current = bytes;
         _pendingItem = null;
         CurrentPath = ShellNative.NameOf(pidl, SIGDN.FileSysPath);
@@ -530,6 +583,17 @@ internal sealed partial class ExplorerHost : Control
         HookViewMenu();
         Navigated?.Invoke();
         SelectionChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// The search page of the Back or Forward that has just completed at <paramref name="opened"/>: the entry being opened
+    /// inside the step's own BrowseToObject, or the one still opening after it. Only when the folder that opened is that
+    /// entry's, so a page never shows over another folder (a late completion of a navigation the step cancelled).
+    /// </summary>
+    SearchPage? StepPage(byte[] opened)
+    {
+        var (place, page) = _inStep ? (_stepOpening, _stepOpeningPage) : (_stepTarget?.Place, _stepTarget?.Page);
+        return page != null && place != null && SamePlace(opened, place) ? page : null;
     }
 
     readonly ViewMenuHook _menuHook = new();
@@ -652,6 +716,7 @@ internal sealed partial class ExplorerHost : Control
         {
             _pendingItem = null;
             _historyNavigation = false;
+            _leaving = _leaving.Fail(failed, SamePlace); // the search page left goes with its own navigation if that failed
         }
         if (failed != null && _selectItemIn != null && failed.AsSpan().SequenceEqual(_selectItemIn)) DropItemSelect();
         if (_inStep)

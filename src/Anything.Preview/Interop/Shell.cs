@@ -78,21 +78,49 @@ internal static class Shell
     private static readonly Guid IID_IShellItem = new("43826d1e-e718-42ee-bc55-a1e261c37bfe");
 
     /// <summary>Must be called on an STA thread.</summary>
-    public static Bitmap? GetImageSta(string path, int size, SIIGBF flags)
+    public static Bitmap? GetImageSta(string path, int size, SIIGBF flags) => GetImageSta(path, size, flags, out _);
+
+    /// <summary>The HRESULT given when a call threw instead of answering (the handler crashed or misbehaved).</summary>
+    public const int HrThrew = unchecked((int)0x8000FFFF); // E_UNEXPECTED
+
+    /// <summary>
+    /// Must be called on an STA thread. <paramref name="hr"/> is Windows' answer: 0 with a bitmap, the failure code
+    /// otherwise (0x80030002 is a miss in the thumbnail cache), or <see cref="HrThrew"/> when the call threw. The bitmap
+    /// has straight (not premultiplied) alpha.
+    /// </summary>
+    public static Bitmap? GetImageSta(string path, int size, SIIGBF flags, out int hr)
     {
         object? obj = null;
         IntPtr hbmp = IntPtr.Zero;
+        hr = HrThrew;
         try
         {
+            // Folders, shortcuts and the PDF kinds are never extracted in this process, only read from Windows' cache: a
+            // PDF handler loaded here can end the process however it is asked (see ThumbKinds.WindowsCacheOnly). Checked
+            // here, the one place Windows is asked, so no caller can miss it, also for a path that became a folder since.
+            if ((flags & (SIIGBF.InCacheOnly | SIIGBF.IconOnly)) == 0
+                && (Anything.Core.Thumbs.ThumbKinds.WindowsCacheOnly(path) || System.IO.Directory.Exists(path)))
+                flags |= SIIGBF.InCacheOnly;
             var iid = IID_IShellItemImageFactory;
-            if (SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out obj) != 0 || obj is not IShellItemImageFactory f)
+            int created = SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out obj);
+            if (created != 0 || obj is not IShellItemImageFactory f)
+            {
+                hr = created != 0 ? created : unchecked((int)0x80004002);
                 return null;
-            int hr = f.GetImage(new SIZE { cx = size, cy = size }, flags, out hbmp);
-            if (hr != 0 || hbmp == IntPtr.Zero) return null;
-            return HBitmapToBitmap(hbmp);
+            }
+            hr = f.GetImage(new SIZE { cx = size, cy = size }, flags, out hbmp);
+            if (hr != 0 || hbmp == IntPtr.Zero)
+            {
+                if (hr == 0) hr = unchecked((int)0x80004005);
+                return null;
+            }
+            var bmp = HBitmapToBitmap(hbmp);
+            if (bmp == null) hr = unchecked((int)0x80004005);
+            return bmp;
         }
         catch
         {
+            hr = HrThrew;
             return null;
         }
         finally
@@ -102,11 +130,15 @@ internal static class Shell
         }
     }
 
-    /// <summary>Real thumbnail only (no icon). Null when there is no thumbnail provider.</summary>
-    public static Task<Bitmap?> GetThumbnailAsync(string path, int size, CancellationToken ct, bool highPriority = true, bool biggerOk = false)
+    /// <summary>
+    /// Real thumbnail only (no icon). Null when there is no thumbnail provider. <paramref name="cacheOnly"/>: Windows'
+    /// thumbnail cache only (InCacheOnly), which starts no extraction and never loads a thumbnail handler: for the files
+    /// whose handler mustn't run in this process (ThumbKinds.WindowsCacheOnly).
+    /// </summary>
+    public static Task<Bitmap?> GetThumbnailAsync(string path, int size, CancellationToken ct, bool highPriority = true, bool biggerOk = false, bool cacheOnly = false)
     {
         size = Math.Clamp(size, 16, 2560);
-        var flags = SIIGBF.ThumbnailOnly | (biggerOk ? SIIGBF.BiggerSizeOk : 0);
+        var flags = SIIGBF.ThumbnailOnly | (biggerOk ? SIIGBF.BiggerSizeOk : 0) | (cacheOnly ? SIIGBF.InCacheOnly : 0);
         return StaPool.Shared.RunAsync(() => GetImageSta(path, size, flags), ct, highPriority, 12000);
     }
 

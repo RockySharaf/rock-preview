@@ -5,6 +5,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
+using Anything.Core.Thumbs;
 using Anything.Preview.Util;
 
 namespace Anything.Preview;
@@ -67,6 +68,9 @@ internal static class TgaDecoder
         int cmapFirst = Bytes.U16LE(d, 3), cmapLen = Bytes.U16LE(d, 5), cmapBits = d[7];
         int w = Bytes.U16LE(d, 12), h = Bytes.U16LE(d, 14), bpp = d[16], desc = d[17];
         if (w <= 0 || h <= 0 || w > 32768 || h > 32768) return null;
+        // The pixel buffer is 4 bytes a pixel whatever the file holds: a header claiming a huge picture would ask for
+        // gigabytes before a single pixel is read.
+        if ((long)w * h > ThumbRules.TgaMaxPixels) return null;
         if (type is not (1 or 2 or 3 or 9 or 10 or 11)) return null;
         bool rle = type >= 9;
         bool mapped = type is 1 or 9, gray = type is 3 or 11;
@@ -216,20 +220,68 @@ internal static class PsdDecoder
         var br = new BinaryReader(fs);
         byte[] hdr = br.ReadBytes(26);
         if (hdr.Length < 26 || !Bytes.StartsWithAscii(hdr, "8BPS")) return null;
-        var inf = new Info
-        {
-            IsPsb = Bytes.U16BE(hdr, 4) == 2,
-            Channels = Bytes.U16BE(hdr, 12),
-            Height = (int)Bytes.U32BE(hdr, 14),
-            Width = (int)Bytes.U32BE(hdr, 18),
-            Depth = Bytes.U16BE(hdr, 22),
-            ColorMode = Bytes.U16BE(hdr, 24),
-        };
+        var inf = ReadInfo(hdr);
         info = inf;
         // Color mode data (palette for indexed).
         uint cmLen = ReadU32BE(br);
         byte[] colorData = cmLen > 0 && cmLen < 1 << 20 ? br.ReadBytes((int)cmLen) : Skip(fs, cmLen);
         // Image resources: look for the thumbnail while skipping.
+        byte[]? thumbJpeg = ReadResources(fs, br);
+        // Layer & mask section.
+        long lmLen = inf.IsPsb ? (long)ReadU64BE(br) : ReadU32BE(br);
+        fs.Seek(lmLen, SeekOrigin.Current);
+        ct.ThrowIfCancellationRequested();
+
+        Bitmap? bmp = null;
+        // A header outside the format's limits is damaged: its sizes would drive the reads and allocations below.
+        if (ThumbRules.PsdHeaderOk(inf.IsPsb, inf.Width, inf.Height, inf.Channels, inf.Depth))
+        {
+            try
+            {
+                bmp = DecodeComposite(fs, br, inf, colorData, box, ct);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch
+            {
+                bmp = null;
+            }
+        }
+        if (bmp == null && thumbJpeg != null)
+        {
+            bmp = BitmapUtil.Decode(thumbJpeg, box);
+            fromThumbnail = bmp != null;
+        }
+        return bmp;
+    }
+
+    /// <summary>
+    /// The JPEG of the thumbnail resource (1036, or 1033 in old files) alone, without touching the composite: the header,
+    /// the colour mode data's length and the resources are read, a few kilobytes in all. Null when there is none.
+    /// </summary>
+    public static byte[]? ReadThumbnailResource(string path)
+    {
+        using var fs = FileUtil.OpenShared(path, 1 << 14);
+        var br = new BinaryReader(fs);
+        byte[] hdr = br.ReadBytes(26);
+        if (hdr.Length < 26 || !Bytes.StartsWithAscii(hdr, "8BPS")) return null;
+        uint cmLen = ReadU32BE(br);
+        fs.Seek(cmLen, SeekOrigin.Current);
+        return ReadResources(fs, br);
+    }
+
+    private static Info ReadInfo(byte[] hdr) => new()
+    {
+        IsPsb = Bytes.U16BE(hdr, 4) == 2,
+        Channels = Bytes.U16BE(hdr, 12),
+        Height = (int)Bytes.U32BE(hdr, 14),
+        Width = (int)Bytes.U32BE(hdr, 18),
+        Depth = Bytes.U16BE(hdr, 22),
+        ColorMode = Bytes.U16BE(hdr, 24),
+    };
+
+    /// <summary>Reads the image resources section (the stream is at its length field), returns the thumbnail JPEG if any, and leaves the stream after the section.</summary>
+    private static byte[]? ReadResources(Stream fs, BinaryReader br)
+    {
         uint resLen = ReadU32BE(br);
         long resEnd = fs.Position + resLen;
         byte[]? thumbJpeg = null;
@@ -243,35 +295,15 @@ internal static class PsdDecoder
             fs.Seek(skipName, SeekOrigin.Current);
             uint size = ReadU32BE(br);
             long dataStart = fs.Position;
-            if ((id == 1036 || id == 1033) && size > 28 && size < 16 << 20)
+            if ((id == 1036 || id == 1033) && size > 28 && size < 16 << 20 && dataStart + size <= resEnd)
             {
                 byte[] t = br.ReadBytes((int)size);
-                if (Bytes.U32BE(t, 0) == 1) thumbJpeg = t[28..]; // kJpegRGB
+                if (t.Length == size && Bytes.U32BE(t, 0) == 1) thumbJpeg = t[28..]; // kJpegRGB
             }
             fs.Position = dataStart + size + (size & 1);
         }
         fs.Position = resEnd;
-        // Layer & mask section.
-        long lmLen = inf.IsPsb ? (long)ReadU64BE(br) : ReadU32BE(br);
-        fs.Seek(lmLen, SeekOrigin.Current);
-        ct.ThrowIfCancellationRequested();
-
-        Bitmap? bmp = null;
-        try
-        {
-            bmp = DecodeComposite(fs, br, inf, colorData, box, ct);
-        }
-        catch (OperationCanceledException) { throw; }
-        catch
-        {
-            bmp = null;
-        }
-        if (bmp == null && thumbJpeg != null)
-        {
-            bmp = BitmapUtil.Decode(thumbJpeg, box);
-            fromThumbnail = bmp != null;
-        }
-        return bmp;
+        return thumbJpeg;
     }
 
     private static Bitmap? DecodeComposite(FileStream fs, BinaryReader br, Info inf, byte[] colorData, Size box, CancellationToken ct)
@@ -296,6 +328,9 @@ internal static class PsdDecoder
         int[]? rowLens = null;
         if (compression == 1)
         {
+            // The table holds every row of every channel, and the arrays below take 12 bytes a row more: a damaged or
+            // hostile header must not make that gigabytes (the thumbnail resource is used instead).
+            if (ThumbRules.PsdRowTableBytes(inf.IsPsb, channels, h) > ThumbRules.PsdMaxRowTableBytes) return null;
             int rows = channels * h;
             rowLens = new int[rows];
             byte[] counts = br.ReadBytes(rows * (inf.IsPsb ? 4 : 2));
@@ -330,6 +365,8 @@ internal static class PsdDecoder
                 else
                 {
                     int len = rowLens![ri];
+                    // A row length from the file is only trusted up to what PackBits can produce for this row.
+                    if (len < 0 || len > ThumbRules.PackBitsMaxRow(rowBytes)) throw new InvalidDataException("PSD row length out of range");
                     if (packed.Length < len) packed = new byte[len];
                     fs.Position = rowOffsets![ri];
                     ReadExactly(fs, packed, len);

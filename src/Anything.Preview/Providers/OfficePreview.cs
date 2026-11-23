@@ -139,6 +139,96 @@ internal static class OfficePreview
         }
     }
 
+    /// <summary>
+    /// The text of a Word document's first paragraphs, as <see cref="RenderDocx"/> gives it joined line by line, but read
+    /// as a stream and only as far as <paramref name="lines"/> lines: a thumbnail's page shows about 40 lines of at most
+    /// 200 characters, and building the whole document took up to 220 ms for a big one. The same rules as RenderDocx
+    /// (every w:p in document order with the w:t, w:tab, w:br and w:cr inside it, nested paragraphs in their own place
+    /// too, empty paragraphs at the end dropped), with each line kept to its first 200 characters (more are never drawn).
+    /// Null when the document has no word/document.xml or it can't be read before enough lines were found.
+    /// </summary>
+    public static string? DocxFirstLines(string path, int lines, CancellationToken ct)
+    {
+        const int MaxLine = 200;
+        using var z = OpenZip(path, out var fs);
+        using (fs)
+        {
+            var e = Entry(z, "word/document.xml");
+            if (e == null) return null;
+            var blocks = new List<LineBlock>();
+            var open = new Stack<LineBlock>();
+            int inText = 0, ready = 0, readyLines = 0;
+            string w = W.NamespaceName;
+            void Append(ReadOnlySpan<char> s)
+            {
+                foreach (var b in open)
+                    foreach (char c in s)
+                    {
+                        if (b.Breaks >= lines) break;
+                        if (c == '\n') { b.Text.Append(c); b.Breaks++; b.LineLength = 0; }
+                        else if (b.LineLength < MaxLine) { b.Text.Append(c); b.LineLength++; }
+                    }
+            }
+            try
+            {
+                using var s = e.Open();
+                using var r = OfficeXml.Create(s, ignoreWhitespace: true, maxCharacters: 0);
+                while (r.Read())
+                {
+                    switch (r.NodeType)
+                    {
+                        case XmlNodeType.Element when r.NamespaceURI == w:
+                            switch (r.LocalName)
+                            {
+                                case "p":
+                                    var block = new LineBlock();
+                                    blocks.Add(block);
+                                    if (r.IsEmptyElement) block.Done = true;
+                                    else open.Push(block);
+                                    if ((blocks.Count & 255) == 0) ct.ThrowIfCancellationRequested();
+                                    break;
+                                case "t":
+                                    if (!r.IsEmptyElement) inText++;
+                                    break;
+                                case "tab":
+                                    Append("\t");
+                                    break;
+                                case "br" or "cr":
+                                    Append("\n");
+                                    break;
+                            }
+                            break;
+                        case XmlNodeType.EndElement when r.NamespaceURI == w:
+                            if (r.LocalName == "p" && open.Count > 0) open.Pop().Done = true;
+                            else if (r.LocalName == "t" && inText > 0) inText--;
+                            break;
+                        case XmlNodeType.Text or XmlNodeType.CDATA or XmlNodeType.SignificantWhitespace or XmlNodeType.Whitespace when inText > 0:
+                            Append(r.Value);
+                            break;
+                    }
+                    // Enough lines once every paragraph begun before them has ended: the rest can't come before them.
+                    while (ready < blocks.Count && blocks[ready].Done) readyLines += blocks[ready++].Breaks + 1;
+                    if (readyLines >= lines) return string.Join("\n", blocks.Take(ready).Select(b => b.Text.ToString()));
+                }
+            }
+            catch (Exception x) when (x is XmlException or InvalidDataException)
+            {
+                // A part that can't be read (broken, or refused by the guards): no page, as RenderDocx gives none.
+                return null;
+            }
+            int end = blocks.Count;
+            while (end > 0 && blocks[end - 1].Text.Length == 0) end--;
+            return string.Join("\n", blocks.Take(end).Select(b => b.Text.ToString()));
+        }
+    }
+
+    private sealed class LineBlock
+    {
+        public readonly StringBuilder Text = new();
+        public int Breaks, LineLength;
+        public bool Done;
+    }
+
     private static DocBlockStyle StyleFromName(string style, bool list)
     {
         string s = style.Replace(" ", "").ToLowerInvariant();

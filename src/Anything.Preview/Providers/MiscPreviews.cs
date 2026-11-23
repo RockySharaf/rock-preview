@@ -136,7 +136,10 @@ internal static class FontPreview
         {
             // CFF-flavoured OpenType: GDI+ can't load it; WPF can (needs an STA thread).
             string p = path;
-            var r = await StaPool.Shared.RunAsync(() => RenderWpf(p, width), ct, true, 15000).ConfigureAwait(false);
+            // The thumbnail service's threads are STA already and keep off the preview pane's pool.
+            var r = Thumbnails.ThumbnailService.IsServiceThread
+                ? RenderWpf(p, width)
+                : await StaPool.Shared.RunAsync(() => RenderWpf(p, width), ct, true, 15000).ConfigureAwait(false);
             if (r?.Bitmap == null) return null;
             bmp = r.Bitmap;
             family = r.Family;
@@ -323,7 +326,9 @@ internal static class FolderPreview
     {
         var di = new DirectoryInfo(path);
         var res = new PreviewResult(path, PreviewKind.Info, "Folder") { FormatName = Shell.GetTypeName(path, true) };
-        var thumbTask = Shell.GetThumbnailAsync(path, 256, ct);
+        // Windows' thumbnail cache only: Windows pictures a folder from a file inside it, and a PDF's handler can end this
+        // process (see ThumbKinds.WindowsCacheOnly). A miss shows the folder's icon (below).
+        var thumbTask = Shell.GetThumbnailAsync(path, 256, ct, cacheOnly: true);
         int files = 0, dirs = 0;
         long size = 0;
         bool partial = false;

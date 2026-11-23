@@ -8,8 +8,15 @@ namespace Anything.Core;
 /// </summary>
 public sealed class NavigationHistory<T> where T : class
 {
-    /// <summary>A place in the history: where, what it's called, and the item selected there when it was left (or null).</summary>
-    public sealed record Entry(T Place, string? Name, T? Item);
+    /// <summary>
+    /// A place in the history: where, what it's called, the item selected there when it was left (or null), and the
+    /// search that showed over it then (or null), which shows again when Back or Forward comes to it.
+    /// </summary>
+    public sealed record Entry(T Place, string? Name, T? Item, SearchPage? Page = null)
+    {
+        /// <summary>What Back and Forward's tooltips call it: the search when it has one, else the place's name.</summary>
+        public string? Label => Page?.Label ?? Name;
+    }
 
     /// <summary>The oldest places are forgotten past this many.</summary>
     public const int Limit = 200;

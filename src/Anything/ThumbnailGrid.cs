@@ -1,18 +1,20 @@
-using Anything.Preview;
+using System.Collections.Concurrent;
+using Anything.Core.Thumbs;
+using Anything.Preview.Thumbnails;
 
 namespace Anything;
 
 /// <summary>
 /// Owner-drawn virtual grid of thumbnails for the current results. It owns no selection: the main window's
 /// virtual ListView stays the single source of truth, so every list command (open, copy, delete, shell menu…)
-/// works unchanged in thumbnail mode. Thumbnails load lazily for visible cells through
-/// <see cref="ThumbnailProvider"/>; requests for cells scrolled out of view are cancelled.
+/// works unchanged in thumbnail mode. Thumbnails come from the thumbnail service (<see cref="ThumbHost"/>): the grid
+/// tells it what the view shows whenever that changes (the scroll position, the size, the list, the thumbnail size),
+/// with the cells around it in the order they are wanted, and draws what has arrived. Painting never asks for anything
+/// and never cancels anything.
 /// </summary>
 internal sealed class ThumbnailGrid : Control
 {
     const int Pad = 8;
-    const long MaxCachedBytes = 40L * 1024 * 1024; // decoded thumbnails kept for nearby rows
-    long _cachedBytes;
 
     // Scrolled in pixels, as File Explorer scrolls: smoothly, not by rows. The bar counts in units of _unit pixels,
     // more than one only when all the rows are too tall for its int range (millions of results at a large size).
@@ -28,10 +30,6 @@ internal sealed class ThumbnailGrid : Control
     double _topFraction;
     bool _atEnd;
     int _ensurePending = -1; // an item to bring into view once the grid is shown and laid out
-    readonly Dictionary<string, Bitmap> _thumbs = new(StringComparer.OrdinalIgnoreCase);
-    readonly Queue<string> _order = new();
-    readonly HashSet<string> _none = new(StringComparer.OrdinalIgnoreCase);
-    readonly Dictionary<string, CancellationTokenSource> _pending = new(StringComparer.OrdinalIgnoreCase);
     int _count, _thumbSize = 160, _anchor = -1;
     string _emptyText = "";
 
@@ -55,6 +53,12 @@ internal sealed class ThumbnailGrid : Control
 
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public Func<int, string?> PathAt { get; set; } = _ => null;
+    /// <summary>
+    /// The item's length and last-write time as the index has them (no file is touched), so an edited file gets a new
+    /// picture; <see cref="ThumbStamp.Unknown"/> when not known (the service then reads it from the file, on a worker).
+    /// </summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public Func<int, ThumbStamp> StampAt { get; set; } = _ => ThumbStamp.Unknown;
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public Func<int, string> NameAt { get; set; } = _ => "";
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
@@ -85,6 +89,11 @@ internal sealed class ThumbnailGrid : Control
     public event Action<int, Point>? RenameClick;
     /// <summary>The user scrolled the grid (wheel or scroll bar): a rename box over it ends.</summary>
     public event Action? Scrolling;
+    /// <summary>
+    /// The thumbnails on screen took more than a second to appear (once per stretch of waiting): the program counts these
+    /// to know when keeping thumbnails on disk would help.
+    /// </summary>
+    public event Action? WaitedForThumbnails;
 
     public ThumbnailGrid()
     {
@@ -100,6 +109,7 @@ internal sealed class ThumbnailGrid : Control
             Scrolling?.Invoke();
             SetOffset((long)_scroll.Value * _unit, fromBar: true);
         };
+        _memory.Evicted += OnEvicted;
     }
 
     /// <summary>The grid's scroll bar: the wheel or a touchpad over it scrolls the grid as it does over the thumbnails.</summary>
@@ -120,8 +130,9 @@ internal sealed class ThumbnailGrid : Control
         {
             value = Math.Clamp(value, 48, 512);
             if (value == _thumbSize) return;
+            // The pictures of the old size stay, drawn scaled, until the new size's arrive.
             Relayout(() => _thumbSize = value);
-            ClearThumbs();
+            QueueViewport();
             Invalidate();
         }
     }
@@ -130,14 +141,19 @@ internal sealed class ThumbnailGrid : Control
     public void SetCount(int count, bool reset)
     {
         _count = count;
-        CancelPending();
-        if (reset) { _anchor = -1; _offset = 0; _wheelPixels = 0; _ensurePending = -1; _hot = -1; StopRenameClick(); }
+        if (reset)
+        {
+            _anchor = -1; _offset = 0; _wheelPixels = 0; _ensurePending = -1; _hot = -1; StopRenameClick();
+            NewList();
+        }
         long before = _offset;
         UpdateScroll();
         // More or fewer results with the view where it was: the item it keeps at the top stays the same one, but
         // whether that's the end is measured again (more results: it no longer is).
         if (reset || _offset != before) Remember();
         else _atEnd = _offset > 0 && _offset >= MaxOffset;
+        // The items may be others now (the index changed, another order): the cells are looked up again.
+        QueueViewport();
         Invalidate();
     }
 
@@ -174,10 +190,13 @@ internal sealed class ThumbnailGrid : Control
     {
         offset = Math.Clamp(offset, 0, MaxOffset);
         bool moved = offset != _offset;
+        if (moved) _direction = offset > _offset ? ScrollDirection.Down : ScrollDirection.Up;
         _offset = offset;
         if (!fromBar) SyncBar();
         Remember();
         if (!moved) return;
+        _lastActivity = Environment.TickCount64;
+        QueueViewport();
         Invalidate();
         if (_hot >= 0) RefreshHot(); // the thumbnails moved under a pointer that didn't
     }
@@ -242,12 +261,14 @@ internal sealed class ThumbnailGrid : Control
         base.OnResize(e);
         Relayout();
         if (_ensurePending >= 0) EnsureVisible(_ensurePending);
+        QueueViewport(); // more or fewer cells on screen
     }
 
     protected override void OnFontChanged(EventArgs e)
     {
         base.OnFontChanged(e);
         Relayout();
+        QueueViewport();
     }
 
     protected override void OnVisibleChanged(EventArgs e)
@@ -257,6 +278,24 @@ internal sealed class ThumbnailGrid : Control
         // this runs; a size that changed meanwhile comes as a resize, which handles it first).
         if (Visible && _ensurePending >= 0 && IsHandleCreated)
             BeginInvoke(() => { if (Visible && _ensurePending >= 0) EnsureVisible(_ensurePending); });
+        if (Visible) QueueViewport();
+        else ViewHidden();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Volatile.Write(ref _hwnd, Handle);
+        QueueViewport();
+        // A slice of arrivals posted to a window that was made again is lost with it: posted again here.
+        Volatile.Write(ref _drainPosted, 0);
+        if (!_arrivals.IsEmpty && Interlocked.Exchange(ref _drainPosted, 1) == 0) PostTakeArrivals();
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        Volatile.Write(ref _hwnd, 0);
+        base.OnHandleDestroyed(e);
     }
 
     Rectangle CellRect(int index)
@@ -291,9 +330,20 @@ internal sealed class ThumbnailGrid : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        _painting = true;
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        try { PaintCells(e); }
+        finally
+        {
+            _painting = false;
+            Counters.WorstPaintUs = Math.Max(Counters.WorstPaintUs, ThumbCounters.Since(start));
+        }
+    }
+
+    void PaintCells(PaintEventArgs e)
+    {
         var g = e.Graphics;
         g.Clear(BackColor);
-        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
         if (_count == 0)
         {
             if (_emptyText.Length == 0) return;
@@ -309,12 +359,12 @@ internal sealed class ThumbnailGrid : Control
         int first = (int)Math.Min(_count, _offset / cellHeight * cols);
         int last = (int)Math.Min(_count - 1L, ((_offset + ClientSize.Height) / cellHeight + 1) * cols - 1);
         int focused = FocusedIndex();
-        var visiblePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var selBack = Color.FromArgb(90, SystemColors.Highlight);
         using var selBrush = new SolidBrush(selBack);
         using var hoverBrush = new SolidBrush(ExplorerTheme.Hover);
         using var frame = new Pen(Color.FromArgb(70, ForeColor));
         using var focusPen = new Pen(SystemColors.Highlight, 1.5f);
+        var captions = new List<(string Name, Rectangle Rect)>(last - first + 1);
 
         for (int i = first; i <= last; i++)
         {
@@ -329,99 +379,485 @@ internal sealed class ThumbnailGrid : Control
             string? path = PathAt(i);
             if (path is not null)
             {
-                visiblePaths.Add(path);
-                if (_thumbs.TryGetValue(path, out var bmp)) DrawFitted(g, bmp, box, IsCut(path));
-                else
-                {
+                // Only what has arrived is drawn: nothing here asks for a picture or touches a file.
+                if (!DrawThumb(g, i, box, IsCut(path)))
                     g.DrawRectangle(frame, Rectangle.Inflate(box, -box.Width / 6, -box.Height / 6));
-                    if (!_none.Contains(path)) Request(path);
-                }
             }
-            var textRect = new Rectangle(cell.X + 4, box.Bottom + 4, cell.Width - 8, TextHeight);
-            TextRenderer.DrawText(g, NameAt(i), Font, textRect, ForeColor,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
-                TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
+            captions.Add((NameAt(i), new Rectangle(cell.X + 4, box.Bottom + 4, cell.Width - 8, TextHeight)));
         }
-
-        // Cancel loads for cells that scrolled away.
-        foreach (var (p, cts) in _pending.ToArray())
-            if (!visiblePaths.Contains(p)) { cts.Cancel(); _pending.Remove(p); }
-    }
-
-    static void DrawFitted(Graphics g, Bitmap bmp, Rectangle box, bool faded = false)
-    {
-        float scale = Math.Min(1f, Math.Min((float)box.Width / bmp.Width, (float)box.Height / bmp.Height));
-        int w = Math.Max(1, (int)(bmp.Width * scale)), h = Math.Max(1, (int)(bmp.Height * scale));
-        var dest = new Rectangle(box.X + (box.Width - w) / 2, box.Y + (box.Height - h) / 2, w, h);
-        if (!faded) { g.DrawImage(bmp, dest); return; }
-        using var half = new System.Drawing.Imaging.ImageAttributes();
-        half.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = 0.5f }); // a cut item, until it is pasted
-        g.DrawImage(bmp, dest, 0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel, half);
-    }
-
-    // ---- thumbnail loading -------------------------------------------------------------------
-
-    void Request(string path)
-    {
-        if (_pending.ContainsKey(path)) return;
-        var cts = new CancellationTokenSource();
-        _pending[path] = cts;
-        int size = _thumbSize;
-        _ = LoadAsync(path, size, cts);
-    }
-
-    async Task LoadAsync(string path, int size, CancellationTokenSource cts)
-    {
-        Bitmap? bmp = null;
-        try { bmp = await ThumbnailProvider.GetThumbnailAsync(path, size, cts.Token).ConfigureAwait(false); }
-        catch (OperationCanceledException) { return; }
-        catch { /* treated as "no thumbnail" below */ }
-        if (IsDisposed || !IsHandleCreated) { bmp?.Dispose(); return; }
+        // The names last, all through one device context: each TextRenderer call on the Graphics would take its device
+        // context and give it back, and that waits whenever a worker thread is in GDI+ (measured: a caption 0.1 ms alone,
+        // several times that while the service decodes, which made a screen's paint 30 to 80 ms).
+        if (captions.Count == 0) return;
+        IntPtr hdc = g.GetHdc();
         try
         {
-            BeginInvoke(() =>
-            {
-                if (_pending.TryGetValue(path, out var current) && current == cts) _pending.Remove(path);
-                if (cts.IsCancellationRequested || size != _thumbSize) { bmp?.Dispose(); return; }
-                if (bmp is null) _none.Add(path);
-                else Store(path, bmp);
-                Invalidate();
-            });
+            using var dc = new SharedDc(hdc);
+            foreach (var (name, rect) in captions)
+                TextRenderer.DrawText(dc, name, Font, rect, ForeColor,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
+                    TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl);
         }
-        catch (InvalidOperationException) { bmp?.Dispose(); }
+        finally { g.ReleaseHdc(hdc); }
     }
 
-    static long Bytes(Bitmap b) => (long)b.Width * b.Height * 4;
-
-    void Store(string path, Bitmap bmp)
+    /// <summary>A device context taken once from the paint's Graphics, lent to each caption (none of them gives it back).</summary>
+    sealed class SharedDc(IntPtr hdc) : IDeviceContext
     {
-        if (_thumbs.Remove(path, out var old)) { _cachedBytes -= Bytes(old); old.Dispose(); }
-        _thumbs[path] = bmp;
-        _cachedBytes += Bytes(bmp);
-        _order.Enqueue(path);
-        while (_cachedBytes > MaxCachedBytes && _thumbs.Count > 1 && _order.TryDequeue(out var evict))
-            if (_thumbs.Remove(evict, out var b)) { _cachedBytes -= Bytes(b); b.Dispose(); }
+        public IntPtr GetHdc() => hdc;
+        public void ReleaseHdc() { }
+        public void Dispose() { }
     }
 
-    void CancelPending()
+    /// <summary>Draws what item <paramref name="index"/> has (ThumbPaint decides which picture and at what scale); false for nothing.</summary>
+    bool DrawThumb(Graphics g, int index, Rectangle box, bool faded)
     {
-        foreach (var cts in _pending.Values) cts.Cancel();
-        _pending.Clear();
+        if (!_cellKeys.TryGetValue(index, out var key)) return false;
+        ThumbShown? exact = _memory.TryGet((key, _thumbSize), out var e) ? e : null;
+        ThumbShown? other = null;
+        if (exact is not { Quality: ThumbQuality.Final or ThumbQuality.None } && _latest.TryGetValue(key.Path, out var last)
+            && (last.Key, last.Size) != (key, _thumbSize) && _memory.TryGet(last, out var o))
+            other = o;
+        var drawing = ThumbPaint.Choose(exact?.Quality, other?.Quality);
+        var shown = drawing switch { ThumbDrawing.Exact or ThumbDrawing.StandIn => exact, ThumbDrawing.Other => other, _ => null };
+        if (shown == null) return false;
+        // A file with no picture and no icon either: the frame, as before.
+        if (shown.Bitmap is not { } bmp) return false;
+        float scale = ThumbPaint.Scale(drawing, bmp.Width, bmp.Height, _thumbSize, shown.Size);
+        int w = Math.Max(1, (int)(bmp.Width * scale)), h = Math.Max(1, (int)(bmp.Height * scale));
+        var dest = new Rectangle(box.X + (box.Width - w) / 2, box.Y + (box.Height - h) / 2, w, h);
+        bool exactSize = w == bmp.Width && h == bmp.Height;
+        // The service hands over premultiplied pictures at the display size: drawn pixel for pixel, they need no
+        // filtering. A stand-in or a picture of another size is scaled, smoothly enough to pass for a moment.
+        g.InterpolationMode = exactSize ? System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor : System.Drawing.Drawing2D.InterpolationMode.Bilinear;
+        g.PixelOffsetMode = exactSize ? System.Drawing.Drawing2D.PixelOffsetMode.Half : System.Drawing.Drawing2D.PixelOffsetMode.Default;
+        try
+        {
+            if (!faded) { g.DrawImage(bmp, dest); return true; }
+            using var half = new System.Drawing.Imaging.ImageAttributes();
+            half.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = 0.5f }); // a cut item, until it is pasted
+            g.DrawImage(bmp, dest, 0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel, half);
+            return true;
+        }
+        finally { g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Default; }
     }
 
+    // ---- thumbnails: what the view asks for, what arrives, the memory of both -------------------------
+    //
+    // The order (all on the UI thread): whenever the scroll position, the size, the list or the thumbnail size changes,
+    // QueueViewport posts one SubmitViewport for this turn of the message loop. It resolves each cell of the plan
+    // (ThumbOrder.Viewport: visible in reading order, two screens ahead in the scroll direction, one behind) to its path,
+    // stamp and key, leaves out what memory already holds for good (Final or None), and hands the rest to the service. A
+    // new list (a new search, another folder) drops everything not started. The service raises arrivals on its workers;
+    // they wait in _arrivals and are taken a few milliseconds' worth per message (the rest in a message of its own), put
+    // in memory, and only the cells on screen that show them are invalidated. When nothing waits and nothing was touched for 1.5 s, the idle step asks
+    // for the rest of the list (200 at a time, 3,000 at most) to go into the store; without a store it doesn't run.
+
+    /// <summary>No scrolling, key or click for this long (and nothing waiting): the idle step may run.</summary>
+    const long IdleAfterMs = 1500;
+    /// <summary>
+    /// Arrivals are taken for this long at most in one message; the rest come in the next one, so many pictures arriving
+    /// at once never hold the UI thread (a scroll, a click, a paint) for long.
+    /// </summary>
+    const double ArrivalSliceMs = 4;
+    /// <summary>The message that takes the next slice of arrivals (posted, so it is a message of its own).</summary>
+    const int WmTakeArrivals = 0x8000 + 0x2A1; // WM_APP + 0x2A1
+
+    // Pictures kept at display size, least recently used first out: one memory for every window (ThumbHost.Memory).
+    readonly ThumbMemory<(ThumbKey Key, int Size), ThumbShown> _memory = ThumbHost.Memory;
+    readonly HashSet<ThumbKey> _visibleKeys = [];
+    readonly Dictionary<ThumbKey, int> _idlePending = []; // idle work handed out and maybe not made yet: key to list index
+    readonly Dictionary<string, (ThumbKey Key, int Size)> _latest = new(StringComparer.Ordinal); // a file's last arrival, any size
+    readonly Dictionary<int, ThumbKey> _cellKeys = [];   // the plan's items: list index to key
+    readonly HashSet<ThumbKey> _planKeys = [];
+    readonly HashSet<ThumbKey> _idleKeys = [];
+    readonly ConcurrentQueue<ThumbArrival> _arrivals = new();
+    readonly IdlePlanner _idle = new();
+    readonly ThumbFillWatch _fill = new();
+    System.Windows.Forms.Timer? _idleTimer;
+    ThumbClient? _client;
+    int _listNumber = 1;
+    int _idleStart;
+    bool _idleInFlight;
+    ScrollDirection _direction;
+    long _lastActivity = Environment.TickCount64;
+    bool _viewportQueued, _painting;
+    int _drainPosted;
+    // The window's handle, for the workers to post arrivals to (Handle itself may only be read on the UI thread); 0
+    // while there is no window.
+    nint _hwnd;
+    volatile bool _closed;
+
+    /// <summary>Counts of what the grid did with thumbnails (the off-screen checks read them).</summary>
+    internal sealed class ThumbCounters
+    {
+        public int Viewports, Requests, IdleRequests, ArrivalBatches, Arrivals, CellsInvalidated, StaleDropped;
+        /// <summary>Asks or cancels made while painting: must stay 0.</summary>
+        public int AskedWhilePainting;
+        /// <summary>The longest a viewport, a batch of arrivals and a paint took on the UI thread, in microseconds.</summary>
+        public int WorstViewportUs, WorstArrivalsUs, WorstPaintUs;
+
+        public static int Since(long start) => (int)Math.Min(int.MaxValue, System.Diagnostics.Stopwatch.GetElapsedTime(start).Ticks / 10);
+    }
+
+    internal ThumbCounters Counters { get; } = new();
+
+    ThumbClient Client => _client ??= ThumbHost.CreateClient(OnArrival);
+
+    /// <summary>The list changed (a new search, another folder, a refresh): work not started for the old one is dropped.</summary>
+    void NewList()
+    {
+        _listNumber++;
+        _cellKeys.Clear();
+        _planKeys.Clear();
+        _visibleKeys.Clear();
+        _idleKeys.Clear();
+        _idlePending.Clear();
+        _idle.Reset();
+        _idleInFlight = false;
+        _direction = ScrollDirection.None;
+        _fill.Reset();
+    }
+
+    /// <summary>The view changed: the plan is made again once, at the end of this turn of the message loop.</summary>
+    void QueueViewport()
+    {
+        if (_viewportQueued || _closed || !IsHandleCreated) return;
+        _viewportQueued = true;
+        try { BeginInvoke(SubmitViewport); }
+        catch (InvalidOperationException) { _viewportQueued = false; }
+    }
+
+    void SubmitViewport()
+    {
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        try { SubmitViewportNow(); }
+        finally { Counters.WorstViewportUs = Math.Max(Counters.WorstViewportUs, ThumbCounters.Since(start)); }
+    }
+
+    void SubmitViewportNow()
+    {
+        _viewportQueued = false;
+        if (_closed || !Visible || ClientSize.Height <= 0) return;
+        if (_painting) Counters.AskedWhilePainting++;
+        if (_count == 0)
+        {
+            // An empty list: whatever the last one still had waiting goes. The view is still shown, so the pictures
+            // memory holds aren't let go after a while (a plan of one cell keeps it counted as shown): going back to
+            // the folder before draws them at once.
+            _cellKeys.Clear();
+            _planKeys.Clear();
+            _visibleKeys.Clear();
+            ThumbHost.NotePlan(this, (long)_thumbSize * _thumbSize * 4);
+            _client?.SubmitViewport(_listNumber, []);
+            return;
+        }
+        int cols = Columns, h = Cell.Height;
+        int firstRow = (int)Math.Min(int.MaxValue, _offset / h);
+        int lastRow = (int)Math.Min(int.MaxValue, (_offset + ClientSize.Height - 1) / h);
+        var plan = ThumbOrder.Viewport(_count, cols, firstRow, lastRow - firstRow + 1, _direction);
+        _cellKeys.Clear();
+        _planKeys.Clear();
+        _visibleKeys.Clear();
+        var requests = new List<ThumbRequest>(plan.Count);
+        foreach (var item in plan)
+        {
+            string? path = PathAt(item.Index);
+            if (path is null) continue;
+            var stamp = StampAt(item.Index);
+            var key = ThumbKey.Of(path, stamp, _thumbSize);
+            _cellKeys[item.Index] = key;
+            _planKeys.Add(key);
+            if (item.Priority == ThumbPriority.Visible) _visibleKeys.Add(key);
+            // Held for good already: not asked again (a stand-in still waits for its real picture).
+            if (_memory.Peek((key, _thumbSize), out var held) && held.Quality != ThumbQuality.Low) continue;
+            requests.Add(new ThumbRequest(path, stamp, _thumbSize, item.Priority, item.Index));
+        }
+        // Memory holds the plan with room to spare, and what is on screen is the last to go.
+        ThumbHost.NotePlan(this, (long)plan.Count * _thumbSize * _thumbSize * 4);
+        foreach (var key in _visibleKeys) _memory.TryGet((key, _thumbSize), out _);
+        _idleStart = ThumbOrder.IdleStart(plan, _count);
+        // Idle work not started is dropped by a new plan: what was handed out and not made may be handed out again; what
+        // was made (or runs, or the new plan asks for) is not, so a list that keeps changing doesn't get the same chunk
+        // again and again. Not made: still waiting in the queue now, or dropped by the service between its stages as the
+        // new plan goes in (it says which, after).
+        List<int>? giveBack = null;
+        Dictionary<ThumbKey, int>? handedOut = null;
+        if (_idleInFlight && _client is { } idleClient)
+        {
+            giveBack = _idlePending.Where(kv => !_planKeys.Contains(kv.Key) && idleClient.Queue.IsWaiting(kv.Key)).Select(kv => kv.Value).ToList();
+            handedOut = new Dictionary<ThumbKey, int>(_idlePending);
+            _idlePending.Clear();
+            _idleInFlight = false;
+        }
+        Counters.Viewports++;
+        Counters.Requests += requests.Count;
+        Client.SubmitViewport(_listNumber, requests);
+        var dropped = Client.TakeDroppedIdle();
+        if (handedOut != null)
+        {
+            foreach (var key in dropped)
+                if (handedOut.TryGetValue(key, out int i) && !_planKeys.Contains(key)) giveBack!.Add(i);
+            _idle.Return(giveBack!);
+        }
+        StartIdleTimer();
+        ObserveFill();
+    }
+
+    /// <summary>The grid is hidden (the details list, a folder view): its work not started is dropped.</summary>
+    void ViewHidden()
+    {
+        _idleTimer?.Stop();
+        _fill.Reset();
+        ThumbHost.NotePlan(this, 0);
+        if (_idleInFlight && _client is { } idleClient)
+        {
+            var giveBack = _idlePending.Where(kv => idleClient.Queue.IsWaiting(kv.Key)).Select(kv => kv.Value).ToList();
+            idleClient.Clear();
+            // And the idle work the service dropped between its stages as it cleared.
+            foreach (var key in idleClient.TakeDroppedIdle())
+                if (_idlePending.TryGetValue(key, out int i)) giveBack.Add(i);
+            _idle.Return(giveBack);
+        }
+        else _client?.Clear();
+        _idlePending.Clear();
+        _idleInFlight = false;
+    }
+
+    /// <summary>
+    /// Memory let a picture go to make room (another window, or other sizes, took it): a cell on screen that showed it
+    /// asks for it again, rather than show the empty frame until the view next moves.
+    /// </summary>
+    void OnEvicted((ThumbKey Key, int Size) slot)
+    {
+        if (_closed || !Visible || slot.Size != _thumbSize || !_visibleKeys.Contains(slot.Key)) return;
+        QueueViewport();
+    }
+
+    // Raised on the service's workers, several at once: queued, and taken on the UI thread a few milliseconds' worth per message.
+    void OnArrival(ThumbArrival a)
+    {
+        _arrivals.Enqueue(a);
+        if (_closed) { DisposeArrivals(); return; }
+        if (Interlocked.Exchange(ref _drainPosted, 1) != 0) return;
+        // Posted as a message of its own, never BeginInvoke'd: WinForms runs every callback queued while it runs its
+        // callbacks in one message, so a steady stream of arrivals chained slices into one long message.
+        nint hwnd = Volatile.Read(ref _hwnd);
+        if (hwnd != 0 && PostMessage(hwnd, WmTakeArrivals, 0, 0)) return;
+        // No window now: the flag goes down, and a window made later posts for what waits (OnHandleCreated).
+        Volatile.Write(ref _drainPosted, 0);
+        if (_closed) DisposeArrivals();
+    }
+
+    void DisposeArrivals()
+    {
+        while (_arrivals.TryDequeue(out var a)) a.Bitmap?.Dispose();
+    }
+
+    /// <summary>
+    /// The next slice of arrivals, as a message of its own: posted, not BeginInvoke'd, because every callback queued
+    /// while WinForms runs its callbacks would run in the same message.
+    /// </summary>
+    void PostTakeArrivals()
+    {
+        if (!_closed && IsHandleCreated && PostMessage(Handle, WmTakeArrivals, 0, 0)) return;
+        Volatile.Write(ref _drainPosted, 0);
+        if (_closed) DisposeArrivals();
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    static extern bool PostMessage(IntPtr hWnd, int msg, nint wParam, nint lParam);
+
+    void TakeArrivals()
+    {
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        try { TakeArrivalsNow(); }
+        finally { Counters.WorstArrivalsUs = Math.Max(Counters.WorstArrivalsUs, ThumbCounters.Since(start)); }
+    }
+
+    void TakeArrivalsNow()
+    {
+        if (_closed)
+        {
+            Volatile.Write(ref _drainPosted, 0);
+            DisposeArrivals();
+            return;
+        }
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        var arrived = new HashSet<ThumbKey>();
+        int taken = 0;
+        bool more = false;
+        while (_arrivals.TryDequeue(out var a))
+        {
+            taken++;
+            // A few milliseconds' worth at a time: the rest in a message of their own (workers don't post meanwhile:
+            // _drainPosted stays set until the queue is empty).
+            if (taken % 8 == 0 && System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds >= ArrivalSliceMs) more = !_arrivals.IsEmpty;
+            // Warming for the store only: the picture is kept there, not in this window's memory.
+            if (_idleKeys.Contains(a.Key) && !_planKeys.Contains(a.Key))
+            {
+                a.Bitmap?.Dispose();
+                Counters.StaleDropped++;
+                continue;
+            }
+            var slot = (a.Key, a.DisplaySize);
+            if (a.Quality == ThumbQuality.Low && _memory.Peek(slot, out var held) && held.Quality != ThumbQuality.Low)
+            {
+                a.Bitmap?.Dispose(); // the real one came first
+                continue;
+            }
+            var shown = new ThumbShown(a.Bitmap, a.Quality, a.DisplaySize);
+            _memory.Set(slot, shown, shown.Bytes);
+            // The file's latest picture stands in for it at another size, or after it changed, until its own comes.
+            if (a.Quality != ThumbQuality.Low || !_latest.TryGetValue(a.Key.Path, out var last) || !_memory.Contains(last))
+                _latest[a.Key.Path] = slot;
+            arrived.Add(a.Key);
+            if (more) break;
+        }
+        if (more) PostTakeArrivals();
+        else
+        {
+            Volatile.Write(ref _drainPosted, 0);
+            // One that arrived as the queue emptied found the flag still set and posted nothing: taken next time.
+            if (!_arrivals.IsEmpty && Interlocked.Exchange(ref _drainPosted, 1) == 0) PostTakeArrivals();
+        }
+        if (taken == 0) return;
+        // A file's latest picture is only worth remembering while memory still holds it.
+        if (_latest.Count > 4 * _memory.Count + 2000)
+            foreach (var (path, slot) in _latest.ToList())
+                if (!_memory.Contains(slot)) _latest.Remove(path);
+        Counters.ArrivalBatches++;
+        Counters.Arrivals += taken;
+        if (arrived.Count > 0 && _count > 0 && Visible)
+        {
+            var (first, last) = VisibleRange();
+            for (int i = first; i <= last; i++)
+                if (_cellKeys.TryGetValue(i, out var key) && arrived.Contains(key))
+                {
+                    Invalidate(CellRect(i));
+                    Counters.CellsInvalidated++;
+                }
+        }
+        ObserveFill();
+    }
+
+    /// <summary>The items whose cells the view shows, partly or whole (first &gt; last when none).</summary>
+    (int First, int Last) VisibleRange()
+    {
+        int cols = Columns, cellHeight = Cell.Height;
+        int first = (int)Math.Min(_count, _offset / cellHeight * cols);
+        int last = (int)Math.Min(_count - 1L, ((_offset + ClientSize.Height - 1) / cellHeight + 1) * cols - 1);
+        return (first, last);
+    }
+
+    /// <summary>How many cells on screen have nothing to show yet.</summary>
+    int Unanswered()
+    {
+        if (!Visible || _count == 0 || ClientSize.Height <= 0) return 0;
+        var (first, last) = VisibleRange();
+        int missing = 0;
+        for (int i = first; i <= last; i++)
+        {
+            if (!_cellKeys.TryGetValue(i, out var key)) continue; // no file (gone): nothing will come
+            if (_memory.Contains((key, _thumbSize))) continue;
+            if (_latest.TryGetValue(key.Path, out var other) && _memory.Contains(other)) continue;
+            missing++;
+        }
+        return missing;
+    }
+
+    /// <summary>Times the screen's empty cells; a stretch over a second is a wait, which the program counts.</summary>
+    void ObserveFill()
+    {
+        if (_fill.Observe(Environment.TickCount64, Unanswered())) WaitedForThumbnails?.Invoke();
+    }
+
+    void StartIdleTimer()
+    {
+        if (_idleTimer == null)
+        {
+            _idleTimer = new System.Windows.Forms.Timer { Interval = 500 };
+            _idleTimer.Tick += (_, _) => IdleTick();
+        }
+        if (!_idleTimer.Enabled) _idleTimer.Start();
+    }
+
+    /// <summary>"Instant thumbnails" was turned on: the idle step may start now, without waiting for a scroll.</summary>
+    public void StoreChoiceChanged()
+    {
+        if (!_closed && Visible) StartIdleTimer();
+    }
+
+    void IdleTick()
+    {
+        if (_closed || !Visible) { _idleTimer?.Stop(); return; }
+        ObserveFill(); // a screen that never fills is a wait too
+        if (_client is not { } client) return;
+        if (!client.IsIdle) return;
+        // Everything handed out was made.
+        _idleInFlight = false;
+        _idlePending.Clear();
+        // Nothing more to do here: the list is used up or empty, or the option is off (no idle step: there is nowhere to
+        // keep its pictures). The timer stops once the screen is full; a viewport, or the option turned on, starts it
+        // again. With the option on at a location that can't be used now, it keeps ticking, so the step starts by itself
+        // when the location comes back.
+        if (_idle.Exhausted || _count == 0 || !ThumbHost.StoreChosen) { if (!_fill.Running) _idleTimer?.Stop(); return; }
+        if (!ThumbHost.KeepsStore) return;
+        if (Environment.TickCount64 - _lastActivity < IdleAfterMs) return;
+        var chunk = _idle.Next(_count, _idleStart, i => !_cellKeys.ContainsKey(i));
+        // Nothing left to hand out (_idle.Done: a short list all handed out; or a huge one whose walk found nothing near
+        // the cap): the timer stops once the screen is full, rather than walk the same list twice a second. Next is asked
+        // on every tick, not skipped while Done, because a scroll moves the plan and the items it no longer covers become
+        // wanted. Whatever can make new candidates starts the timer again: a viewport (scroll, resize, a new list,
+        // another size, idle work given back), the option turned on, Settings' Clear.
+        if (_idle.Done) { if (!_fill.Running) _idleTimer?.Stop(); return; }
+        var requests = new List<ThumbRequest>(chunk.Count);
+        foreach (int i in chunk)
+        {
+            string? path = PathAt(i);
+            // Only kinds kept on disk (those the estimate counts): the idle step has nothing to make of the rest (a page of
+            // a file's own text, a music file's cover, a folder).
+            if (path is null || !ThumbKinds.KeepOnDisk(path)) continue;
+            var stamp = StampAt(i);
+            var key = ThumbKey.Of(path, stamp, _thumbSize);
+            if (_memory.Peek((key, _thumbSize), out var held) && held.Quality != ThumbQuality.Low) continue;
+            _idleKeys.Add(key);
+            _idlePending[key] = i;
+            requests.Add(new ThumbRequest(path, stamp, _thumbSize, ThumbPriority.Idle, i));
+        }
+        if (requests.Count == 0) return;
+        Counters.IdleRequests += requests.Count;
+        if (client.SubmitIdle(_listNumber, requests) > 0) _idleInFlight = true;
+    }
+
+    /// <summary>Forgets every picture held (Settings' Clear) and asks again for what the view shows.</summary>
     public void ClearThumbs()
     {
-        CancelPending();
-        foreach (var b in _thumbs.Values) b.Dispose();
-        _thumbs.Clear();
-        _order.Clear();
-        _cachedBytes = 0;
-        _none.Clear();
+        ThumbHost.ClearMemory();
+        _latest.Clear();
+        _idleKeys.Clear();
+        _idlePending.Clear();
+        _idle.Reset();
+        _fill.Reset();
+        QueueViewport();
+        Invalidate();
     }
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { ClearThumbs(); StopRenameClick(); }
+        if (disposing)
+        {
+            _closed = true;
+            _memory.Evicted -= OnEvicted;
+            ThumbHost.NotePlan(this, 0);
+            _idleTimer?.Dispose();
+            _client?.Dispose();
+            DisposeArrivals();
+            // The pictures stay in the program's memory for the other windows.
+            _latest.Clear();
+            StopRenameClick();
+        }
         base.Dispose(disposing);
     }
 
@@ -430,6 +866,7 @@ internal sealed class ThumbnailGrid : Control
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
+        _lastActivity = Environment.TickCount64;
         bool hadFocus = Focused;
         Focus();
         StopRenameClick();
@@ -477,6 +914,9 @@ internal sealed class ThumbnailGrid : Control
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
+        // The window closing for good: WinForms calls this while it destroys the grid's handle, if the pointer was on
+        // it. Nothing is left to repaint (and the window's fonts may be gone), so the highlight is only forgotten.
+        if (TopLevelControl is { } top && (top.Disposing || top.IsDisposed)) { _hot = -1; return; }
         SetHot(-1);
     }
 
@@ -568,6 +1008,7 @@ internal sealed class ThumbnailGrid : Control
 
     void ScrollByWheel(int delta)
     {
+        _lastActivity = Environment.TickCount64;
         StopRenameClick();
         Scrolling?.Invoke();
         // A change of direction starts afresh, so a leftover never moves the grid, or zooms, the old way.
@@ -602,6 +1043,7 @@ internal sealed class ThumbnailGrid : Control
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
+        _lastActivity = Environment.TickCount64;
         StopRenameClick();
         int cols = Columns, cur = Math.Max(0, FocusedIndex());
         int target = e.KeyCode switch
@@ -642,6 +1084,11 @@ internal sealed class ThumbnailGrid : Control
     // The Explorer context menu is owned by this window when shown from the grid; route its owner-draw messages.
     protected override void WndProc(ref Message m)
     {
+        if (m.Msg == WmTakeArrivals)
+        {
+            TakeArrivals();
+            return;
+        }
         if (Interop.ShellContextMenu.HandleMenuMessage(ref m)) return;
         base.WndProc(ref m);
     }

@@ -137,6 +137,7 @@ internal sealed partial class MainForm : Form
         BuildLeftOutBar();
         BuildFolderBar();
         BuildElevatedDropBar();
+        BuildThumbStoreBar();
         BuildThumbnailsHint();
         BuildList();
         BuildStatusBar();
@@ -381,6 +382,9 @@ internal sealed partial class MainForm : Form
         _body.Panel2.Controls.Add(_split);
         _split.Panel1.Controls.Add(_list);
         _split.Panel1.Controls.Add(_grid);
+        // The offer to keep thumbnails on disk is about the thumbnails, so it sits above them only, not across the
+        // navigation pane and the preview as the window's other bars do. Added after the grid: docked first, at the top.
+        _split.Panel1.Controls.Add(_thumbStoreBar);
         AttachTab(_tab);
         _split.Panel2.Controls.Add(_preview);
         _split.Panel2Collapsed = !_app.Settings.PreviewVisible;
@@ -407,6 +411,10 @@ internal sealed partial class MainForm : Form
         _grid.Visible = false;
         _grid.AccessibleName = "Results (thumbnails)";
         _grid.PathAt = i => (uint)i < (uint)_ids.Length ? PathOf(_ids[i]) : null;
+        _grid.StampAt = i => (uint)i < (uint)_ids.Length ? StampOf(_ids[i]) : Anything.Core.Thumbs.ThumbStamp.Unknown;
+        _grid.WaitedForThumbnails += OnThumbnailWait;
+        // The bar about thumbnails goes with them: the details list, a folder view or another tab has none.
+        _grid.VisibleChanged += (_, _) => { if (!_grid.Visible) HideThumbStoreBar(); };
         _grid.NameAt = i =>
         {
             try { return ResultsCurrent && (uint)i < (uint)_ids.Length ? _resultIndex!.Name(_ids[i]) : ""; }
@@ -476,6 +484,28 @@ internal sealed partial class MainForm : Form
     }
 
     /// <summary>
+    /// An item's stamp for its thumbnail, from the index its id belongs to (no file is touched): its length and
+    /// last-write time; a folder's last-write time alone. Unknown when the index has no date for it (the thumbnail service
+    /// then reads it from the file, on a worker).
+    /// </summary>
+    Anything.Core.Thumbs.ThumbStamp StampOf(int id)
+    {
+        var unknown = Anything.Core.Thumbs.ThumbStamp.Unknown;
+        if (!ResultsCurrent) return unknown;
+        var index = _resultIndex!;
+        try
+        {
+            if (!index.IsAlive(id)) return unknown;
+            long modified = index.Modified(id);
+            if (modified <= 0) return unknown;
+            if (index.IsDirectory(id)) return Anything.Core.Thumbs.ThumbStamp.ForFolder(modified);
+            long size = index.Size(id);
+            return size < 0 ? unknown : new Anything.Core.Thumbs.ThumbStamp(size, modified);
+        }
+        catch (IndexOutOfRangeException) { return unknown; }
+    }
+
+    /// <summary>
     /// Whether the ids can be read: false after their index compacted (renumbered them) until the next results arrive.
     /// Ids are read only against the index they came from (<see cref="_resultIndex"/>): the app's, or a listing's.
     /// </summary>
@@ -500,8 +530,10 @@ internal sealed partial class MainForm : Form
 
     // ---- view mode and preview ------------------------------------------------------------------
 
-    int EffectiveThumbSize => _zapActive && _zapThumbs
-        ? (_app.Settings.ThumbnailSize > 0 ? _app.Settings.ThumbnailSize : 160)
+    // "Every file in" has its own view: as thumbnails it shows them even when search results are a list (at Large then),
+    // and as a list it is always a list, whatever size the search results' thumbnails were last saved at.
+    int EffectiveThumbSize => _zapActive
+        ? (_zapThumbs ? (_app.Settings.ThumbnailSize > 0 ? _app.Settings.ThumbnailSize : 160) : 0)
         : _app.Settings.ThumbnailSize;
 
     bool ThumbnailMode => EffectiveThumbSize > 0;
@@ -514,6 +546,27 @@ internal sealed partial class MainForm : Form
         ApplyViewMode();
         SyncMenus();
         UpdateCommandStates();
+    }
+
+    /// <summary>
+    /// View › Extra large, Large, Medium thumbnails or Details (Ctrl+Shift+1, 2, 3, 6). In the Thumbnails view of "every
+    /// file in", Details means those files as a list, as Ctrl+Shift+6 means Details in File Explorer: it switches to "as a
+    /// list" (Ctrl+Shift+Z) and keeps the thumbnail size, rather than save size 0, which this view can't show (it falls
+    /// back to Large) and which would quietly turn every window's search results into a list. The other way, a thumbnail
+    /// size chosen while those files show as a list sets that size and switches them to thumbnails, since the list
+    /// itself never shows thumbnails.
+    /// </summary>
+    void ChooseViewMode(int thumbnailSize)
+    {
+        if (_zapActive && !ExplorerShown)
+        {
+            if (thumbnailSize == 0) { if (_zapThumbs) ToggleZap(thumbs: false); return; }
+            // The size first, so the thumbnails open at it rather than at the old size for a moment.
+            SetViewMode(thumbnailSize);
+            if (!_zapThumbs) ToggleZap(thumbs: true);
+            return;
+        }
+        SetViewMode(thumbnailSize);
     }
 
     void ApplyViewMode()
@@ -617,8 +670,10 @@ internal sealed partial class MainForm : Form
         _statusLeft.Spring = true;
         _statusLeft.TextAlign = ContentAlignment.MiddleLeft;
         _statusRight.TextAlign = ContentAlignment.MiddleRight;
-        _statusDetails.Click += (_, _) => { if (ExplorerShown) _explorer.SetViewMode(Explorer.ShellNative.FVM_DETAILS, 16); else SetViewMode(0); QueueStatusUpdate(); };
-        _statusLarge.Click += (_, _) => { if (ExplorerShown) _explorer.SetViewMode(Explorer.ShellNative.FVM_ICON, 96); else SetViewMode(160); QueueStatusUpdate(); };
+        // Through ChooseViewMode, as the View menu's sizes are, so in "every file in" they switch between its list and its
+        // thumbnails rather than change only the search results' saved size, which that view doesn't show.
+        _statusDetails.Click += (_, _) => { if (ExplorerShown) _explorer.SetViewMode(Explorer.ShellNative.FVM_DETAILS, 16); else ChooseViewMode(0); QueueStatusUpdate(); };
+        _statusLarge.Click += (_, _) => { if (ExplorerShown) _explorer.SetViewMode(Explorer.ShellNative.FVM_ICON, 96); else ChooseViewMode(160); QueueStatusUpdate(); };
         _status.Items.Add(_statusLeft);
         _status.Items.Add(_statusRight);
         _status.Items.Add(_statusDetails);
@@ -726,6 +781,9 @@ internal sealed partial class MainForm : Form
 
     protected override void Dispose(bool disposing)
     {
+        // The fonts go only after base.Dispose has destroyed the windows: while it does, controls still run code that
+        // uses them (the thumbnail grid's OnMouseLeave, when the pointer rests on a thumbnail as the window closes).
+        base.Dispose(disposing);
         if (disposing)
         {
             _listFont?.Dispose();
@@ -733,7 +791,6 @@ internal sealed partial class MainForm : Form
             _searchFont?.Dispose();
             _uiFont.Dispose();
         }
-        base.Dispose(disposing);
     }
 
     // ---- public API used by the app --------------------------------------------------------
@@ -1159,6 +1216,7 @@ internal sealed partial class MainForm : Form
         QueuePreview();
         UpdateFolderBar(); // a search inside a folder the index doesn't have says so, and so does the empty text
         if (_ids.Length == 0) CheckDiskForMissedFiles();
+        SelectRestoredResult(); // a search Back or Forward showed again: the result that was opened (MainForm.SearchPages.cs)
     }
 
     int FocusedIndex()

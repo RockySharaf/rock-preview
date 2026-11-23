@@ -433,7 +433,10 @@ public static class PreviewRenderer
     private static async Task<PreviewResult?> ShellThumbnailAsync(string path, Size target, CancellationToken ct)
     {
         int size = Math.Clamp(Math.Max(target.Width, target.Height), 256, 1024);
-        var bmp = await Shell.GetThumbnailAsync(path, size, ct).ConfigureAwait(false);
+        // A PDF kind or a shortcut: Windows' thumbnail cache only, never its extractor, whose PDF handler can end this
+        // process (see ThumbKinds.WindowsCacheOnly).
+        bool cacheOnly = Anything.Core.Thumbs.ThumbKinds.WindowsCacheOnly(path);
+        var bmp = await Shell.GetThumbnailAsync(path, size, ct, cacheOnly: cacheOnly).ConfigureAwait(false);
         if (bmp == null) return null;
         var r = new PreviewResult(path, PreviewKind.Image, "ShellThumbnail")
         {

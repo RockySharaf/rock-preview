@@ -19,6 +19,7 @@ namespace PreviewHarness;
 ///   PreviewHarness [--out DIR] [--real LISTFILE] [--pane] [--save] [--no-thumbs]
 ///   PreviewHarness --match [--out DIR]   (the preview at a search match: samples, steps, screenshots)
 ///   PreviewHarness --match --real LISTFILE [--word WORD]   (headless, real files read-only: counts and times only)
+///   PreviewHarness --thumbbench PHASE --out ...\.probe   (thumbnail benchmark; see Bench\ThumbBench.cs)
 /// LISTFILE lines: "ext&lt;TAB&gt;path" (or just a path). Real files are only read.
 /// </summary>
 internal static class Program
@@ -28,6 +29,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        // The thumbnail benchmark (Bench\ThumbBench.cs): console only, writes under the .probe folder it is given.
+        if (args.Contains("--thumbbench")) return Bench.ThumbBench.Run(args);
         string outDir = Arg(args, "--out") ?? Path.Combine(Path.GetTempPath(), "AnythingPreviewHarness");
         string? realList = Arg(args, "--real");
         bool pane = args.Contains("--pane");

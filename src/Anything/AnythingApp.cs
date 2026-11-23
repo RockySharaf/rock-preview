@@ -129,6 +129,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         UpdateTray();
         RegisterHotkey();
         StartContent();
+        StartThumbnails();
         HandleCommandLine(cmd, initial: true);
         NoteVersionRun();
         StartUpdateChecks();
@@ -275,6 +276,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         {
             Volatile.Write(ref _changePending, 0);
             foreach (var w in _windows.ToArray()) w.OnIndexChanged();
+            EstimateThumbnails(); // only when indexing is complete and the index has changed much
         });
     }
 
@@ -286,6 +288,7 @@ internal sealed partial class AnythingApp : ApplicationContext
             Volatile.Write(ref _statePending, 0);
             SubscribeIndex();
             foreach (var w in _windows.ToArray()) w.OnIndexStateChanged();
+            EstimateThumbnails();
         });
     }
 
@@ -420,6 +423,8 @@ internal sealed partial class AnythingApp : ApplicationContext
         e.Cancel = true;
         if (Settings.RunInBackground)
         {
+            // Closed, though only hidden: its Search Syntax help closes with it rather than coming back when it is shown.
+            SearchSyntaxForm.CloseFor(w);
             w.Hide();
             Post(UpdateAutomaticallyIfIdle); // a new version waiting goes in now, while nothing is open
             foreach (var other in _windows.Where(x => x != w && !x.Visible).ToArray())
@@ -456,9 +461,12 @@ internal sealed partial class AnythingApp : ApplicationContext
         _nightlyTimer?.Dispose();
         _messageWindow.UnregisterHotkey();
         _messageWindow.DestroyHandle();
+        StopThumbnailEstimate();
         StopContent();
         try { IndexManager.Save(); } catch { }
         try { IndexManager.Dispose(); } catch { }
+        // The thumbnail service last: nothing above needs it, and nothing it does at its end may cut the index's save short.
+        StopThumbnails();
         ExitThread();
     }
 
@@ -600,7 +608,8 @@ internal sealed partial class AnythingApp : ApplicationContext
     internal void OnHotkey()
     {
         IntPtr fg = Native.GetForegroundWindow();
-        var active = _windows.FirstOrDefault(x => x.Visible && x.IsHandleCreated && x.Handle == fg);
+        // The Search Syntax help in front counts as its window: the hotkey hides both (the help goes with its window).
+        var active = _windows.FirstOrDefault(x => x.Visible && x.IsHandleCreated && (x.Handle == fg || SearchSyntaxForm.IsHelpOf(x, fg)));
         if (active is not null) active.Hide();
         else ShowSearchWindow(everything: true);
         Tried(active is null ? GettingStarted.Show : GettingStarted.Hide);
@@ -1120,6 +1129,8 @@ internal sealed partial class AnythingApp : ApplicationContext
     {
         if (_settings is { IsDisposed: false })
         {
+            // Asked for at a section (a bar's "Turn on...", a link): it goes there, whatever page it showed.
+            if (section != null) _settings.ShowSectionNamed(section);
             _settings.Activate();
             return;
         }

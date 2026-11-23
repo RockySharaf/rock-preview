@@ -23,28 +23,29 @@ internal sealed class SystemPowerPolicy : IPowerPolicy
     public static SystemPowerPolicy Instance { get; } = new();
 
     readonly object _gate = new();
-    long _polledAt = -1_000_000;
-    string? _polledFolder;
-    PowerState _last;
+    // The last poll for each folder asked about: the content indexer and the thumbnail service ask about different
+    // folders, and each keeps its own 5 s.
+    readonly Dictionary<string, (long At, PowerState State)> _polled = new(StringComparer.OrdinalIgnoreCase);
 
     /// <inheritdoc/>
     public PowerState Now(string contentFolder)
     {
+        long now = Environment.TickCount64;
+        // Idle time changes every keystroke, so it is read fresh; the rest is polled every 5 s.
+        var idle = ContentNative.IdleTime();
+        lock (_gate)
+            if (_polled.TryGetValue(contentFolder, out var last) && now - last.At < 5000) return last.State with { Idle = idle };
+        // Polled without the lock: the free space of a drive asleep or on the network can take seconds, and a caller
+        // asking about another folder doesn't wait for it.
+        var (battery, saver) = ContentNative.Power();
+        var (free, total) = ContentNative.DiskSpace(contentFolder);
+        var state = new PowerState(battery, saver, idle, ContentNative.FullScreen(), free, total);
         lock (_gate)
         {
-            long now = Environment.TickCount64;
-            // Idle time changes every keystroke, so it is read fresh; the rest is polled every 5 s.
-            var idle = ContentNative.IdleTime();
-            if (now - _polledAt >= 5000 || !string.Equals(_polledFolder, contentFolder, StringComparison.OrdinalIgnoreCase))
-            {
-                var (battery, saver) = ContentNative.Power();
-                var (free, total) = ContentNative.DiskSpace(contentFolder);
-                _last = new PowerState(battery, saver, idle, ContentNative.FullScreen(), free, total);
-                _polledAt = now;
-                _polledFolder = contentFolder;
-            }
-            return _last with { Idle = idle };
+            if (_polled.Count >= 16) _polled.Clear(); // a handful of folders in practice
+            _polled[contentFolder] = (now, state);
         }
+        return state;
     }
 }
 

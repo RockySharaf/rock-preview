@@ -28,6 +28,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="PreviewHarness" />
+    <!-- The grid talks to the thumbnail service (Thumbnails\ThumbnailService.cs), whose types are internal. -->
+    <InternalsVisibleTo Include="RockPreview" />
     <InternalsVisibleTo Include="Anything.Tests" />
   </ItemGroup>
 

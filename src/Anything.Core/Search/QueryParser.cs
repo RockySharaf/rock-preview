@@ -95,6 +95,9 @@ public static class QueryParser
         return QueryNode.And(node, filter);
     }
 
+    /// <summary>Every modifier, restriction and function name, so a test can check the F1 help explains each one.</summary>
+    internal static IEnumerable<string> KnownNames => Modifiers.Keys.Concat(Restrictions.Keys).Concat(Functions.Keys);
+
     static bool IsKnownName(string name) =>
         Modifiers.ContainsKey(name) || Restrictions.ContainsKey(name) || Functions.ContainsKey(name);
 

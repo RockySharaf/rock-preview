@@ -138,6 +138,43 @@ internal static class WicImage
         return res;
     }
 
+    /// <summary>What <see cref="DecodeThumbnail"/> made of a file.</summary>
+    public enum ThumbStatus
+    {
+        /// <summary>A picture, at most the size class on its long side.</summary>
+        Ok,
+        /// <summary>No installed codec reads this file (Windows' extractor may still).</summary>
+        NoCodec,
+        /// <summary>Too big to decode (over 400 megapixels at full size): not tried.</summary>
+        Refused,
+        /// <summary>A large decode that was not to wait for the large-decode gate found it taken: try again later.</summary>
+        Busy,
+    }
+
+    /// <summary>
+    /// A grid thumbnail's master: the file decoded straight to <paramref name="sizeClass"/> on its long side (never more),
+    /// the EXIF orientation applied, in 32bpp premultiplied ARGB. The file is opened once: a JPEG (and a RAW without a
+    /// large enough preview) is scaled by the codec while it decodes; a RAW whose embedded preview is large enough for the
+    /// class uses the preview; a GIF, an icon or a multi-page TIFF gives one frame (the first; for icons the biggest).
+    /// Any other full-frame decode over 64 megapixels waits for <paramref name="largeGate"/>, and one over 400
+    /// megapixels is refused. With <paramref name="waitForGate"/> false (idle work) a large decode doesn't wait for the
+    /// gate: when it is taken the answer is null with <see cref="ThumbStatus.Busy"/>, so the picture someone is looking
+    /// at never queues behind warming. <paramref name="sourceLongSide"/> is the picture's own long side. Throws what the
+    /// codec throws for a damaged or unreadable file.
+    /// </summary>
+    public static Bitmap? DecodeThumbnail(string path, string ext, int sizeClass, SemaphoreSlim? largeGate, out ThumbStatus status, out int sourceLongSide,
+        bool waitForGate = true)
+        // WIC directly: WPF's imaging classes made the garbage collector run a full collection about once per picture
+        // (see WicNative).
+        => Thumbnails.WicNative.DecodeThumbnail(path, ext, sizeClass, largeGate, out status, out sourceLongSide, waitForGate);
+
+    /// <summary>
+    /// The small preview a file carries inside itself (the EXIF thumbnail of a JPEG, a camera RAW's thumbnail), turned by
+    /// the EXIF orientation (it is stored unturned), or null when there is none. Reads only the start of the file.
+    /// Never asked for HEIC, whose codec makes its "thumbnail" with a full decode.
+    /// </summary>
+    public static Bitmap? EmbeddedThumbnail(string path) => Thumbnails.WicNative.EmbeddedThumbnail(path);
+
     private static string DescribeFormat(System.Windows.Media.PixelFormat f)
     {
         string s = f.ToString();

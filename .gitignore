@@ -489,3 +489,6 @@ dist/
 
 # Private research notes (reverse-engineering evidence); kept local, not published
 docs/research/
+
+# Benchmark and check scratch space (copies of personal files, stores, logs): never published
+.probe/

@@ -243,9 +243,19 @@ internal sealed partial class MainForm
     void DropListingResults()
     {
         if (!ExplorerShown || _listing != null || _resultIndex is not { } index || ReferenceEquals(index, _app.IndexManager.Index)) return;
+        _resultIndex = null;
+        ClearShownResults();
+    }
+
+    /// <summary>
+    /// Empties the list and the grid, selection included, without telling anyone (no preview, no status): for results
+    /// that are about to be replaced and must not be seen or acted on meanwhile. With nothing on the list, the next
+    /// results have no selection to carry over.
+    /// </summary>
+    void ClearShownResults()
+    {
         _list.CancelMarquee();
         _ids = [];
-        _resultIndex = null;
         _rows.Clear();
         _suppress = true;
         try

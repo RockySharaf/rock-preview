@@ -111,6 +111,12 @@ internal sealed partial class MainForm
 
         // Thumbnails: whatever is on screen as thumbnails (see ToggleThumbnails); again = back. The arrow offers
         // every file under the folder as thumbnails or as a list, and whether subfolders count.
+        void WarmThumbnails(object? sender, EventArgs e)
+        {
+            _thumbsButton.MouseEnter -= WarmThumbnails;
+            ThumbHost.Warm();
+        }
+        _thumbsButton.MouseEnter += WarmThumbnails;
         _thumbsButton.ButtonClick += (_, _) => ToggleThumbnails();
         // Everyday files: the button turns it on and off; its arrow picks which kinds of file count.
         _cmdEveryday.ButtonClick += (_, _) => ToggleEverydayFiles();
@@ -824,12 +830,12 @@ internal sealed partial class MainForm
     /// <summary>The Back, Forward and Up tooltips name where they go, as File Explorer's do ("Back to Downloads").</summary>
     void UpdateNavToolTips(bool explorer)
     {
-        // Back from results goes to the folder they were searched from.
-        string? back = !explorer && _browsing ? _explorer.CurrentDisplayName : _explorer.BackName;
+        // Back from results goes to the folder they were searched from; else to the place or search page in the history.
+        string? back = SearchPageRules.BackTarget(!explorer && _browsing, _explorer.CurrentDisplayName, _explorer.BackName);
         // Through StripToolTips: after a click the pointer still rests on the button, and its tooltip would keep naming
         // the old place.
         StripToolTips.Set(_navBack, _navBack.Enabled && back is { Length: > 0 } ? $"Back to {back} (Alt+Left)" : "Back (Alt+Left)");
-        string? forward = explorer && ForwardSearchHere && _tab.ForwardSearch is { } search ? $"the search for \"{search.Text}\"" : _explorer.ForwardName;
+        string? forward = SearchPageRules.ForwardTarget(explorer && ForwardSearchHere ? _tab.ForwardSearch : null, _explorer.ForwardName);
         StripToolTips.Set(_navForward, _navForward.Enabled && forward is { Length: > 0 } ? $"Forward to {forward} (Alt+Right)" : "Forward (Alt+Right)");
         string? up = _explorer.ParentDisplayName;
         StripToolTips.Set(_navUp, _navUp.Enabled && up is { Length: > 0 } ? $"Up to {up} (Alt+Up)" : "Up (Alt+Up)");
@@ -845,11 +851,11 @@ internal sealed partial class MainForm
     // ---- navigation ---------------------------------------------------------------------------
 
     /// <summary>Opens a folder (or "shell:"/virtual location) in the Explorer view; optionally selects an item in it.</summary>
-    public bool BrowseTo(string location, string? select = null)
+    public bool BrowseTo(string location, string? select = null, SearchPage? leavingPage = null)
     {
         if (string.IsNullOrWhiteSpace(location)) { GoHome(); return true; }
         if (!_explorer.IsHandleCreated) _ = _explorer.Handle; // create the shell view even while hidden
-        if (!_explorer.Navigate(location, select))
+        if (!_explorer.Navigate(location, select, leavingPage))
         {
             _statusRight.Text = $"Can't open \"{location.Trim()}\"";
             return false;
@@ -866,6 +872,8 @@ internal sealed partial class MainForm
         // Another folder opened: like forward history, the search Back closed is gone. Back and Forward keep it, as they
         // keep forward history: it shows again on Forward once the view is back at the place it was closed in.
         if (!tab.Explorer.LastNavigationWasHistory) tab.ForwardSearch = null;
+        // Back or Forward came to a folder with a search over it: the search shows again (below, once the folder is set up).
+        var arrival = ArriveAtPage(tab);
         // Each folder gets a new view, with Windows' own drop target: copying is made its first choice too.
         BeginInvoke(() => { if (tab.Explorer.IsHandleCreated) ShellDragDrop.CopyFirstInside(tab.Explorer.Handle); });
         if (tab != _tab)
@@ -895,6 +903,7 @@ internal sealed partial class MainForm
         SyncNavTree();
         UpdateLeftView();
         if (_search.TextLength > 0) RunSearch(SearchReason.NewQuery); // re-scope a typed search to the new folder
+        else if (arrival is { } page) RestoreSearchPage(page); // last: after the resets above, and one search only
         QueueThumbnailsHint();
     }
 
@@ -1027,22 +1036,26 @@ internal sealed partial class MainForm
     /// <summary>A folder the user chose to open (address bar, breadcrumb, results, menus): shown as the folder.</summary>
     bool OpenFolder(string location, string? select = null)
     {
+        // The search left goes into Back with the folder it showed over (taken before the box empties).
+        var page = CaptureSearchPage(opened: select ?? location);
         LeaveResults();
-        return BrowseTo(location, select);
+        return BrowseTo(location, select, page);
     }
 
     /// <summary>Back: a search (or "every file in") is a page above the folder, like in Explorer, so Back closes it first.</summary>
     void GoBack()
     {
-        if (_browsing && !ExplorerShown)
+        var move = SearchPageRules.Back(_browsing && !ExplorerShown, _explorer.PageOpening, _tab.PageClosedOpening);
+        if (move == SearchPageRules.BackMove.LeaveResults)
         {
             if (_zapActive) ExitZap(rerun: true);
             else
             {
-                // Kept before the box empties, so the Forward button already counts it when the folder shows.
-                if (_search.TextLength > 0)
+                // Kept before the box empties, so the Forward button already counts it when the folder shows: the whole
+                // search (where it looked, its options), not only its words.
+                if (_search.TextLength > 0 && CaptureSearchPage() is { } page)
                 {
-                    _tab.ForwardSearch = (_search.Text, _sort, _desc);
+                    _tab.ForwardSearch = page;
                     _tab.ForwardSearchAt = (_explorer.CurrentParsingName, _explorer.BackCount);
                 }
                 CloseSearch();
@@ -1050,6 +1063,9 @@ internal sealed partial class MainForm
             if (ExplorerShown) _explorer.FocusView();
             return;
         }
+        // Back again while the last Back is still opening a search page: the folder shows without it (OnExplorerNavigated).
+        if (move == SearchPageRules.BackMove.CloseOpeningPage) { _tab.PageClosedOpening = _explorer.PageOpening; return; }
+        _tab.PageClosedOpening = null; // a new step: a page closed while a step that failed was opening shows again next time
         _explorer.GoBack();
     }
 
@@ -1062,18 +1078,17 @@ internal sealed partial class MainForm
         if (ExplorerShown && ForwardSearchHere && _tab.ForwardSearch is { } search)
         {
             _tab.ForwardSearch = null;
-            if ((_sort, _desc) != (search.Sort, search.Descending))
-            {
-                (_sort, _desc) = (search.Sort, search.Descending);
-                UpdateSortIndicator();
-                SyncMenus();
-            }
-            SetSearch(search.Text);
+            RestoreSearchPage(search);
             FocusTabContent();
             return;
         }
+        // Nowhere to go (Alt+Right with results showing and no Forward): the search stays rather than being emptied.
+        if (!_explorer.CanGoForward) return;
+        // A search showing goes into Back with its folder, so Back from where Forward goes shows it again.
+        var page = CaptureSearchPage();
         LeaveResults();
-        _explorer.GoForward();
+        _tab.PageClosedOpening = null;
+        _explorer.GoForward(page);
     }
 
     /// <summary>
@@ -1101,8 +1116,9 @@ internal sealed partial class MainForm
     void NavigateUp()
     {
         if (!_browsing) return;
+        var page = CaptureSearchPage(); // into Back with the folder: Back from the folder above shows the search again
         LeaveResults();
-        _explorer.GoUp();
+        _explorer.GoUp(page);
     }
 
     void GoHome()
@@ -1125,9 +1141,10 @@ internal sealed partial class MainForm
         };
         if (where is not null)
         {
+            var page = CaptureSearchPage();
             LeaveResults();
             if (!_explorer.IsHandleCreated) _ = _explorer.Handle; // create the shell view even while hidden
-            if (_explorer.Navigate(where)) return; // not BrowseTo: a place that isn't there says nothing, Home just opens
+            if (_explorer.Navigate(where, leavingPage: page)) return; // not BrowseTo: a place that isn't there says nothing, Home just opens
         }
         GoHome();
     }
@@ -1341,8 +1358,11 @@ internal sealed partial class MainForm
         _tab.ZapRecent = recent;
         _zapLabel = recent != null ? "Recent files" : ZapLabel(roots);
         // The files come in the order the folder showed them (newest first in Downloads, say), not the last search's.
+        // A folder whose order can't be read (the view not ready, or a column of its own) shows by name, as Windows
+        // does by default, rather than in the tab's last order. Home's recent files keep the tab's order (newest first).
         _sortBeforeZap = (_sort, _desc);
         _sortFromFolder = ExplorerShown ? _explorer.CurrentSort() : null;
+        if (ExplorerShown && recent == null) _sortFromFolder ??= (SortKey.Name, false);
         if (_sortFromFolder is { } folderSort)
         {
             (_sort, _desc) = folderSort;
@@ -1356,6 +1376,12 @@ internal sealed partial class MainForm
         _suppress = true;
         _search.Clear(); // the search box now filters inside the zapped files
         _suppress = false;
+        // What the list holds now is from before: the folder's files kept up to date behind Windows' view, in the tab's
+        // own order, or the search the folders were picked from. Shown, the view would open on those for a moment, and
+        // FocusList would select the first of them, a file the user never saw, which the new results then carry along
+        // (and the preview loads). Emptied, the view opens on "Looking for files in ...", its first pictures come in the
+        // folder's order, and nothing is selected, as in File Explorer.
+        ClearShownResults();
         ApplyViewMode();
         UpdateLeftView();
         RunSearch(SearchReason.NewQuery);

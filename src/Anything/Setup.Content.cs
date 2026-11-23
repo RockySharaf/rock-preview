@@ -1,5 +1,6 @@
 using System.Security.Principal;
 using Anything.Core.Content;
+using Anything.Core.Thumbs;
 
 namespace Anything;
 
@@ -182,6 +183,17 @@ internal static partial class Setup
             if (IndexFolder(ContentServices.FolderFor(db)) is { } folder) ContentServices.DeleteIndexFiles(folder);
         }
         catch (Exception ex) { Log(ex); }
+        // The saved thumbnails ("Instant thumbnails"): beside the database, and in the place the user chose for them. A
+        // store folder goes only when it holds nothing but the store's own files (RemoveFolder leaves anything else alone).
+        // Folders an earlier turn-off or move couldn't remove go too.
+        foreach (var folder in new[] { ThumbStore.FolderFor(db),
+                     settings.ThumbnailStorePath.Length > 0 ? ThumbOption.StoreFolder(db, settings.ThumbnailStorePath) : null }
+                     .Concat(settings.ThumbnailStoreLeftovers))
+        {
+            if (folder is null) continue;
+            var removal = ThumbStore.RemoveFolder(folder);
+            if (removal is StoreRemoval.Failed or StoreRemoval.LeftAlone) Log(new IOException($"Saved thumbnails left in place ({removal})"));
+        }
         // The default database is in the data folder the uninstall deletes next.
         if (db.Length == 0 || AppSettings.SamePath(db, user.DefaultDatabase)) return;
         foreach (var file in new[] { db, db + ".tmp" })
