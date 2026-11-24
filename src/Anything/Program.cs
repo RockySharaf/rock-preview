@@ -20,11 +20,15 @@ static class Program
         // instead of Windows asking "There is no disk in the drive".
         SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
 
-        // The Rock Preview service and its one-time install (IndexService): no windows.
-        if (args.Length > 0 && args[0].TrimStart('-', '/').Equals("service", StringComparison.OrdinalIgnoreCase)) return IndexService.RunAsService();
-        if (args.Any(a => a.TrimStart('-', '/').Equals("installservice", StringComparison.OrdinalIgnoreCase))) return InstallServiceCommand(args);
-        if (args.Any(a => a.TrimStart('-', '/').Equals("uninstallservice", StringComparison.OrdinalIgnoreCase)))
-            return UninstallServiceCommand(quiet: args.Any(a => a.TrimStart('-', '/').Equals("quiet", StringComparison.OrdinalIgnoreCase)));
+        // The Rock Preview service and its one-time install (IndexService): no windows. None of it inside the Store's
+        // package: a package can't install a service, and one Setup installed runs from its own folder.
+        bool runService = args.Length > 0 && args[0].TrimStart('-', '/').Equals("service", StringComparison.OrdinalIgnoreCase);
+        bool installService = args.Any(a => a.TrimStart('-', '/').Equals("installservice", StringComparison.OrdinalIgnoreCase));
+        bool uninstallService = args.Any(a => a.TrimStart('-', '/').Equals("uninstallservice", StringComparison.OrdinalIgnoreCase));
+        if ((runService || installService || uninstallService) && StorePackage.IsInstalled) return ERROR_NOT_SUPPORTED;
+        if (runService) return IndexService.RunAsService();
+        if (installService) return InstallServiceCommand(args);
+        if (uninstallService) return UninstallServiceCommand(quiet: args.Any(a => a.TrimStart('-', '/').Equals("quiet", StringComparison.OrdinalIgnoreCase)));
 
         // The single-file build is also the installer: "RockPreview-Setup.exe", -install, -uninstall. The Store installs
         // its own package, and its windows and notifications carry the package's identity.
@@ -41,7 +45,9 @@ static class Program
         var cmd = CommandLine.Parse(args);
         string suffix = cmd.Demo ? ".Demo" : "";
 
-        if (cmd.Admin && !IsElevated())
+        // Not the Store's copy: its package may not ask for administrator rights (Microsoft refused allowElevation), so -admin
+        // does nothing there and it scans folders.
+        if (cmd.Admin && !IsElevated() && !StorePackage.IsInstalled)
         {
             // Relaunch elevated; the new process waits for this instance (and any running one) to go away.
             var relaunch = cmd.ToArgs();
@@ -205,9 +211,15 @@ static class Program
         }
     }
 
-    /// <summary>Runs this executable elevated and waits for it: its exit code, or -1 when the UAC prompt was declined.</summary>
+    const int ERROR_NOT_SUPPORTED = 50;
+
+    /// <summary>
+    /// Runs this executable elevated and waits for it: its exit code, or -1 when the UAC prompt was declined. Never in the
+    /// Store's package, which may not ask for elevation: -1 there, as if declined (nothing changes).
+    /// </summary>
     public static int RunElevatedAndWait(IEnumerable<string> args)
     {
+        if (StorePackage.IsInstalled) return -1;
         try
         {
             using var p = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, CommandLine.Quote(args))
@@ -223,9 +235,13 @@ static class Program
         catch (Win32Exception) { return -1; }
     }
 
-    /// <summary>Starts this executable elevated. Returns false when the UAC prompt was cancelled or failed.</summary>
+    /// <summary>
+    /// Starts this executable elevated. Returns false when the UAC prompt was cancelled or failed, and always in the Store's
+    /// package, which may not ask for elevation (nothing is started there).
+    /// </summary>
     public static bool RelaunchElevated(IEnumerable<string> args)
     {
+        if (StorePackage.IsInstalled) return false;
         try
         {
             var psi = new ProcessStartInfo(StorePackage.LaunchPath, CommandLine.Quote(args))

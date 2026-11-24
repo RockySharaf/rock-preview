@@ -51,8 +51,8 @@
   <Capabilities>
     <!-- A desktop program (WinForms, with Windows' own folder view and preview handlers inside it). -->
     <rescap:Capability Name="runFullTrust" />
-    <!-- Run as administrator (Tools menu, Settings › Indexing): it then reads NTFS drives' file tables directly, so
-         every file is found in seconds and changes show up at once, as voidtools Everything does. -->
-    <rescap:Capability Name="allowElevation" />
+    <!-- No administrator rights: Microsoft refused the Store's copy the capability to ask for them on 2026-11-24, so it
+         never restarts as administrator. It scans folders, unless a Rock Preview service installed by Setup (the GitHub
+         version) reads the drives for it. build/Package-Store.ps1 refuses any restricted capability but runFullTrust. -->
   </Capabilities>
 </Package>

@@ -64,7 +64,8 @@ internal sealed partial class AnythingApp : ApplicationContext
             }
             else
             {
-                index = Services.CreateIndexManager();
+                // The Store's copy can't turn instant indexing on: scanning folders is just how it indexes there.
+                index = Services.CreateIndexManager(canTurnOnInstantIndexing: !StorePackage.IsInstalled);
                 engine = Services.CreateSearchEngine();
             }
         }
@@ -482,13 +483,12 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// Turns on instant indexing for good: installs (or updates: stops, replaces and starts again) the Rock Preview
     /// service (Windows asks for permission this once), then restarts indexing from the database so the drives are read
     /// through it: what offline network drives had is kept, and everything stays searchable meanwhile. Rock Preview
-    /// itself keeps running as a normal app.
+    /// itself keeps running as a normal app. Nothing in the Store's copy, which offers it nowhere: a package can't leave a
+    /// service behind and may not ask for administrator rights (Microsoft refused allowElevation), so it scans folders.
     /// </summary>
     public async void TurnOnInstantIndexing(IWin32Window? owner)
     {
-        if (IsDemo) return;
-        // The Store's copy has no service (a package can't leave one behind): run as administrator, it reads the drives itself.
-        if (StorePackage.IsInstalled) { RestartElevated(); return; }
+        if (IsDemo || StorePackage.IsInstalled) return;
         int code;
         if (Program.IsElevated())
         {
@@ -520,8 +520,10 @@ internal sealed partial class AnythingApp : ApplicationContext
         foreach (var w in _windows) w.OnIndexStateChanged();
     }
 
+    /// <summary>Tools › Run as Administrator: restarts elevated. Not in the Store's copy, whose package may not ask for it.</summary>
     public void RestartElevated()
     {
+        if (StorePackage.IsInstalled) return;
         var args = new List<string> { "-restarted" };
         if (IsDemo) args.Add("--demo");
         if (Program.RelaunchElevated(args)) ExitApp();

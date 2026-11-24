@@ -353,6 +353,14 @@ whatever you renamed it to): delete it afterwards. The instant-indexing service 
 other accounts on this PC use it too (not a local account deleted from this PC). If the copy set nothing up, deleting
 its file is all there is to do.
 
+> **Instant indexing, approved once.** Reading a drive's Master File Table needs administrator rights, so Setup offers
+> *Instant indexing for all drives*: it installs the small **Rock Preview Service** and Windows asks for permission one
+> time. After that Rock Preview runs as a normal app (no more prompts) and the service reads the drives for it, like
+> Everything's service. You can also turn it on later from the yellow bar or **Settings › Indexing**. Without it,
+> Rock Preview still works: it indexes by scanning folders, which is slower the first time. Each update replaces the
+> service too (stopped, replaced and started again; Windows asks for permission); if that was declined, the app offers
+> it in its yellow bar when it starts.
+
 > **Windows SmartScreen** may say "Windows protected your PC" because the download isn't code-signed. Click **More
 > info › Run anyway**. The [Microsoft Store version](#microsoft-store-version-coming-soon) installs without the warning.
 
@@ -361,22 +369,15 @@ its file is all there is to do.
 Rock Preview is on its way to the Microsoft Store. It's the same program, but Microsoft signs it, so Windows installs it
 without a warning, and the Store installs, updates and uninstalls it. A few things work differently there:
 
-- **Instant indexing** comes from running Rock Preview as administrator (**Tools › Run as Administrator**, or the
-  yellow bar), and Windows asks for permission each time: the Store version has no service. Otherwise it scans folders,
-  which is slower and doesn't see changes at once.
+- **It scans folders to build its index**: there's no instant indexing and no **Run as Administrator** (Microsoft
+  doesn't let the Store version ask for administrator rights). The first index takes longer; once it's built, searches
+  are just as fast and it keeps up as files change. If the GitHub version's Setup installed the **Rock Preview
+  Service** for you on this PC, that service reads the drives for the Store version too.
 - **Use instead of Windows File Explorer** isn't in it: the Store version leaves File Explorer as it is.
 - **Start when Windows starts** is off until you turn it on in **Settings › General**. Task Manager's **Startup apps**
   can turn it off too.
 - There's no Setup, update check or **Update now**: the Store does all of that. Uninstall it from Windows'
   **Settings › Apps**.
-
-> **Instant indexing, approved once.** Reading a drive's Master File Table needs administrator rights, so Setup offers
-> *Instant indexing for all drives*: it installs the small **Rock Preview Service** and Windows asks for permission one
-> time. After that Rock Preview runs as a normal app (no more prompts) and the service reads the drives for it, like
-> Everything's service. You can also turn it on later from the yellow bar or **Settings › Indexing**. Without it,
-> Rock Preview still works: it indexes by scanning folders, which is slower the first time. Each update replaces the
-> service too (stopped, replaced and started again; Windows asks for permission); if that was declined, the app offers
-> it in its yellow bar when it starts.
 
 ### Updates
 
@@ -467,7 +468,7 @@ RockPreview.exe [search text]        open with a search
 RockPreview.exe -path "D:\Projects"  open a folder
 RockPreview.exe -explorer [-path X]  a new tab in the window used last, like File Explorer (at X, or where it opens)
 RockPreview.exe /select,"D:\a.pdf"   open the item's folder with it selected (also -select <path>)
-RockPreview.exe -admin               restart elevated (instant NTFS index)
+RockPreview.exe -admin               restart elevated (instant NTFS index; does nothing in the Store version)
 RockPreview.exe -startup             start in the background
 RockPreview.exe -exit                close the running instance
 rockpreview-cli ext:pdf size:>10mb   search the saved index from a script (-h for options; -da, -run-count add columns)

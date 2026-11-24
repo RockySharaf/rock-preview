@@ -858,8 +858,11 @@ internal sealed partial class MainForm : Form
         if (!_loaded) return;
         UpdateInfoBar();
         UpdateStatus();
-        _miRunAsAdmin.Visible = !_app.IndexManager.IsElevated;
+        _miRunAsAdmin.Visible = OffersRunAsAdmin;
     }
+
+    /// <summary>Tools › Run as Administrator: not while elevated, and never in the Store's copy, whose package may not ask for it.</summary>
+    bool OffersRunAsAdmin => !StorePackage.IsInstalled && !_app.IndexManager.IsElevated;
 
     public void OnIconsResolved()
     {
@@ -901,7 +904,7 @@ internal sealed partial class MainForm : Form
         }
         UpdateInfoBar();
         UpdateLeftOutBar();
-        _miRunAsAdmin.Visible = !_app.IndexManager.IsElevated;
+        _miRunAsAdmin.Visible = OffersRunAsAdmin;
         SyncMenus();
         UpdateStatus();
     }
@@ -946,7 +949,11 @@ internal sealed partial class MainForm : Form
         ApplyRowHeight();
     }
 
-    /// <summary>Instant indexing that is off (turn it on), or a service older than this release (update it: its fixes, and its name).</summary>
+    /// <summary>
+    /// Instant indexing that is off (turn it on), or a service older than this release (update it: its fixes, and its
+    /// name). Never in the Store's copy: it can't install the service or restart as administrator, so there is nothing
+    /// to turn on.
+    /// </summary>
     void UpdateInfoBar()
     {
         bool outdated = _app.OutdatedService is not null;
@@ -954,17 +961,14 @@ internal sealed partial class MainForm : Form
         // exFAT drives) there is nothing for the service to read, and turning it on again changed nothing: the bar came
         // straight back (found on a shop PC whose C: was left out).
         bool off = _app.IndexManager.ScansInsteadOfReading;
-        bool show = !_infoDismissed && !_app.IsDemo && (outdated || off); // the demo index isn't real indexing
+        bool show = !_infoDismissed && !_app.IsDemo && !StorePackage.IsInstalled && (outdated || off); // the demo index isn't real indexing
         if (show)
         {
             string version = _app.OutdatedService is { Major: > 0 } v ? $" ({v.ToString(3)})" : "";
-            // The Store's copy has no service: run as administrator, it reads the drives itself.
-            bool store = StorePackage.IsInstalled;
             string text = outdated
                 ? $"Rock Preview's background service is an older version{version}. Update it to this one: Windows asks for permission one time."
-                : store ? "Instant indexing is off, so Rock Preview is scanning folders (slower). Run it as administrator to read drives instantly: Windows asks for permission each time."
                 : "Instant indexing is off, so Rock Preview is scanning folders (slower). Turn it on once and it stays on: Windows asks for permission one time.";
-            string action = outdated ? "Update the service" : store ? "Run as administrator" : "Turn on instant indexing";
+            string action = outdated ? "Update the service" : "Turn on instant indexing";
             if (_infoLabel.Text != text) _infoLabel.Text = text;
             if (_infoAction.Text != action) _infoAction.Text = action;
         }

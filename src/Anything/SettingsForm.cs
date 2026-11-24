@@ -487,19 +487,26 @@ internal sealed partial class SettingsForm : Form
         bool service = !_app.IsDemo && IndexService.IsInstalled();
         // An older service (setup's update declined, say) still works, but without this release's fixes.
         bool outdated = service && IndexService.NeedsUpdate();
-        // The Store's copy never installs or updates the service (a package can't leave one behind; one Setup installed
-        // still serves it): run as administrator, it reads the drives itself.
+        // The Store's copy can't turn it on: it never installs or updates the service (a package can't leave one behind;
+        // one Setup installed still serves it), and its package may not ask for administrator rights (Microsoft refused
+        // allowElevation). It scans folders unless a service Setup installed reads the drives for it, and offers nothing
+        // here: a service that isn't answering is said so, as in Setup's copy, but never "update it".
         bool store = StorePackage.IsInstalled;
         string status = index.UsesService && outdated && !store ? "On, through an older version of the Rock Preview Service. Update it to this one for its fixes; Windows asks for permission once."
             : index.UsesService ? "On: the Rock Preview Service reads your drives, so every change shows up at once."
             : index.IsElevated ? "On, because Rock Preview runs as administrator."
-            : store ? "Off: folders are scanned instead, which is slower. Run Rock Preview as administrator to read drives instantly; Windows asks for permission each time."
+            : store && !service ? "Off in the Microsoft Store version: it builds its index by scanning folders, which takes longer the first time. Once it's built, searches are fast."
             : service && !index.ScansInsteadOfReading ? "Ready: the Rock Preview Service is installed. None of the drives searched now is one it reads (a local NTFS drive); network, FAT32 and exFAT drives are scanned."
-            : service && outdated ? "The Rock Preview Service isn't answering. Updating it usually brings it back; Windows asks for permission once."
+            : service && outdated && !store ? "The Rock Preview Service isn't answering. Updating it usually brings it back; Windows asks for permission once."
             : service ? "The Rock Preview Service isn't answering. Restarting the PC usually brings it back."
             : "Off: folders are scanned instead, which is slower. Windows asks for permission once to turn it on.";
-        bool offer = !_app.IsDemo && (store ? !index.UsesService && !index.IsElevated : !service || (outdated && (index.UsesService || !index.IsElevated)));
-        Control? turnOn = !offer ? null : CardButton(store ? "Run as administrator" : service ? "Update" : "Turn on", () => { Close(); _app.Post(() => _app.TurnOnInstantIndexing(null)); });
+        bool offer = !_app.IsDemo && !store && (!service || (outdated && (index.UsesService || !index.IsElevated)));
+        Control? turnOn = !offer ? null : CardButton(service ? "Update" : "Turn on", () => { Close(); _app.Post(() => _app.TurnOnInstantIndexing(null)); });
+        // The Store's copy reading no drive, itself or through a service: each drive is scanned, NTFS ones too, then
+        // followed by FolderIndexer's FileSystemWatcher (scanned again when it misses changes, and at each start). An
+        // installed service that reads no fixed drive for it (stopped, or installed for another account) counts as none;
+        // with whole drives off, an installed one is taken to read them once they're on.
+        bool scansDrives = store && !index.UsesService && !index.IsElevated && (!service || index.ScansInsteadOfReading);
 
         // The drives the app listed last show at once; the look in the background (RefreshRoots) brings them up to date.
         if (_app.KnownDrives.Count > 0) ShowDrives(_app.KnownDrives);
@@ -511,9 +518,15 @@ internal sealed partial class SettingsForm : Form
         var rescanRow = new RowList();
         rescanRow.Controls.Add(new SubRow("Check them again", _rescan, detail: "Network drives and folders don't always say when files change."));
 
-        var journalRow = new RowList();
-        journalRow.Controls.Add(new SubRow("Reach back with the change journal", _recentFromJournal,
-            detail: "At startup, NTFS drives tell what changed in the days before."));
+        // Only a drive that is read (NtfsVolumeIndexer) has a change journal to reach back with: none in the Store's copy
+        // scanning its drives, so the switch isn't shown there.
+        RowList? journalRow = null;
+        if (!scansDrives)
+        {
+            journalRow = new RowList();
+            journalRow.Controls.Add(new SubRow("Reach back with the change journal", _recentFromJournal,
+                detail: "At startup, NTFS drives tell what changed in the days before."));
+        }
         var runRows = new RowList();
         var import = CardButton("Import", ImportRunHistory);
         var clear = CardButton("Clear", ClearRunHistory);
@@ -523,9 +536,12 @@ internal sealed partial class SettingsForm : Form
 
         return Page("Indexing", [
             Card("Instant indexing", status, turnOn),
-            Card("Index whole drives", "Search every drive. NTFS drives are read in seconds and kept up to date as files change; others are scanned.", _ntfs, _driveRows),
-            Card("USB drives and memory cards",
-                "Search them, and CDs and DVDs, while they're plugged in. NTFS drives are read instantly; others are scanned. They can still be safely removed.", _removable),
+            Card("Index whole drives", scansDrives
+                ? "Search every drive. Each one is scanned folder by folder, then kept up to date as files change."
+                : "Search every drive. NTFS drives are read in seconds and kept up to date as files change; others are scanned.", _ntfs, _driveRows),
+            Card("USB drives and memory cards", scansDrives
+                ? "Search them, and CDs and DVDs, while they're plugged in: each one is scanned as it comes in, and can still be safely removed."
+                : "Search them, and CDs and DVDs, while they're plugged in. NTFS drives are read instantly; others are scanned. They can still be safely removed.", _removable),
             Card("Network drives",
                 "Mapped network drives (like Z:) are scanned and kept up to date. Their files stay searchable while the network is away. " +
                 "They're searched by name; to search inside their files too, switch on Network drives under Search inside files.", _network, rescanRow),

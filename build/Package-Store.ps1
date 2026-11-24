@@ -35,7 +35,8 @@ if (Test-Path $work) { Remove-Item $work -Recurse -Force }
 New-Item -ItemType Directory -Force (Join-Path $layout "Assets") | Out-Null
 Copy-Item $Exe (Join-Path $layout "RockPreview.exe")
 Copy-Item (Join-Path $PSScriptRoot "Store\Assets\*.png") (Join-Path $layout "Assets")
-$manifest = (Get-Content (Join-Path $PSScriptRoot "Store\AppxManifest.xml") -Raw).
+# Read as UTF-8 in Windows PowerShell too: it takes a file without a BOM as ANSI, and the comments' arrows came out garbled.
+$manifest = (Get-Content (Join-Path $PSScriptRoot "Store\AppxManifest.xml") -Raw -Encoding UTF8).
     Replace('$IdentityName$', $IdentityName).Replace('$Publisher$', [Security.SecurityElement]::Escape($Publisher)).
     Replace('$PublisherDisplayName$', [Security.SecurityElement]::Escape($PublisherDisplayName)).Replace('$Version$', $version)
 [IO.File]::WriteAllText((Join-Path $layout "AppxManifest.xml"), $manifest, [Text.UTF8Encoding]::new($false))
@@ -57,8 +58,14 @@ if ($LASTEXITCODE -ne 0) { throw "makeappx pack failed ($LASTEXITCODE)" }
 
 # What MakeAppx doesn't check, so a package Partner Center would refuse (or that shows blank logos) fails here instead.
 $problems = @()
-$text = Get-Content (Join-Path $layout "AppxManifest.xml") -Raw
+$text = Get-Content (Join-Path $layout "AppxManifest.xml") -Raw -Encoding UTF8
 if ($text -match '\$[A-Za-z]+\$') { $problems += "the manifest still has $($Matches[0]) in it" }
+# A restricted capability needs Microsoft's approval: runFullTrust is the one the app needs. allowElevation was refused on
+# 2026-11-24, and nothing else may come back by accident.
+[xml]$doc = $text
+$restricted = @($doc.SelectNodes("//*[local-name()='Capability' and starts-with(namespace-uri(), 'http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities')]") |
+    ForEach-Object { $_.GetAttribute("Name") } | Where-Object { $_ -ne "runFullTrust" })
+if ($restricted) { $problems += "the manifest declares the restricted capability $($restricted -join ', '): only runFullTrust may be there (Microsoft refused allowElevation)" }
 $bytes = [IO.File]::ReadAllBytes((Join-Path $layout "RockPreview.exe"))
 $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
 if ($machine -ne 0x8664) { $problems += ("RockPreview.exe is for machine 0x{0:X4}, but the manifest says x64" -f $machine) }
@@ -73,5 +80,5 @@ foreach ($logo in 'StoreLogo.png', 'Square44x44Logo.png', 'Square150x150Logo.png
     foreach ($c in $candidates) { if (-not (Test-Path (Join-Path $layout $c.Value))) { $problems += "resources.pri points at a missing $($c.Value)" } }
 }
 if ($problems) { throw "The Store package isn't right:`n  " + ($problems -join "`n  ") }
-Write-Host "Checked: identity $IdentityName, version $version, x64, every logo size present (Windows SDK $($sdk.Directory.Parent.Name))."
+Write-Host "Checked: identity $IdentityName, version $version, x64, runFullTrust the only restricted capability, every logo size present (Windows SDK $($sdk.Directory.Parent.Name))."
 Get-Item $Out | Format-Table Name, @{ n = "MB"; e = { [math]::Round($_.Length / 1MB, 1) } }, @{ n = "Version"; e = { $version } }, @{ n = "Identity"; e = { $IdentityName } } -AutoSize

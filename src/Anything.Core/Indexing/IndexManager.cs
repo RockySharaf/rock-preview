@@ -96,6 +96,13 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
     ExclusionFilter IIndexerHost.Filter => _filter;
     bool IIndexerHost.RecentChangesFromJournal => _settings.RecentChangesFromJournal;
 
+    /// <summary>
+    /// Whether this copy can turn instant indexing on (the service, or a restart as administrator). The Microsoft Store's
+    /// copy can't, so a fixed drive it scans instead isn't said to have instant indexing off: scanning folders is just how
+    /// it indexes there.
+    /// </summary>
+    public bool CanTurnOnInstantIndexing { get; init; } = true;
+
     public string StatusText
     {
         get
@@ -103,14 +110,21 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
             var root = _scanningRoot;
             if (root != null && _state == IndexState.Scanning)
             {
-                long n = root.ProgressCount;
-                return _fallbackMode && root.Kind == RootKind.Folder && root.RootPath.Length == 3 && root.DriveKind == DriveKind.Fixed
-                    ? $"Instant indexing is off: scanning folders ({root.RootPath}, {n:N0} objects)"
-                    : $"Scanning {root.RootPath} ({n:N0} objects)";
+                bool scannedInstead = _fallbackMode && root.Kind == RootKind.Folder && root.RootPath.Length == 3 && root.DriveKind == DriveKind.Fixed;
+                return ScanningText(root.RootPath, root.ProgressCount, scannedInstead, CanTurnOnInstantIndexing);
             }
             return _status;
         }
     }
+
+    /// <summary>
+    /// The status bar while a root is scanned. A fixed drive scanned because neither the service nor administrator rights
+    /// could read it says instant indexing is off, where it can be turned on; where it can't, just that folders are scanned.
+    /// </summary>
+    internal static string ScanningText(string rootPath, long objects, bool scannedInstead, bool canTurnOnInstantIndexing) =>
+        !scannedInstead ? $"Scanning {rootPath} ({objects:N0} objects)"
+        : canTurnOnInstantIndexing ? $"Instant indexing is off: scanning folders ({rootPath}, {objects:N0} objects)"
+        : $"Scanning folders ({rootPath}, {objects:N0} objects)";
 
     static bool CheckElevated()
     {
@@ -312,7 +326,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
         if (!_settled || Volatile.Read(ref _scans.Active) != 0) return;
         lock (_rescans) if (_rescans.Count > 0) return; // a root task queued but not scanning yet
 
-        SetState(IndexState.Ready, _fallbackMode ? "Indexing requires administrator: scanning folders" : "");
+        SetState(IndexState.Ready, _fallbackMode && CanTurnOnInstantIndexing ? "Indexing requires administrator: scanning folders" : "");
     }
 
     void Run(bool loadDatabase, bool forceRescan, CancellationToken ct)

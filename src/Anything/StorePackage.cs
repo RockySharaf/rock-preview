@@ -8,8 +8,10 @@ namespace Anything;
 /// <summary>
 /// Rock Preview from the Microsoft Store: the same program, run inside the Store's package (build/Package-Store.ps1). The
 /// Store installs, updates and removes it, so Setup, the update check and the service stay out of it, and it changes
-/// nothing in Windows that would outlive the package (File Explorer stays as it is). Windows starts it with Windows
-/// through the package's startup task, and its restarts go through its app alias, which starts it inside its package.
+/// nothing in Windows that would outlive the package (File Explorer stays as it is). Its package may not ask for
+/// administrator rights (Microsoft refused allowElevation on 2026-11-24), so it never restarts elevated and indexes by
+/// scanning folders, unless a service Setup installed reads the drives for it. Windows starts it with Windows through the
+/// package's startup task, and its restarts go through its app alias, which starts it inside its package.
 /// </summary>
 internal static class StorePackage
 {
@@ -24,8 +26,8 @@ internal static class StorePackage
 
     /// <summary>
     /// The app alias the package declares (build/Store/AppxManifest.xml): %LOCALAPPDATA%\Microsoft\WindowsApps\RockPreview.exe.
-    /// Started through it, Rock Preview runs inside its package, elevated or not; its program file in the package's
-    /// folder changes with each version.
+    /// Started through it, Rock Preview runs inside its package; its program file in the package's folder changes with
+    /// each version.
     /// </summary>
     public static string AliasPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Microsoft", "WindowsApps", "RockPreview.exe");

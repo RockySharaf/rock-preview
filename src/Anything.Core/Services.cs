@@ -3,7 +3,9 @@ namespace Anything.Core;
 /// <summary>Composition root. Implementations live in Indexing/ and Search/.</summary>
 public static class Services
 {
-    public static IIndexManager CreateIndexManager() => new Indexing.IndexManager();
+    /// <param name="canTurnOnInstantIndexing">False for a copy that can't (the Microsoft Store's): see <see cref="Indexing.IndexManager.CanTurnOnInstantIndexing"/>.</param>
+    public static IIndexManager CreateIndexManager(bool canTurnOnInstantIndexing = true) =>
+        new Indexing.IndexManager { CanTurnOnInstantIndexing = canTurnOnInstantIndexing };
     public static ISearchEngine CreateSearchEngine() => new Search.SearchEngine();
 
     /// <summary>
