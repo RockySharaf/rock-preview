@@ -19,7 +19,7 @@ Press **`Alt+X`** in any app to open it.
 ![Windows 10 & 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?logo=windows)
 ![.NET 10](https://img.shields.io/badge/.NET-10-512bd4)
 
-**[⬇ Download Rock Preview](https://github.com/RockySharaf/rock-preview/releases/latest)** · [Features](#features) · [Search syntax](#search-syntax) · [Build from source](#build-from-source)
+**[⬇ Download Rock Preview](https://github.com/RockySharaf/rock-preview/releases/latest)** · **[Get it from the Microsoft Store](https://apps.microsoft.com/detail/9NCCSZW9VVK1)** · [Features](#features) · [Search syntax](#search-syntax) · [Build from source](#build-from-source)
 
 <img src="docs/images/explorer.png" alt="Rock Preview, a file explorer for Windows: a folder of PDF, Excel, Word, PowerPoint, CorelDRAW, Illustrator, Photoshop, TIFF, JPEG and text files shown as thumbnails, with the Photoshop file in the preview pane" width="900">
 
@@ -47,6 +47,10 @@ like PSD, AI or CorelDRAW that take ages to launch. Rock Preview fixes both:
 - **🖼️ Thumbnails of everything**: one click shows your search results, or *every* file in a folder and its
   subfolders at once, as thumbnails.
 - **⬆️ Updates in one click**: when a new version is out, **Update now** installs it from inside the app.
+
+<div align="center">
+<img src="docs/images/search.gif" alt="Typing a search in Rock Preview: the results change with each letter, across every drive" width="900">
+</div>
 
 ## Features
 
@@ -256,6 +260,10 @@ Videos and songs are opened only when you press **Play**, so the one selected ca
 ### Thumbnails
 Press **Thumbnails** (or `Ctrl+Shift+X`) to see files as pictures:
 
+<div align="center">
+<img src="docs/images/thumbnails.gif" alt="A folder of PDF, Illustrator, TIFF, Excel, CorelDRAW, text, JPEG, Photoshop, PowerPoint and Word files switching to thumbnails, then previews of several of them" width="900">
+</div>
+
 - **While searching**, the files you found switch to thumbnails, wherever on the disk they are, and every file inside
   a folder you found (and its subfolders) comes too, as on a folder. Search `holiday` and a folder called *Holiday
   2025* shows its photos. With the **Folder** filter you see the folders themselves.
@@ -334,6 +342,9 @@ Rock Preview doesn't patch File Explorer to change that.
    taskbar pin opens the new one, and your settings and search index stay (the app checks the index when it starts and
    builds it again if it can't use it).
 2. Prefer no install? Download **`RockPreview.exe`** — the portable version runs from any folder or USB stick.
+3. Or get it from the **[Microsoft Store](https://apps.microsoft.com/detail/9NCCSZW9VVK1)**: Microsoft signs it, so it
+   installs without a warning, and the Store keeps it up to date. See [Microsoft Store version](#microsoft-store-version)
+   for what works differently there.
 
 Both are self-contained: nothing else (not even .NET) needs to be installed. Uninstall the installed version in one
 click from the app's **Settings › About › Uninstall** (or from Windows' **Settings › Apps**): the program, its shortcuts,
@@ -362,12 +373,13 @@ its file is all there is to do.
 > it in its yellow bar when it starts.
 
 > **Windows SmartScreen** may say "Windows protected your PC" because the download isn't code-signed. Click **More
-> info › Run anyway**. The [Microsoft Store version](#microsoft-store-version-coming-soon) installs without the warning.
+> info › Run anyway**. The [Microsoft Store version](#microsoft-store-version) installs without the warning.
 
-### Microsoft Store version (coming soon)
+### Microsoft Store version
 
-Rock Preview is on its way to the Microsoft Store. It's the same program, but Microsoft signs it, so Windows installs it
-without a warning, and the Store installs, updates and uninstalls it. A few things work differently there:
+Rock Preview is in the **[Microsoft Store](https://apps.microsoft.com/detail/9NCCSZW9VVK1)**. It's the same program,
+but Microsoft signs it, so Windows installs it without a warning, and the Store installs, updates and uninstalls it. A
+few things work differently there:
 
 - **Instant indexing is optional**: unless you turn it on, the Store version builds its index by scanning folders. The
   first index takes longer; once it's built, searches are just as fast and it keeps up as files change. Turn it on in
@@ -399,7 +411,7 @@ while Rock Preview is closed to the background, and comes back there; nothing to
 for permission (installed for everyone, or run as administrator) the bar offers **Update now** instead. Turning on instant
 indexing asks Windows for permission once: updates don't ask again unless the service itself changes.
 
-The [Microsoft Store version](#microsoft-store-version-coming-soon) doesn't do any of this: the Store updates it, and
+The [Microsoft Store version](#microsoft-store-version) doesn't do any of this: the Store updates it, and
 **Help › Check for Updates** opens its page in the Store.
 
 ## Keyboard shortcuts
@@ -542,7 +554,6 @@ Preview removes it.
 
 ## Roadmap
 
-- The [Microsoft Store listing](#microsoft-store-version-coming-soon) (in progress)
 - ARM64 builds
 
 Ideas and bug reports are welcome in [Issues](https://github.com/RockySharaf/rock-preview/issues).
