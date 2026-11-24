@@ -487,26 +487,35 @@ internal sealed partial class SettingsForm : Form
         bool service = !_app.IsDemo && IndexService.IsInstalled();
         // An older service (setup's update declined, say) still works, but without this release's fixes.
         bool outdated = service && IndexService.NeedsUpdate();
-        // The Store's copy can't turn it on: it never installs or updates the service (a package can't leave one behind;
-        // one Setup installed still serves it), and its package may not ask for administrator rights (Microsoft refused
-        // allowElevation). It scans folders unless a service Setup installed reads the drives for it, and offers nothing
-        // here: a service that isn't answering is said so, as in Setup's copy, but never "update it".
+        // The Store's copy never installs or updates the service (a package can't leave one behind; one Setup installed
+        // still serves it, and is never offered an update here), and its window never runs as administrator (Microsoft
+        // refused it allowElevation): its own helper is offered instead (StoreInstantIndexing).
         bool store = StorePackage.IsInstalled;
-        string status = index.UsesService && outdated && !store ? "On, through an older version of the Rock Preview Service. Update it to this one for its fixes; Windows asks for permission once."
-            : index.UsesService ? "On: the Rock Preview Service reads your drives, so every change shows up at once."
-            : index.IsElevated ? "On, because Rock Preview runs as administrator."
-            : store && !service ? "Off in the Microsoft Store version: it builds its index by scanning folders, which takes longer the first time. Once it's built, searches are fast."
-            : service && !index.ScansInsteadOfReading ? "Ready: the Rock Preview Service is installed. None of the drives searched now is one it reads (a local NTFS drive); network, FAT32 and exFAT drives are scanned."
-            : service && outdated && !store ? "The Rock Preview Service isn't answering. Updating it usually brings it back; Windows asks for permission once."
-            : service ? "The Rock Preview Service isn't answering. Restarting the PC usually brings it back."
-            : "Off: folders are scanned instead, which is slower. Windows asks for permission once to turn it on.";
-        bool offer = !_app.IsDemo && !store && (!service || (outdated && (index.UsesService || !index.IsElevated)));
-        Control? turnOn = !offer ? null : CardButton(service ? "Update" : "Turn on", () => { Close(); _app.Post(() => _app.TurnOnInstantIndexing(null)); });
-        // The Store's copy reading no drive, itself or through a service: each drive is scanned, NTFS ones too, then
-        // followed by FolderIndexer's FileSystemWatcher (scanned again when it misses changes, and at each start). An
-        // installed service that reads no fixed drive for it (stopped, or installed for another account) counts as none;
-        // with whole drives off, an installed one is taken to read them once they're on.
-        bool scansDrives = store && !index.UsesService && !index.IsElevated && (!service || index.ScansInsteadOfReading);
+        bool helperReads = store && _app.HelperState == IndexHelperState.Serving;
+        string status;
+        Control? turnOn;
+        if (store && !_app.IsDemo) (status, turnOn) = StoreInstantIndexing(index, service, helperReads);
+        else
+        {
+            status = index.UsesService && outdated && !store ? "On, through an older version of the Rock Preview Service. Update it to this one for its fixes; Windows asks for permission once."
+                : index.UsesService ? "On: the Rock Preview Service reads your drives, so every change shows up at once."
+                : index.IsElevated ? "On, because Rock Preview runs as administrator."
+                : store ? "Off in the Microsoft Store version: it builds its index by scanning folders, which takes longer the first time. Once it's built, searches are fast."
+                : service && !index.ScansInsteadOfReading ? "Ready: the Rock Preview Service is installed. None of the drives searched now is one it reads (a local NTFS drive); network, FAT32 and exFAT drives are scanned."
+                : service && outdated ? "The Rock Preview Service isn't answering. Updating it usually brings it back; Windows asks for permission once."
+                : service ? "The Rock Preview Service isn't answering. Restarting the PC usually brings it back."
+                : "Off: folders are scanned instead, which is slower. Windows asks for permission once to turn it on.";
+            bool offer = !_app.IsDemo && !store && (!service || (outdated && (index.UsesService || !index.IsElevated)));
+            turnOn = !offer ? null : CardButton(service ? "Update" : "Turn on", () => { Close(); _app.Post(() => _app.TurnOnInstantIndexing(null)); });
+        }
+        // The Store's copy reading no drive, itself or through a service or its helper: each drive is scanned, NTFS ones
+        // too, then followed by FolderIndexer's FileSystemWatcher (scanned again when it misses changes, and at each
+        // start). An installed service or a running helper that reads no fixed drive for it (stopped, or installed for
+        // another account) counts as none; with whole drives off, one is taken to read them once they're on. A pipe the
+        // index still reads through counts only while it is the service's or the helper's: not just after the helper
+        // ended or was turned off, before indexing has started again. The helper's own start counts as reading.
+        bool reads = service && index.UsesService || helperReads && (index.UsesService || !index.HasPlanned);
+        bool scansDrives = store && !reads && !index.IsElevated && (!(service || helperReads) || index.ScansInsteadOfReading);
 
         // The drives the app listed last show at once; the look in the background (RefreshRoots) brings them up to date.
         if (_app.KnownDrives.Count > 0) ShowDrives(_app.KnownDrives);
@@ -556,6 +565,59 @@ internal sealed partial class SettingsForm : Form
                 "Count the files you open from the results: the Run Count and Date Run columns, runcount: and dr:.", _runHistory, runRows),
             Card("Rebuild the index", "Scans everything again from the start.", CardButton("Rebuild now", () => { _indexChanged = false; _app.ApplySettings(indexChanged: true, rebuildIndex: true); })),
             .. ContentCards()]);
+    }
+
+    /// <summary>
+    /// The Store copy's Instant indexing card: its helper, off unless turned on (Windows asks each time Rock Preview
+    /// starts it), or the Rock Preview Service when Setup installed one (no button then: the helper never starts beside
+    /// it). Each button closes Settings and does it from the app, as Setup's copy's Turn on does. With the switch on,
+    /// every state offers Turn off: a declined or failed start asks again at the next start until it is off.
+    /// </summary>
+    (string Status, Control? Button) StoreInstantIndexing(IIndexManager index, bool service, bool helperReads)
+    {
+        Control Do(string text, Action act) => CardButton(text, () => { Close(); _app.Post(act); });
+        Control AskAgainOrTurnOff()
+        {
+            var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty };
+            buttons.Controls.Add(Do("Ask again", _app.TurnOnIndexHelper));
+            buttons.Controls.Add(Do("Turn off", _app.TurnOffIndexHelper));
+            return buttons;
+        }
+        bool on = _app.Settings.StoreInstantIndexing;
+        if (helperReads)
+            // Indexing starting again to read through it (not planned yet) counts as reading: it will in a moment.
+            return (index.UsesService || !index.HasPlanned
+                    ? "On: a small helper reads your drives until you exit Rock Preview, so every change shows up at once. Windows asks for permission each time Rock Preview starts."
+                : !index.ScansInsteadOfReading
+                    ? "On: the helper is running. None of the drives searched now is one it reads (a local NTFS drive); network, FAT32 and exFAT drives are scanned."
+                    : "On: the helper is running, but the drives are still scanned for now.",
+                Do("Turn off", _app.TurnOffIndexHelper));
+        // Named only when Setup installed one: just after the helper ended or was turned off, the index still reads
+        // through its pipe until indexing has started again.
+        if (index.UsesService && service) return ("On: the Rock Preview Service reads your drives, so every change shows up at once.", null);
+        if (index.IsElevated) return ("On, because Rock Preview runs as administrator.", null);
+        // A service Setup installed: the helper never starts beside it (the pipe's name is the service's).
+        if (service)
+            return (!index.ScansInsteadOfReading
+                ? "Ready: the Rock Preview Service is installed. None of the drives searched now is one it reads (a local NTFS drive); network, FAT32 and exFAT drives are scanned."
+                : "The Rock Preview Service isn't answering. Restarting the PC usually brings it back.", null);
+        if (_app.IndexHelperNeedsAdministrator)
+            return ("Off: instant indexing needs a Windows account that is an administrator. This version scans folders instead, which is slower the first time.", null);
+        if (!on)
+            return ("Off: this version builds its index by scanning folders, which is slower the first time. If you turn it on, Windows asks for permission each time Rock Preview starts, " +
+                    "and a small helper then reads the drives in seconds until you exit Rock Preview. The window stays a normal app, so dragging files in keeps working.",
+                Do("Turn on", _app.TurnOnIndexHelper));
+        return _app.HelperState switch
+        {
+            IndexHelperState.Declined => ("Windows' permission was declined, so folders are scanned this time. Windows asks again when Rock Preview next starts.", AskAgainOrTurnOff()),
+            IndexHelperState.Stopped => ("The helper isn't running, so folders are scanned this time. Windows asks again when Rock Preview next starts.", AskAgainOrTurnOff()),
+            IndexHelperState.InUse => ("Instant indexing is in use by another account on this PC, so folders are scanned this time.", AskAgainOrTurnOff()),
+            IndexHelperState.Starting => ("On: starting the helper that reads your drives. Windows asks for permission first.", Do("Turn off", _app.TurnOffIndexHelper)),
+            // Not asked yet: no window opened in this run (started with Windows, in the tray). Else it wasn't started.
+            _ => _app.HelperAsked
+                ? ("The helper isn't running, so folders are scanned this time. Windows asks again when Rock Preview next starts.", AskAgainOrTurnOff())
+                : ("On: when a Rock Preview window opens, Windows asks for permission, and a small helper then reads your drives.", Do("Turn off", _app.TurnOffIndexHelper)),
+        };
     }
 
     void ImportRunHistory()

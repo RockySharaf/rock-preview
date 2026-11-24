@@ -45,15 +45,22 @@ internal sealed unsafe class ServiceVolumeSource : IVolumeSource
     }
 
     /// <summary>Whether the service is installed and answering (any volume works for the check).</summary>
-    public static bool IsAvailable(int timeoutMs = 300)
+    public static bool IsAvailable(int timeoutMs = 300) => Probe(timeoutMs) == VolumePipe.Answers;
+
+    /// <summary>
+    /// Whether the pipe answers this account, refuses it (Windows denies access: another account's), or isn't there. One
+    /// that someone other than SYSTEM or administrators made counts as refusing: it is never used.
+    /// </summary>
+    public static VolumePipe Probe(int timeoutMs = 300)
     {
         try
         {
             using var pipe = new NamedPipeClientStream(".", VolumeService.PipeName, PipeDirection.InOut, PipeOptions.None, TokenImpersonationLevel.Identification);
             pipe.Connect(timeoutMs);
-            return IsServiceOwned(pipe);
+            return IsServiceOwned(pipe) ? VolumePipe.Answers : VolumePipe.Refused;
         }
-        catch (Exception) { return false; }
+        catch (UnauthorizedAccessException) { return VolumePipe.Refused; }
+        catch (Exception) { return VolumePipe.Missing; }
     }
 
     public string Kind => "service";

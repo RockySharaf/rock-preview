@@ -63,6 +63,13 @@ public static class HelpContent
     static HelpEntry Key(string key, string text) => new([key], text, [], HelpInsert.None);
     static HelpEntry Key(string[] keys, string text) => new(keys, text, [], HelpInsert.None);
 
+    /// <summary>The Store copy's opt-in helper, which reads the drives until Rock Preview exits (Windows asks at each start).</summary>
+    static HelpEntry InstantIndexingInTheStore => Row("Instant indexing", "Off unless you turn it on in Settings › Indexing; without it, " +
+        "folders are scanned, which is slower the first time. Once it's on, Windows asks for permission each time Rock Preview " +
+        "starts (started with Windows, when you first open its window). A small helper then reads your drives until you exit " +
+        "Rock Preview: closing the window to the tray keeps it running. The window stays a normal app, so you can still drag " +
+        "files in.");
+
     static HelpPart HowToPart(string? hotkey, bool store)
     {
         string press = hotkey is { Length: > 0 } key ? $"Press {key}" : $"Press the shortcut ({DefaultHotkey} unless you changed it)";
@@ -161,6 +168,8 @@ public static class HelpContent
                     : "Rock Preview looks for a new version once a day and says when there is one. With Settings › General › " +
                       "Update automatically on, the installed copy updates itself at night or while it is closed, keeping " +
                       "your settings. To look now, choose Help › Check for Updates under the gear's arrow."),
+                // Only the Store's copy has a switch for it: the GitHub copy's comes from Setup's service, asked once.
+                .. store ? [InstantIndexingInTheStore] : Array.Empty<HelpEntry>(),
                 Row("Get Started", "To see the short tour again, choose Help › Get Started under the gear's arrow."),
             ], null),
         ], HelpLabel.Names);

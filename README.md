@@ -369,10 +369,14 @@ its file is all there is to do.
 Rock Preview is on its way to the Microsoft Store. It's the same program, but Microsoft signs it, so Windows installs it
 without a warning, and the Store installs, updates and uninstalls it. A few things work differently there:
 
-- **It scans folders to build its index**: there's no instant indexing and no **Run as Administrator** (Microsoft
-  doesn't let the Store version ask for administrator rights). The first index takes longer; once it's built, searches
-  are just as fast and it keeps up as files change. If the GitHub version's Setup installed the **Rock Preview
-  Service** for you on this PC, that service reads the drives for the Store version too.
+- **Instant indexing is optional**: unless you turn it on, the Store version builds its index by scanning folders. The
+  first index takes longer; once it's built, searches are just as fast and it keeps up as files change. Turn it on in
+  **Settings › Indexing** (or from the yellow bar) and Windows asks for permission each time Rock Preview starts (if it
+  started with Windows, when you first open its window); a small helper then reads the drives in seconds until you exit
+  Rock Preview, which closing its window to the tray doesn't do. It needs a Windows account that is an administrator.
+  Rock Preview never runs its own window as administrator (there's no **Run as Administrator**), so dragging files in
+  keeps working. If the GitHub version's Setup installed the **Rock Preview Service** for you on this PC, that service
+  reads the drives for the Store version instead, with no prompts.
 - **Use instead of Windows File Explorer** isn't in it: the Store version leaves File Explorer as it is.
 - **Start when Windows starts** is off until you turn it on in **Settings › General**. Task Manager's **Startup apps**
   can turn it off too.
@@ -525,7 +529,11 @@ Updates**. Setup shows this, with a link to this policy, before it installs anyt
 
 The Microsoft Store version connects to nothing at all: the Store updates it. Windows keeps the files it creates in the
 app's own storage (under `%LOCALAPPDATA%\Packages`) and deletes them when it's uninstalled. On a PC that also has the
-GitHub version, the Store version uses that version's settings and index, and they stay.
+GitHub version, the Store version uses that version's settings and index, and they stay. Its instant-indexing helper
+(off unless you turn it on) is Rock Preview itself, started with Windows' permission: it answers only your account,
+only on this PC, never over the network, returns the same file names, folders, sizes and dates as the service below,
+and ends when you exit Rock Preview. It writes nothing, and it stops at once, answering no one, if another program has
+taken the name it answers on.
 
 The optional Rock Preview Service runs from `C:\Program Files\Rock Preview Service` (only administrators can change
 it). It answers only the Windows accounts that installed it, only on this PC, never over the network. It returns file

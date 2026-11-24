@@ -64,7 +64,7 @@ internal sealed partial class AnythingApp : ApplicationContext
             }
             else
             {
-                // The Store's copy can't turn instant indexing on: scanning folders is just how it indexes there.
+                // The Store's copy says only that it scans folders: its helper is opt-in, and its own bar offers it.
                 index = Services.CreateIndexManager(canTurnOnInstantIndexing: !StorePackage.IsInstalled);
                 engine = Services.CreateSearchEngine();
             }
@@ -118,6 +118,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         SubscribeIndex();
         if (!cmd.Demo) LoadRunHistory();
         AwaitReconnectedDrives(reconnect);
+        HoldPlanningForHelper(cmd); // the Store copy's helper, switched on: its answer decides how the drives are read
         try { IndexManager.Start(Settings.Index); }
         catch (Exception ex)
         {
@@ -299,7 +300,7 @@ internal sealed partial class AnythingApp : ApplicationContext
     {
         if (_exiting) return;
         if (cmd.Exit) { ExitApp(); return; }
-        if (cmd.Startup && cmd.Search is null && cmd.Path is null && cmd.Select is null && !cmd.NewWindow && !cmd.Explorer)
+        if (StartsInTray(cmd))
         {
             if (initial) return; // start hidden in the tray
         }
@@ -328,6 +329,10 @@ internal sealed partial class AnythingApp : ApplicationContext
         if (cmd.Select is not null) w.ShowItem(cmd.Select); // -select / explorer's /select,: the folder with the item selected
         else if (cmd.Path is not null) w.BrowseTo(cmd.Path);
     }
+
+    /// <summary>Started with Windows (-startup) with nothing to show: the first start stays in the tray, with no window.</summary>
+    static bool StartsInTray(CommandLine cmd) =>
+        cmd.Startup && cmd.Search is null && cmd.Path is null && cmd.Select is null && !cmd.NewWindow && !cmd.Explorer;
 
     /// <summary>
     /// A window whose last tab was closed (nothing left open in it) comes back as a new one opens: one tab where File
@@ -380,6 +385,7 @@ internal sealed partial class AnythingApp : ApplicationContext
         w.FocusSearch(selectAll: true);
         _lastActive = w;
         ShowWelcomeOnce();
+        if (!_helperTried) Post(StartIndexHelperOnce); // the Store copy's helper, once the window is up
     }
 
     /// <summary>
@@ -466,6 +472,10 @@ internal sealed partial class AnythingApp : ApplicationContext
         StopContent();
         try { IndexManager.Save(); } catch { }
         try { IndexManager.Dispose(); } catch { }
+        // The Store copy's helper goes now, its drives let go of: not later, with this process (which can linger over the
+        // shell's work), where a restarted copy could find it still answering.
+        StopIndexHelper();
+        _helperWatch?.Dispose();
         // The thumbnail service last: nothing above needs it, and nothing it does at its end may cut the index's save short.
         StopThumbnails();
         ExitThread();
@@ -483,12 +493,14 @@ internal sealed partial class AnythingApp : ApplicationContext
     /// Turns on instant indexing for good: installs (or updates: stops, replaces and starts again) the Rock Preview
     /// service (Windows asks for permission this once), then restarts indexing from the database so the drives are read
     /// through it: what offline network drives had is kept, and everything stays searchable meanwhile. Rock Preview
-    /// itself keeps running as a normal app. Nothing in the Store's copy, which offers it nowhere: a package can't leave a
-    /// service behind and may not ask for administrator rights (Microsoft refused allowElevation), so it scans folders.
+    /// itself keeps running as a normal app. The Store's copy starts its helper instead (<see cref="TurnOnIndexHelper"/>):
+    /// a package can't leave a service behind, and its window may not run as administrator (Microsoft refused it
+    /// allowElevation).
     /// </summary>
     public async void TurnOnInstantIndexing(IWin32Window? owner)
     {
-        if (IsDemo || StorePackage.IsInstalled) return;
+        if (IsDemo) return;
+        if (StorePackage.IsInstalled) { TurnOnIndexHelper(); return; }
         int code;
         if (Program.IsElevated())
         {

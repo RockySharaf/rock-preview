@@ -30,6 +30,10 @@ static class Program
         if (installService) return InstallServiceCommand(args);
         if (uninstallService) return UninstallServiceCommand(quiet: args.Any(a => a.TrimStart('-', '/').Equals("quiet", StringComparison.OrdinalIgnoreCase)));
 
+        // The Store copy's index helper (IndexHelper): started elevated by a running Rock Preview, it reads NTFS drives for
+        // it as the service does, then ends with it. No window, mutex or file: it never gets to the startup below.
+        if (IndexHelper.IsHelperLaunch(args)) return IndexHelper.Run(args);
+
         // The single-file build is also the installer: "RockPreview-Setup.exe", -install, -uninstall. The Store installs
         // its own package, and its windows and notifications carry the package's identity.
         if (StorePackage.IsInstalled)
@@ -66,6 +70,10 @@ static class Program
         bool owned = TryAcquire(mutex, cmd.Restarted ? 60000 : 0);
         if (!owned)
         {
+            // An elevated Store copy with nothing to do while Rock Preview runs: the index helper's start, should Windows
+            // ever drop its arguments on the way. It ends quietly: no second, elevated window, and nothing sent to the one
+            // that runs (which would come to the front).
+            if (StorePackage.IsInstalled && args.Length == 0 && IsElevated()) return 0;
             IntPtr hwnd = FindInstance(suffix, 3000);
             if (hwnd != IntPtr.Zero) Forward(hwnd, cmd.ToArgs());
             return 0;

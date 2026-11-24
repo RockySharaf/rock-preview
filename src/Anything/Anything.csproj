@@ -19,7 +19,7 @@
     <RootNamespace>Anything</RootNamespace>
     <Product>Rock Preview</Product>
     <AssemblyTitle>Rock Preview</AssemblyTitle>
-    <Version>1.7.33</Version>
+    <Version>1.7.34</Version>
     <!-- WFO5001: Application.SetColorMode (system dark mode) is experimental. WFO0003: DPI awareness is declared in app.manifest on purpose (applies before Main runs). -->
     <NoWarn>$(NoWarn);WFO5001;WFO0003;CA1416</NoWarn>
     <!-- The Explorer context menu loads arbitrary third-party shell extensions in-process; many are not
@@ -28,6 +28,9 @@
     <!-- Favor a smaller heap: compact gen2 when fragmented and keep the concurrent (non-server) GC. -->
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <!-- The program also runs elevated (the Store copy's instant-indexing helper, the service): the runtime ignores
+         DOTNET_STARTUP_HOOKS, which a program at the user's normal level could set to run its own code inside it. -->
+    <StartupHookSupport>false</StartupHookSupport>
   </PropertyGroup>
 
   <ItemGroup>

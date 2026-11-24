@@ -190,6 +190,17 @@ internal sealed partial class AppSettings
     public int TourSeen { get; set; }
     /// <summary>Count the files opened from the results (Run Count, Date Run), kept in "Run History.csv" like Everything's.</summary>
     public bool RunHistoryEnabled { get; set; } = true;
+    /// <summary>
+    /// The Microsoft Store copy's instant indexing (Settings › Indexing), off unless turned on: each start, once a window
+    /// opens, Windows asks for permission and a helper reads the drives until Rock Preview exits (<see cref="IndexHelper"/>).
+    /// Nothing in the GitHub copy, whose instant indexing is the service.
+    /// </summary>
+    public bool StoreInstantIndexing { get; set; }
+    /// <summary>
+    /// The Store copy's yellow bar offering instant indexing was dismissed, or the helper turned off: it doesn't come back
+    /// (off is a choice there, kept without asking again), and Settings › Indexing still turns it on.
+    /// </summary>
+    public bool StoreIndexingBarDismissed { get; set; }
     /// <summary>Keep the last searches for the list under the search box (Settings › General). Off, none are saved.</summary>
     public bool RememberSearches { get; set; } = true;
     /// <summary>The searches remembered, newest first (each its own key, since a search can hold any character).</summary>
@@ -327,6 +338,8 @@ internal sealed partial class AppSettings
         s.WelcomeShown = Bool("welcome_shown", false);
         s.TourSeen = Math.Max(0, Int("tour_seen", 0));
         s.RunHistoryEnabled = Bool("run_history_enabled", true);
+        s.StoreInstantIndexing = Bool("store_instant_indexing", false);
+        s.StoreIndexingBarDismissed = Bool("store_indexing_bar_dismissed", false);
         s.RememberSearches = Bool("remember_searches", true);
         if (s.RememberSearches)
             s.SearchHistory.LoadSettings(k => v.TryGetValue(k, out var x) ? x : null);
@@ -450,6 +463,8 @@ internal sealed partial class AppSettings
         B("welcome_shown", WelcomeShown);
         W("tour_seen", TourSeen);
         B("run_history_enabled", RunHistoryEnabled);
+        B("store_instant_indexing", StoreInstantIndexing);
+        B("store_indexing_bar_dismissed", StoreIndexingBarDismissed);
         B("remember_searches", RememberSearches);
         foreach (var (key, value) in SearchHistory.ToSettings(RememberSearches)) W(key, Clean(value));
         B("check_for_updates", CheckForUpdates);

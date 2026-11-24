@@ -403,6 +403,23 @@ public sealed class SearchHelpTests
     }
 
     [Fact]
+    public void Only_the_Store_copy_is_told_about_its_instant_indexing_helper()
+    {
+        static List<HelpEntry> Rows(bool store) => HelpContent.Build(null, store)[HelpContent.HowTo].Sections.SelectMany(s => s.Entries).ToList();
+        Assert.DoesNotContain(Rows(store: false), e => e.Code[0] == "Instant indexing");
+        string text = Rows(store: true).Single(e => e.Code[0] == "Instant indexing").Meaning;
+        Assert.StartsWith("Off unless you turn it on in Settings › Indexing", text);
+        Assert.Contains("Windows asks for permission each time Rock Preview starts", text);
+        Assert.Contains("when you first open its window", text); // started with Windows, in the tray
+        // Until Rock Preview exits, not while a window is open: closing it to the tray keeps the helper running.
+        Assert.Contains("until you exit Rock Preview", text);
+        Assert.Contains("tray keeps it running", text);
+        Assert.Contains("drag files in", text);
+        // Plain words: no sentence over thirty, as everywhere in the help.
+        Assert.All(Regex.Split(text, @"(?<=\.)\s+"), s => Assert.True(s.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length <= 30, s));
+    }
+
+    [Fact]
     public void The_syntax_part_says_how_to_try_things_once_in_plain_words()
     {
         Assert.Equal("Type these in the search box. Double-click a name or an example to try it.", SearchHelp.Intro);

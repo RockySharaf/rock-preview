@@ -51,8 +51,10 @@
   <Capabilities>
     <!-- A desktop program (WinForms, with Windows' own folder view and preview handlers inside it). -->
     <rescap:Capability Name="runFullTrust" />
-    <!-- No administrator rights: Microsoft refused the Store's copy the capability to ask for them on 2026-11-24, so it
-         never restarts as administrator. It scans folders, unless a Rock Preview service installed by Setup (the GitHub
-         version) reads the drives for it. build/Package-Store.ps1 refuses any restricted capability but runFullTrust. -->
+    <!-- No administrator rights: Microsoft refused the Store's copy the capability to ask for them on 2026-11-24, so its
+         window never restarts as administrator. It scans folders, unless its opt-in helper (started elevated through
+         shell:AppsFolder, with Windows asking each time; src/Anything/IndexHelper.cs) or a Rock Preview service installed
+         by Setup (the GitHub version) reads the drives for it. build/Package-Store.ps1 refuses any restricted capability
+         but runFullTrust. -->
   </Capabilities>
 </Package>

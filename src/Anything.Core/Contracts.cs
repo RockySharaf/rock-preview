@@ -165,6 +165,16 @@ public interface IIndexManager : IDisposable
     /// network, FAT and exFAT drives), though <see cref="UsesService"/> is false then too.
     /// </summary>
     bool ScansInsteadOfReading => false;
+    /// <summary>
+    /// The run under way has begun to plan its roots, so whether the service's pipe answered is known or being found out
+    /// (<see cref="UsesService"/>). False from a start until then: that run will see a pipe that answers by now.
+    /// </summary>
+    bool HasPlanned => true;
+    /// <summary>
+    /// Holds each run's planning, once the database is loaded, until <paramref name="decision"/> is done (three minutes at
+    /// most): the Microsoft Store copy's helper starting, Windows asking. Nothing in the demo's.
+    /// </summary>
+    void PlanAfter(Task decision) { }
 
     /// <summary>Loads the database (if present) then starts background (re)indexing and change monitoring. Returns immediately.</summary>
     void Start(IndexSettings settings);

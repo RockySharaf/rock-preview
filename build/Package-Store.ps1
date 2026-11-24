@@ -1,4 +1,5 @@
-# Packs the built program (build\Publish.ps1's dist\RockPreview.exe) into the Microsoft Store's package:
+# Packs the built program (build\Publish.ps1's dist\publish-store-win-x64: RockPreview.exe and the native libraries
+# beside it, which it doesn't unpack into %TEMP% as dist\RockPreview.exe does) into the Microsoft Store's package:
 #   dist\RockPreview-Store.msix   - uploaded in Partner Center; the Store signs it and installs, updates and removes it
 # The identity is the app's in Partner Center (Rock Preview, Store ID 9NCCSZW9VVK1 › Product identity). Unsigned, the
 # package installs only through the Store, or for trying the Store mode on a PC in Developer Mode
@@ -14,7 +15,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $dist = Join-Path $root "dist"
-if (-not $Exe) { $Exe = Join-Path $dist "RockPreview.exe" }
+if (-not $Exe) { $Exe = Join-Path $dist "publish-store-win-x64\RockPreview.exe" }
 if (-not $Out) { $Out = Join-Path $dist "RockPreview-Store.msix" }
 if (-not (Test-Path $Exe)) { throw "$Exe isn't there: run build\Publish.ps1 first." }
 
@@ -34,6 +35,10 @@ $layout = Join-Path $work "layout"
 if (Test-Path $work) { Remove-Item $work -Recurse -Force }
 New-Item -ItemType Directory -Force (Join-Path $layout "Assets") | Out-Null
 Copy-Item $Exe (Join-Path $layout "RockPreview.exe")
+# The native libraries beside it: in the package's folder, which only administrators can change, they're loaded from
+# there, never unpacked into the user's %TEMP%, where the elevated instant-indexing helper could pick up a planted one.
+$natives = @(Get-ChildItem (Split-Path $Exe -Parent) -Filter *.dll -File)
+foreach ($dll in $natives) { Copy-Item $dll.FullName (Join-Path $layout $dll.Name) }
 Copy-Item (Join-Path $PSScriptRoot "Store\Assets\*.png") (Join-Path $layout "Assets")
 # Read as UTF-8 in Windows PowerShell too: it takes a file without a BOM as ANSI, and the comments' arrows came out garbled.
 $manifest = (Get-Content (Join-Path $PSScriptRoot "Store\AppxManifest.xml") -Raw -Encoding UTF8).
@@ -71,6 +76,11 @@ $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C
 if ($machine -ne 0x8664) { $problems += ("RockPreview.exe is for machine 0x{0:X4}, but the manifest says x64" -f $machine) }
 $product = (Get-Item (Join-Path $layout "RockPreview.exe")).VersionInfo.ProductVersion
 if ($product -ne $version.Substring(0, $version.LastIndexOf('.'))) { $problems += "RockPreview.exe is version $product, the package $version" }
+# Not the single file that unpacks its native libraries into %TEMP% at each start (dist\RockPreview.exe, the GitHub copy).
+$selfExtracting = Join-Path $dist "RockPreview.exe"
+if ((Test-Path $selfExtracting) -and (Get-FileHash $selfExtracting).Hash -eq (Get-FileHash (Join-Path $layout "RockPreview.exe")).Hash) {
+    $problems += "RockPreview.exe is the GitHub copy, which unpacks its native libraries into %TEMP%: pack dist\publish-store-win-x64's (build\Publish.ps1)"
+}
 $dump = Join-Path $work "resources.xml"
 & $makepri dump /if (Join-Path $layout "resources.pri") /of $dump /o | Out-Null
 [xml]$pri = Get-Content $dump
@@ -80,5 +90,5 @@ foreach ($logo in 'StoreLogo.png', 'Square44x44Logo.png', 'Square150x150Logo.png
     foreach ($c in $candidates) { if (-not (Test-Path (Join-Path $layout $c.Value))) { $problems += "resources.pri points at a missing $($c.Value)" } }
 }
 if ($problems) { throw "The Store package isn't right:`n  " + ($problems -join "`n  ") }
-Write-Host "Checked: identity $IdentityName, version $version, x64, runFullTrust the only restricted capability, every logo size present (Windows SDK $($sdk.Directory.Parent.Name))."
+Write-Host "Checked: identity $IdentityName, version $version, x64, runFullTrust the only restricted capability, every logo size present, $($natives.Count) native libraries beside the program (Windows SDK $($sdk.Directory.Parent.Name))."
 Get-Item $Out | Format-Table Name, @{ n = "MB"; e = { [math]::Round($_.Length / 1MB, 1) } }, @{ n = "Version"; e = { $version } }, @{ n = "Identity"; e = { $IdentityName } } -AutoSize

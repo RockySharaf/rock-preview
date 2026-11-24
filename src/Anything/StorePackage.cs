@@ -9,9 +9,11 @@ namespace Anything;
 /// Rock Preview from the Microsoft Store: the same program, run inside the Store's package (build/Package-Store.ps1). The
 /// Store installs, updates and removes it, so Setup, the update check and the service stay out of it, and it changes
 /// nothing in Windows that would outlive the package (File Explorer stays as it is). Its package may not ask for
-/// administrator rights (Microsoft refused allowElevation on 2026-11-24), so it never restarts elevated and indexes by
-/// scanning folders, unless a service Setup installed reads the drives for it. Windows starts it with Windows through the
-/// package's startup task, and its restarts go through its app alias, which starts it inside its package.
+/// administrator rights (Microsoft refused allowElevation on 2026-11-24), so its window never restarts elevated and it
+/// indexes by scanning folders, unless its opt-in helper (<see cref="IndexHelper"/>, started elevated through
+/// shell:AppsFolder with Windows' permission) or a service Setup installed reads the drives for it. Windows starts it with
+/// Windows through the package's startup task, and its restarts go through its app alias, which starts it inside its
+/// package.
 /// </summary>
 internal static class StorePackage
 {

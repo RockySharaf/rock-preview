@@ -250,7 +250,18 @@ internal sealed partial class MainForm : Form
         _infoAction.Margin = new Padding(0, 2, 12, 2);
         _infoAction.LinkClicked += (_, _) => _app.TurnOnInstantIndexing(this);
         var dismiss = new LinkLabel { AutoSize = true, Text = "Dismiss", Margin = new Padding(0, 2, 0, 2) };
-        dismiss.LinkClicked += (_, _) => { _infoDismissed = true; UpdateInfoBar(); };
+        dismiss.LinkClicked += (_, _) =>
+        {
+            _infoDismissed = true;
+            // The Store copy's offer is optional for good: dismissed, it comes back in no window and at no start.
+            if (StorePackage.IsInstalled && !_app.Settings.StoreIndexingBarDismissed)
+            {
+                _app.Settings.StoreIndexingBarDismissed = true;
+                _app.Settings.Save();
+                foreach (var w in _app.Windows) w.UpdateInfoBar();
+            }
+            UpdateInfoBar();
+        };
         _infoBar.Controls.AddRange([_infoLabel, _infoAction, dismiss]);
         _infoBar.Visible = false;
     }
@@ -951,8 +962,10 @@ internal sealed partial class MainForm : Form
 
     /// <summary>
     /// Instant indexing that is off (turn it on), or a service older than this release (update it: its fixes, and its
-    /// name). Never in the Store's copy: it can't install the service or restart as administrator, so there is nothing
-    /// to turn on.
+    /// name). In the Store's copy, which never installs the service, only while its helper is switched off in Settings ›
+    /// Indexing (the link turns it on), and only until the bar is dismissed or the helper turned off: off is a choice
+    /// there (no question from Windows at each start), so the offer isn't made again. Never while the helper reads the
+    /// drives or Windows' permission was just declined (the switch is on then).
     /// </summary>
     void UpdateInfoBar()
     {
@@ -961,14 +974,16 @@ internal sealed partial class MainForm : Form
         // exFAT drives) there is nothing for the service to read, and turning it on again changed nothing: the bar came
         // straight back (found on a shop PC whose C: was left out).
         bool off = _app.IndexManager.ScansInsteadOfReading;
-        bool show = !_infoDismissed && !_app.IsDemo && !StorePackage.IsInstalled && (outdated || off); // the demo index isn't real indexing
+        bool store = StorePackage.IsInstalled;
+        bool show = !_infoDismissed && !_app.IsDemo // the demo index isn't real indexing
+                    && (store ? off && _app.OffersIndexHelper && !_app.Settings.StoreInstantIndexing && !_app.Settings.StoreIndexingBarDismissed : outdated || off);
         if (show)
         {
             string version = _app.OutdatedService is { Major: > 0 } v ? $" ({v.ToString(3)})" : "";
-            string text = outdated
-                ? $"Rock Preview's background service is an older version{version}. Update it to this one: Windows asks for permission one time."
+            string text = store ? "Instant indexing is off, so Rock Preview is scanning folders (slower). If you turn it on, Windows asks for permission each time Rock Preview starts."
+                : outdated ? $"Rock Preview's background service is an older version{version}. Update it to this one: Windows asks for permission one time."
                 : "Instant indexing is off, so Rock Preview is scanning folders (slower). Turn it on once and it stays on: Windows asks for permission one time.";
-            string action = outdated ? "Update the service" : "Turn on instant indexing";
+            string action = outdated && !store ? "Update the service" : "Turn on instant indexing";
             if (_infoLabel.Text != text) _infoLabel.Text = text;
             if (_infoAction.Text != action) _infoAction.Text = action;
         }

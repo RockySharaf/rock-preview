@@ -242,10 +242,8 @@ internal sealed partial class MainForm
         _elevatedBar.BackColor = SystemColors.Info;
         _elevatedBar.ForeColor = SystemColors.InfoText;
         ExplorerTheme.StyleBarLinks(_elevatedBar);
-        // The Store's copy has no background service: run normally, it scans folders instead.
-        string text = StorePackage.IsInstalled
-            ? "Rock Preview is running as administrator, so Windows won't let you drag files into it from programs that aren't (your browser, Outlook, the desktop, File Explorer). Run it normally to drop files in; it then scans folders, which is slower."
-            : "Rock Preview is running as administrator, so Windows won't let you drag files into it from programs that aren't (your browser, Outlook, the desktop, File Explorer). Run it normally to drop files in; with instant indexing turned on, searches stay instant.";
+        // Short and calm, the same in both copies: only what Windows does, with nothing to fix.
+        const string text = "Running as administrator: Windows doesn't let other programs drop files in here.";
         var label = new Label { AutoSize = true, UseMnemonic = false, Text = text, Margin = new Padding(0, 2, 6, 2) };
         var dismiss = new LinkLabel { AutoSize = true, Text = "Dismiss", Margin = new Padding(0, 2, 0, 2) };
         dismiss.LinkClicked += (_, _) => _elevatedBar.Visible = false;

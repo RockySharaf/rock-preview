@@ -18,6 +18,8 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
     const int OfflineProbeMs = 60_000;
     /// <summary>A scan that failed (the service restarted mid-read, say) is tried again after this long.</summary>
     const int RetryFailedScanMs = 120_000;
+    /// <summary>The longest a run waits before planning for <see cref="PlanAfter"/>'s answer: it plans without it then.</summary>
+    const int PlanWaitMs = 180_000;
     /// <summary>
     /// How long stopping waits for a root's task. Probes and scans give up quickly when cancelled; one stuck in a slow
     /// network call is left behind, and whatever it reads later is thrown away (it checks the index generation).
@@ -52,6 +54,8 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
     volatile RootIndexer? _scanningRoot;
     volatile bool _fallbackMode;
     volatile bool _usesService;
+    volatile bool _planned;
+    volatile Task? _planAfter;
     volatile bool _loaded;
     /// <summary>The startup (or rebuild) pass has attached or scanned every root it planned; drives may change from here.</summary>
     volatile bool _settled;
@@ -78,6 +82,16 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
     public bool IsElevated { get; }
     public bool UsesService => _usesService;
     public bool ScansInsteadOfReading => _fallbackMode;
+    public bool HasPlanned => _planned;
+
+    /// <summary>
+    /// Holds the planning of each run until <paramref name="decision"/> is done, three minutes at most: the Microsoft Store
+    /// copy's helper starting, Windows asking. The run loads the database first, so everything is searchable meanwhile,
+    /// then plans its roots once it knows whether the helper's pipe answers: the NTFS drives are read through it and
+    /// catch up from their journals, rather than being scanned, and read all over again once it answers.
+    /// </summary>
+    public void PlanAfter(Task decision) => _planAfter = decision;
+
     public event Action? StateChanged;
     public event Action? DrivesChanged;
     public IReadOnlyList<DriveEntry> PlannedDrives => _plannedDrives;
@@ -97,9 +111,9 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
     bool IIndexerHost.RecentChangesFromJournal => _settings.RecentChangesFromJournal;
 
     /// <summary>
-    /// Whether this copy can turn instant indexing on (the service, or a restart as administrator). The Microsoft Store's
-    /// copy can't, so a fixed drive it scans instead isn't said to have instant indexing off: scanning folders is just how
-    /// it indexes there.
+    /// Whether the status bar tells that instant indexing is off while a fixed drive is scanned instead: the GitHub copy,
+    /// turned on for good with the service (or a restart as administrator). The Microsoft Store's copy says only that
+    /// it scans folders: its helper is opt-in, asks Windows' permission at each start, and its own bar offers it.
     /// </summary>
     public bool CanTurnOnInstantIndexing { get; init; } = true;
 
@@ -164,6 +178,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
         EnsureDeviceWatcher();
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
+        _planned = false;
         _worker = Task.Run(() => Run(loadDatabase: true, forceRescan, ct), ct);
     }
 
@@ -264,6 +279,7 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
             _cts = new CancellationTokenSource();
             var ct = _cts.Token;
             SetState(IndexState.Scanning, "Rebuilding...");
+            _planned = false;
             _worker = Task.Run(() => Run(loadDatabase: false, forceRescan: false, ct), ct);
         }
     }
@@ -341,6 +357,18 @@ public sealed class IndexManager : IIndexManager, IIndexerHost
                 loaded = IndexDatabase.Load(settings.DatabasePath, Index) ?? [];
             }
             ct.ThrowIfCancellationRequested();
+
+            // The Store copy's helper still starting (Windows asking): its answer decides how the NTFS drives are read.
+            if (_planAfter is { IsCompleted: false } decision)
+            {
+                if (_state == IndexState.Loading) SetState(IndexState.Loading, "Starting instant indexing...");
+                try { decision.Wait(PlanWaitMs, ct); }
+                catch (AggregateException) { }
+            }
+            ct.ThrowIfCancellationRequested();
+            // From here this run finds out whether the service's pipe answers (UsesService): a helper that answers only
+            // later needs a new start to be read through.
+            _planned = true;
 
             // Decide the roots and match them with what the database had. Drives are listed even when whole drives
             // aren't indexed: they tell which added folders are on a network or USB drive.

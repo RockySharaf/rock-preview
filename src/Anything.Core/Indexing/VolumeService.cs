@@ -1,9 +1,26 @@
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 
+// Every Windows library this assembly calls is Windows' own, so it is looked for in System32 only: never in the
+// program's folder or anywhere a program at the user's level could put one, as this code also runs elevated (the
+// service, the Store copy's helper).
+[assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+
 namespace Anything.Core.Indexing;
+
+/// <summary>What the volume pipe's name gives this account (<see cref="VolumeService.Probe"/>).</summary>
+public enum VolumePipe
+{
+    /// <summary>No pipe by that name: nothing reads the drives.</summary>
+    Missing,
+    /// <summary>The service's pipe, or the Store copy's helper's, answers this account.</summary>
+    Answers,
+    /// <summary>A pipe by that name refuses this account (another account's helper or service), or isn't Rock Preview's.</summary>
+    Refused,
+}
 
 /// <summary>
 /// The Rock Preview service (installed once, with the administrator's approval, and running as LocalSystem) reads
@@ -11,6 +28,8 @@ namespace Anything.Core.Indexing;
 /// Deliberately narrow: local NTFS volumes only (fixed and USB), read-only operations only, and it returns metadata only
 /// (names, parent folders, sizes, dates, attributes and change-journal records), never raw disk data, so it can't
 /// be used to read file contents. The pipe admits only the allowed users, SYSTEM and administrators, never the network.
+/// The Microsoft Store copy, which can't install a service, has the same code serve the same pipe from a helper run
+/// elevated only while Rock Preview runs (Anything.IndexHelper), for the one user who started it.
 /// </summary>
 public static class VolumeService
 {
@@ -32,20 +51,56 @@ public static class VolumeService
     /// <summary>Whether the service is installed and answering.</summary>
     public static bool IsRunning() => ServiceVolumeSource.IsAvailable();
 
+    /// <summary>
+    /// Whether the pipe answers this account, refuses it, or isn't there. The Store copy's helper starts only when it isn't
+    /// there: beside a pipe that refuses this account (another account's helper, or a service installed for others) it
+    /// couldn't serve.
+    /// </summary>
+    public static VolumePipe Probe() => ServiceVolumeSource.Probe();
+
     /// <summary>Serves clients until <paramref name="ct"/> is cancelled.</summary>
-    public static void Run(IReadOnlyCollection<SecurityIdentifier> allowedUsers, CancellationToken ct)
+    /// <param name="asElevatedHelper">
+    /// Served by the Microsoft Store copy's helper (Anything.IndexHelper), run elevated as the user, instead of by the
+    /// service as SYSTEM: see <see cref="CreateSecurity"/>. The service itself leaves it false and its pipe stays as it was.
+    /// </param>
+    public static void Run(IReadOnlyCollection<SecurityIdentifier> allowedUsers, CancellationToken ct, bool asElevatedHelper = false) =>
+        Run(PipeName, allowedUsers, ct, asElevatedHelper);
+
+    /// <summary>
+    /// <see cref="Run(IReadOnlyCollection{SecurityIdentifier}, CancellationToken, bool)"/> on <paramref name="pipeName"/> (the
+    /// tests' own names). As the Store copy's helper, it ends at once rather than serve a pipe it didn't make. A pipe's name
+    /// is the whole PC's, and every instance gets the rules of the pipe's first: a program that took the name first, with
+    /// rules that let anyone in, would have the helper's answers go to whoever they let in. So its first instance must be
+    /// the pipe's first, and every instance's owner the administrators group, which no program at a user's normal level
+    /// can set. The service keeps trying every second, as it always did.
+    /// </summary>
+    internal static void Run(string pipeName, IReadOnlyCollection<SecurityIdentifier> allowedUsers, CancellationToken ct, bool asElevatedHelper)
     {
-        var security = CreateSecurity(allowedUsers);
+        var security = CreateSecurity(allowedUsers, asElevatedHelper);
+        var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        bool first = true;
         int active = 0;
         while (!ct.IsCancellationRequested)
         {
             NamedPipeServerStream pipe;
             try
             {
-                pipe = NamedPipeServerStreamAcl.Create(PipeName, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
-                    PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0, security);
+                var options = asElevatedHelper && first ? PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance : PipeOptions.Asynchronous;
+                pipe = NamedPipeServerStreamAcl.Create(pipeName, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
+                    PipeTransmissionMode.Byte, options, 0, 0, security);
             }
-            catch (Exception) { ct.WaitHandle.WaitOne(1000); continue; }
+            catch (Exception)
+            {
+                if (asElevatedHelper) return; // the name is taken, or the pipe can't be made: not the helper's to serve
+                ct.WaitHandle.WaitOne(1000);
+                continue;
+            }
+            first = false;
+            if (asElevatedHelper && !IsOwnedBy(pipe, administrators))
+            {
+                pipe.Dispose(); // joined a pipe someone else made, between two of the helper's instances
+                return;
+            }
             try { pipe.WaitForConnectionAsync(ct).GetAwaiter().GetResult(); }
             catch (Exception) { pipe.Dispose(); continue; }
             if (Interlocked.Increment(ref active) > MaxConnections)
@@ -63,14 +118,58 @@ public static class VolumeService
         }
     }
 
-    static PipeSecurity CreateSecurity(IEnumerable<SecurityIdentifier> users)
+    /// <summary>
+    /// Who may use the pipe. Each connection gets its own instance of it, and only who may make instances can add the next
+    /// one: SYSTEM (the service) through full control. The Store copy's helper runs as the user, elevated: its
+    /// administrators group is given that right too, or it could serve one connection at a time (one per drive is
+    /// wanted); the user's own SID never gets it, so a program at the user's normal level can't add an instance of its
+    /// own. SYSTEM, whose token has the administrators group too, is refused it on the helper's pipe: a Rock Preview
+    /// service starting meanwhile would add its instances to the helper's pipe, under its rules (this one user), and keep
+    /// them after the helper ends; refused, it waits until the helper's pipe is gone and makes its own. The helper's pipe
+    /// is owned by the administrators group, set here rather than left to Windows' default owner, which Rock Preview
+    /// checks (<see cref="ServiceVolumeSource"/>): only SYSTEM or administrators own the real one.
+    /// </summary>
+    internal static PipeSecurity CreateSecurity(IEnumerable<SecurityIdentifier> users, bool asElevatedHelper = false)
     {
+        var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
         var s = new PipeSecurity();
         s.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.NetworkSid, null), PipeAccessRights.FullControl, AccessControlType.Deny));
-        s.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
-        s.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null), PipeAccessRights.ReadWrite, AccessControlType.Allow));
+        if (asElevatedHelper)
+        {
+            s.AddAccessRule(new PipeAccessRule(system, PipeAccessRights.CreateNewInstance, AccessControlType.Deny));
+            s.AddAccessRule(new PipeAccessRule(system, PipeAccessRights.ReadWrite, AccessControlType.Allow));
+        }
+        else s.AddAccessRule(new PipeAccessRule(system, PipeAccessRights.FullControl, AccessControlType.Allow));
+        s.AddAccessRule(new PipeAccessRule(administrators,
+            asElevatedHelper ? PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance : PipeAccessRights.ReadWrite, AccessControlType.Allow));
         foreach (var user in users) s.AddAccessRule(new PipeAccessRule(user, PipeAccessRights.ReadWrite, AccessControlType.Allow));
+        if (asElevatedHelper) s.SetOwner(administrators);
         return s;
+    }
+
+    /// <summary>Whether <paramref name="pipe"/>'s owner, the owner of every instance of it, is <paramref name="owner"/>.</summary>
+    internal static bool IsOwnedBy(PipeStream pipe, SecurityIdentifier owner)
+    {
+        try { return owner.Equals(pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier))); }
+        catch (Exception) { return false; }
+    }
+
+    /// <summary>
+    /// A token cancelled as soon as one of <paramref name="ends"/> is signalled, or can't be waited on: the Store copy's
+    /// helper serves until its Rock Preview ends, closed or crashed, or sets its stop event. A thread of its own waits.
+    /// </summary>
+    public static CancellationTokenSource CancelWhenAny(params WaitHandle[] ends)
+    {
+        var cts = new CancellationTokenSource();
+        new Thread(() =>
+        {
+            try { WaitHandle.WaitAny(ends); }
+            catch (Exception) { } // a handle that can't be waited on is taken for an end
+            try { cts.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }) { IsBackground = true, Name = "Rock Preview helper: waiting for the end" }.Start();
+        return cts;
     }
 
     /// <summary>Only "X:" of a local (fixed or USB), ready NTFS volume.</summary>
